@@ -1,45 +1,39 @@
 """
-iris_orm — IRIS-native Python ORM
-==================================
+iris_orm — Python ORM for InterSystems IRIS.
 
-Public API::
-
-    from iris_orm import IRISModel
-
-    class Post(IRISModel):
-        _iris_classname = "Demo.Post"
-
-    # Query
-    for post in Post.objects.filter(Author="alice"):
-        print(post.Title)
-
-    # Create & save
-    p = Post.create(Title="Hello", Author="alice")
-    p.save()
-
-    # Open by ID
-    p = Post.get("1")
-
-    # Delete
-    p.delete()
-
-Stub generation::
-
-    python -m iris_orm.stubs Demo.Post ./src/python/
+Supports two modes:
+  Plan A (introspection-first): set _iris_classname; metaclass queries IRIS.
+  Plan C (Python-first): write typed annotations + field()/relationship() metadata.
 """
 from __future__ import annotations
 
-from .metaclass import IRISMeta, IRISModel
+from .metaclass import IRISModel, IRISMeta, _MODEL_REGISTRY
 from .query import IRISQuerySet
-from .types import iris_type_to_python, iris_type_to_annotation, IRIS_TO_PYTHON
+from .fields import field, relationship, FieldDefinition, RelationshipDefinition
+from .types import (
+    iris_type_to_python,
+    python_type_to_iris,
+    iris_type_to_annotation,
+    IRIS_TO_PYTHON,
+    PYTHON_TO_IRIS,
+)
+from . import schema
 
 __all__ = [
     "IRISModel",
     "IRISMeta",
+    "_MODEL_REGISTRY",
     "IRISQuerySet",
+    "field",
+    "relationship",
+    "FieldDefinition",
+    "RelationshipDefinition",
     "iris_type_to_python",
+    "python_type_to_iris",
     "iris_type_to_annotation",
     "IRIS_TO_PYTHON",
+    "PYTHON_TO_IRIS",
+    "schema",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

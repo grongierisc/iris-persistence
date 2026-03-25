@@ -1,29 +1,39 @@
 """
-IRISMeta — metaclass that introspects an IRIS class at Python class-creation
-time and injects typed :class:`~iris_orm.descriptors.IRISDescriptor` instances
-plus ``__annotations__`` so that IDEs see full type information.
+Metaclass and base model for IRIS ORM.
+
+Two modes:
+  Plan A — introspection-first: set _iris_classname; metaclass queries IRIS for properties.
+  Plan C — Python-first: write typed annotations + field()/relationship() in the class body.
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+import typing
+from typing import Any, ClassVar, Optional, get_type_hints
 
-from .descriptors import IRISDescriptor
+from .descriptors import IRISDescriptor, IRISRelationshipDescriptor, _wrap_iris_obj
+from .fields import FieldDefinition, RelationshipDefinition
 from .introspection import PropertyInfo, get_class_properties
 from .query import IRISQuerySet
+from .types import python_type_to_iris, unwrap_optional
+
+# Global registry: IRIS classname → Python model class
+_MODEL_REGISTRY: dict[str, type] = {}
+
+
+def _is_classvar(annotation: Any) -> bool:
+    """Return True if the annotation is ClassVar[...] or ClassVar."""
+    origin = getattr(annotation, "__origin__", None)
+    if origin is ClassVar:
+        return True
+    # typing.ClassVar before __origin__ support
+    if hasattr(typing, "ClassVar") and annotation is ClassVar:
+        return True
+    str_ann = str(annotation)
+    return str_ann.startswith("typing.ClassVar") or str_ann.startswith("ClassVar")
 
 
 class IRISMeta(type):
-    """Metaclass for all :class:`IRISModel` subclasses.
-
-    When Python creates a new subclass of :class:`IRISModel`, ``__new__``
-    is called with the class dictionary as ``namespace``.  If the class
-    sets ``_iris_classname``, the metaclass:
-
-    1. Queries ``%Dictionary.PropertyDefinition`` for every non-system property.
-    2. Creates an :class:`~iris_orm.descriptors.IRISDescriptor` for each property.
-    3. Injects the descriptors and updates ``__annotations__``.
-    4. Attaches an ``objects`` :class:`~iris_orm.query.IRISQuerySet` manager.
-    """
+    """Metaclass that wires up IRIS descriptors for model classes."""
 
     def __new__(
         mcs,
@@ -31,158 +41,318 @@ class IRISMeta(type):
         bases: tuple[type, ...],
         namespace: dict[str, Any],
         **kwargs: Any,
-    ) -> "IRISMeta":
+    ) -> type:
         cls = super().__new__(mcs, name, bases, namespace, **kwargs)
 
-        iris_classname: Optional[str] = namespace.get("_iris_classname")
+        iris_classname: str = namespace.get("_iris_classname", "")
         if not iris_classname:
-            # Base class (IRISModel itself) — skip introspection.
+            # Base class (IRISModel itself) — nothing to wire up.
             return cls
 
-        # Attempt live introspection; gracefully degrade when no IRIS
-        # connection is available (e.g., during unit tests).
-        try:
-            properties: list[PropertyInfo] = get_class_properties(iris_classname)
-        except Exception:
-            properties = []
+        raw_annotations: dict[str, Any] = namespace.get("__annotations__", {})
 
-        annotations: dict[str, Any] = {}
+        # Detect Python-first mode: user-defined, non-private, non-ClassVar annotations
+        # OR FieldDefinition / RelationshipDefinition values in the namespace.
+        user_annotations: dict[str, Any] = {
+            k: v
+            for k, v in raw_annotations.items()
+            if not k.startswith("_") and not _is_classvar(v)
+        }
+        has_field_defs = any(
+            isinstance(v, (FieldDefinition, RelationshipDefinition))
+            for v in namespace.values()
+        )
+        python_first = bool(user_annotations or has_field_defs)
 
-        for prop in properties:
-            descriptor = IRISDescriptor(
-                prop_name=prop.name,
-                python_type=prop.python_type,
-                required=prop.required,
-            )
-            # Inject descriptor only if the user has not already defined one.
-            if prop.name not in namespace:
-                setattr(cls, prop.name, descriptor)
+        if python_first:
+            mcs._setup_python_first(cls, iris_classname, namespace, user_annotations)
+        else:
+            mcs._setup_plan_a(cls, iris_classname, namespace)
 
-            # Build Optional[T] annotation (all IRIS properties are nullable
-            # by default unless Required=1, but we still type as Optional to
-            # match IRIS semantics).
-            py_name = prop.python_type.__name__ if hasattr(prop.python_type, "__name__") else "Any"
-            annotations[prop.name] = Optional[prop.python_type]  # type: ignore[valid-type]
-
-        # Merge with any annotations already present on the class.
-        existing = cls.__dict__.get("__annotations__", {})
-        cls.__annotations__ = {**annotations, **existing}
-
-        # Store the resolved property metadata for later use (stubs, etc.).
-        cls._iris_properties: list[PropertyInfo] = properties  # type: ignore[attr-defined]
-
-        # Attach the default manager.
-        cls.objects: IRISQuerySet = IRISQuerySet(cls)  # type: ignore[attr-defined]
-
+        _MODEL_REGISTRY[iris_classname] = cls
+        cls.objects = IRISQuerySet(cls)  # type: ignore[attr-defined]
         return cls
 
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _setup_python_first(
+        cls: type,
+        iris_classname: str,
+        namespace: dict[str, Any],
+        user_annotations: dict[str, Any],
+    ) -> None:
+        iris_properties: list[PropertyInfo] = []
+        iris_field_defs: dict[str, FieldDefinition] = {}
+        iris_rel_defs: dict[str, RelationshipDefinition] = {}
 
-class IRISModel(metaclass=IRISMeta):
-    """Base class for all IRIS persistent model classes.
+        # Resolve annotations with forward-ref support where possible.
+        try:
+            resolved = get_type_hints(cls)
+        except Exception:
+            resolved = dict(user_annotations)
 
-    Subclass this and set ``_iris_classname`` to the fully-qualified IRIS
-    class name (e.g. ``"Demo.Test"``).  The metaclass will introspect the
-    class and inject typed descriptors automatically.
+        for attr_name, raw_type in user_annotations.items():
+            # Skip relationship annotations handled below.
+            namespace_val = namespace.get(attr_name)
+            if isinstance(namespace_val, RelationshipDefinition):
+                continue
 
-    Example::
+            # Unwrap Optional[T] → T for type resolution.
+            resolved_type = resolved.get(attr_name, raw_type)
+            inner_type = unwrap_optional(resolved_type)
 
-        class Post(IRISModel):
-            _iris_classname = "Demo.Post"
+            # Get or create FieldDefinition.
+            if isinstance(namespace_val, FieldDefinition):
+                fd = namespace_val
+            else:
+                fd = FieldDefinition()
 
-        post = Post.get("1")
-        post.Title = "Hello"
-        post.save()
+            fd.prop_name = attr_name
+            fd.python_type = inner_type
 
-    CRUD
-    ----
-    * :meth:`save`      — persists the wrapped IRIS object (``_Save``).
-    * :meth:`delete`    — deletes the record (``_DeleteId``).
-    * :classmethod:`get`    — opens by ID (``_OpenId``).
-    * :classmethod:`create` — creates a new instance (``_New``).
-    * ``objects``       — :class:`~iris_orm.query.IRISQuerySet` for queries.
-    """
+            # Determine IRIS type.
+            iris_type = fd.iris_type or python_type_to_iris(inner_type)
+            fd.iris_type = iris_type
 
-    _iris_classname: str = ""
+            prop_info = PropertyInfo(
+                name=attr_name,
+                iris_type=iris_type,
+                python_type=inner_type,
+                required=fd.required,
+                collection=fd.collection,
+                default="" if fd.default is None else str(fd.default),
+            )
+            iris_properties.append(prop_info)
+            iris_field_defs[attr_name] = fd
 
-    def __init__(self) -> None:
-        # _iris_obj is set by _open() / create(); None signals an unsaved object.
-        object.__setattr__(self, "_iris_obj", None)
-        object.__setattr__(self, "_iris_id", None)
+            # Inject descriptor (don't overwrite explicitly defined methods/properties).
+            if attr_name not in namespace or isinstance(namespace[attr_name], FieldDefinition):
+                descriptor = IRISDescriptor(attr_name, inner_type, fd.required)
+                descriptor.attr_name = attr_name
+                setattr(cls, attr_name, descriptor)
+
+            # Ensure annotation is Optional[T].
+            if not hasattr(cls, "__annotations__"):
+                cls.__annotations__ = {}
+            cls.__annotations__[attr_name] = Optional[inner_type]  # type: ignore[valid-type]
+
+        # Process RelationshipDefinitions.
+        for attr_name, val in namespace.items():
+            if not isinstance(val, RelationshipDefinition):
+                continue
+            rd: RelationshipDefinition = val
+            rd.prop_name = attr_name
+            iris_rel_defs[attr_name] = rd
+
+            descriptor = IRISRelationshipDescriptor(
+                prop_name=attr_name,
+                related_classname=rd.related_classname,
+                cardinality=rd.cardinality,
+                inverse=rd.inverse,
+            )
+            descriptor.attr_name = attr_name
+            setattr(cls, attr_name, descriptor)
+
+        cls._iris_properties = iris_properties  # type: ignore[attr-defined]
+        cls._iris_field_defs = iris_field_defs  # type: ignore[attr-defined]
+        cls._iris_rel_defs = iris_rel_defs  # type: ignore[attr-defined]
+        cls._iris_python_first = True  # type: ignore[attr-defined]
 
     # ------------------------------------------------------------------
-    # CRUD helpers
+    @staticmethod
+    def _setup_plan_a(
+        cls: type,
+        iris_classname: str,
+        namespace: dict[str, Any],
+    ) -> None:
+        try:
+            props = get_class_properties(iris_classname)
+        except Exception:
+            props = []
+
+        if not hasattr(cls, "__annotations__"):
+            cls.__annotations__ = {}
+
+        for prop in props:
+            attr_name = prop.name
+            # Don't overwrite user-defined attributes.
+            if attr_name in namespace:
+                continue
+            descriptor = IRISDescriptor(attr_name, prop.python_type, prop.required)
+            descriptor.attr_name = attr_name
+            setattr(cls, attr_name, descriptor)
+            cls.__annotations__[attr_name] = Optional[prop.python_type]  # type: ignore[valid-type]
+
+        cls._iris_properties = props  # type: ignore[attr-defined]
+        cls._iris_field_defs = {}  # type: ignore[attr-defined]
+        cls._iris_rel_defs = {}  # type: ignore[attr-defined]
+        cls._iris_python_first = False  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# Base model
+# ---------------------------------------------------------------------------
+
+class IRISModel(metaclass=IRISMeta):
+    """Base class for all IRIS ORM models."""
+
+    _iris_classname: ClassVar[str] = ""
+
+    # Set by metaclass:
+    _iris_properties: ClassVar[list[PropertyInfo]]
+    _iris_field_defs: ClassVar[dict[str, FieldDefinition]]
+    _iris_rel_defs: ClassVar[dict[str, RelationshipDefinition]]
+    _iris_python_first: ClassVar[bool]
+    objects: ClassVar[IRISQuerySet]
+
+    def __init__(self, **kwargs: Any) -> None:
+        object.__setattr__(self, "_iris_id", None)
+        classname = type(self)._iris_classname
+        iris_obj = None
+        if classname:
+            import iris  # noqa: PLC0415
+            iris_obj = iris.cls(classname)._New()
+        object.__setattr__(self, "_iris_obj", iris_obj)
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+    # ------------------------------------------------------------------
+    # Attribute fallthrough to underlying IRIS object
+    #
+    # These two methods make Plan A binding resilient: if introspection
+    # failed at class-definition time (no IRIS connection yet) and no
+    # typed descriptors were injected, attribute access is still forwarded
+    # directly to the wrapped IRIS object.  When a typed descriptor *is*
+    # present on the class, Python resolves it first (data-descriptor
+    # protocol) and neither of these methods is ever called for that name.
+    # ------------------------------------------------------------------
+
+    def __getattr__(self, name: str) -> Any:
+        """Forward unknown attribute reads to the underlying IRIS object."""
+        # __getattr__ is only called when normal lookup (including descriptors)
+        # has already failed — so this is the fallback, not the fast path.
+        if name.startswith("_"):
+            raise AttributeError(f"{type(self).__name__!r} has no attribute {name!r}")
+        try:
+            iris_obj = object.__getattribute__(self, "_iris_obj")
+        except AttributeError:
+            raise AttributeError(f"{type(self).__name__!r} has no attribute {name!r}")
+        if iris_obj is None:
+            raise AttributeError(
+                f"{type(self).__name__!r} has no attribute {name!r} "
+                "(no underlying IRIS object; use create() or get() first)"
+            )
+        return getattr(iris_obj, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Forward unknown attribute writes to the underlying IRIS object."""
+        # Check for a data descriptor on the class (or its MRO).
+        for klass in type(self).__mro__:
+            if name in klass.__dict__:
+                descriptor = klass.__dict__[name]
+                if hasattr(descriptor, "__set__"):
+                    descriptor.__set__(self, value)
+                    return
+                break  # found the name but it's not a data descriptor
+        # No descriptor — forward to iris_obj if available, else instance dict.
+        if not name.startswith("_"):
+            try:
+                iris_obj = object.__getattribute__(self, "_iris_obj")
+                if iris_obj is not None:
+                    setattr(iris_obj, name, value)
+                    return
+            except AttributeError:
+                pass
+        object.__setattr__(self, name, value)
+
+    # ------------------------------------------------------------------
+    # Persistence
     # ------------------------------------------------------------------
 
     def save(self) -> None:
-        """Persist the wrapped IRIS object.  Raises ``RuntimeError`` on failure."""
+        """Persist the instance to IRIS. Raises RuntimeError on failure."""
         iris_obj = object.__getattribute__(self, "_iris_obj")
         if iris_obj is None:
-            raise RuntimeError("Cannot save: no underlying IRIS object (use create() first).")
+            raise RuntimeError(
+                "No underlying IRIS object. Use MyModel.create() to obtain a new instance."
+            )
         status = iris_obj._Save()
+        # IRIS status: 1 = success; $$$OK also evaluates to 1.
         if not status:
-            raise RuntimeError(f"_Save() failed with status: {status}")
-        # Update stored ID after first save.
-        object.__setattr__(self, "_iris_id", str(iris_obj._Id()))
+            raise RuntimeError(f"_Save() failed with status: {status!r}")
+        try:
+            object.__setattr__(self, "_iris_id", str(iris_obj._Id()))
+        except Exception:
+            pass
 
     def delete(self) -> None:
-        """Delete this record by ID."""
-        iris_id = object.__getattribute__(self, "_iris_id")
-        if iris_id is None:
-            raise RuntimeError("Cannot delete: object has no ID.")
-        import iris  # type: ignore[import]
-        iris.cls(self._iris_classname)._DeleteId(iris_id)
+        """Delete the instance from IRIS. Raises RuntimeError if not saved."""
+        obj_id = object.__getattribute__(self, "_iris_id")
+        if not obj_id:
+            raise RuntimeError("Cannot delete: object has no ID (not yet saved).")
+        import iris  # noqa: PLC0415
+        iris.cls(self._iris_classname)._DeleteId(obj_id)
         object.__setattr__(self, "_iris_obj", None)
         object.__setattr__(self, "_iris_id", None)
 
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+
     @property
     def pk(self) -> Optional[str]:
-        """The object's IRIS ID, or ``None`` if not yet saved."""
-        return object.__getattribute__(self, "_iris_id")  # type: ignore[return-value]
+        return object.__getattribute__(self, "_iris_id")
 
     # ------------------------------------------------------------------
-    # class-level constructors
+    # Class-level helpers
     # ------------------------------------------------------------------
 
     @classmethod
-    def get(cls, obj_id: str) -> Optional["IRISModel"]:
-        """Open an existing IRIS object by its ID.
-
-        Returns ``None`` if the ID does not exist.
-        """
+    def get(cls, obj_id: Any) -> Optional["IRISModel"]:
+        """Open an existing IRIS object by ID. Returns None if not found."""
         return cls._open(str(obj_id))
 
     @classmethod
     def create(cls, **kwargs: Any) -> "IRISModel":
-        """Create a new IRIS object, set properties from *kwargs*, and return
-        the unsaved instance.  Call :meth:`save` to persist.
         """
-        import iris  # type: ignore[import]
-
+        Create a new (unsaved) instance backed by a fresh IRIS object.
+        Call .save() to persist.
+        """
+        import iris  # noqa: PLC0415
         iris_obj = iris.cls(cls._iris_classname)._New()
-        instance = cls.__new__(cls)
-        IRISModel.__init__(instance)
-        object.__setattr__(instance, "_iris_obj", iris_obj)
+        instance = _wrap_iris_obj(cls, iris_obj)
         for key, value in kwargs.items():
             setattr(instance, key, value)
         return instance
 
     @classmethod
     def _open(cls, obj_id: str) -> Optional["IRISModel"]:
-        """Internal: open by ID, wrapping the IRIS object."""
-        import iris  # type: ignore[import]
-
+        """Open an existing IRIS object by ID. Returns None if not found."""
         try:
+            import iris  # noqa: PLC0415
             iris_obj = iris.cls(cls._iris_classname)._OpenId(obj_id)
+            if iris_obj is None:
+                return None
+            return _wrap_iris_obj(cls, iris_obj)
         except Exception:
             return None
-        if iris_obj is None:
-            return None
-        instance = cls.__new__(cls)
-        IRISModel.__init__(instance)
-        object.__setattr__(instance, "_iris_obj", iris_obj)
-        object.__setattr__(instance, "_iris_id", obj_id)
-        return instance
 
-    def __repr__(self) -> str:  # pragma: no cover
-        iris_id = object.__getattribute__(self, "_iris_id")
-        return f"<{self.__class__.__name__} pk={iris_id!r}>"
+    @classmethod
+    def bind(cls) -> None:
+        """Re-run Plan A introspection against a live IRIS connection.
+
+        Call this after connecting to IRIS when the class was defined before
+        a connection was available (e.g. at module import time)::
+
+            class Post(IRISModel):
+                _iris_classname = "Demo.Post"
+
+            # ... later, after connecting:
+            Post.bind()  # injects typed descriptors from %Dictionary.PropertyDefinition
+        """
+        if getattr(cls, "_iris_python_first", False):
+            raise RuntimeError(
+                f"{cls.__name__} was defined in Python-first (Plan C) mode. "
+                "bind() is only needed for Plan A (introspection-first) classes."
+            )
+        IRISMeta._setup_plan_a(cls, cls._iris_classname, {})

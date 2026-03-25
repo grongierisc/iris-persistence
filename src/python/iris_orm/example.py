@@ -1,160 +1,94 @@
 """
-iris_orm usage example
-======================
+iris_orm example — demonstrates Plan A and Plan C usage side-by-side.
 
-This file demonstrates how to define IRIS persistent classes, perform
-CRUD operations, and use the query API.
-
-Prerequisites
--------------
-- A running IRIS instance with the ``iris`` Python package available.
-- The following IRIS classes must exist (or adapt the classnames below):
-
-    Class Demo.Person Extends %Persistent
-    {
-        Property Name As %String;
-        Property Age  As %Integer;
-        Property DOB  As %Date;
-    }
-
-    Class Demo.Post Extends %Persistent
-    {
-        Property Title   As %String;
-        Property Body    As %String(MAXLEN=32768);
-        Property Author  As %String;
-        Property Created As %TimeStamp;
-        Property Views   As %Integer;
-    }
-
-Running
--------
-Inside an IRIS Python shell or embedded Python context::
-
-    python example.py
+This file is for illustration only; it will not run without a live IRIS connection.
 """
-from iris_orm import IRISModel
-
+from __future__ import annotations
 
 # ---------------------------------------------------------------------------
-# 1. Model definitions
-#    Just set _iris_classname — the metaclass does the rest.
+# Plan A — introspection-first
 # ---------------------------------------------------------------------------
+# The metaclass will query %Dictionary.PropertyDefinition at class definition
+# time and inject typed descriptors automatically.
 
-class Person(IRISModel):
-    _iris_classname = "Demo.Person"
-    # IRISMeta auto-injects: Name (str), Age (int), DOB (datetime.date)
+# from iris_orm import IRISModel
+#
+# class User(IRISModel):
+#     _iris_classname = "Demo.User"
+#
+# # Descriptors are injected: User.Name, User.Email, User.Age, etc.
+# # (whatever properties IRIS reports for Demo.User)
+#
+# user = User.get("1")
+# print(user.Name)
+#
+# new_user = User.create(Name="Alice", Email="alice@example.com")
+# new_user.save()
+# print(new_user.pk)
+#
+# for u in User.objects.filter(Name="Alice"):
+#     print(u.pk, u.Name)
+
+# ---------------------------------------------------------------------------
+# Plan C — Python-first
+# ---------------------------------------------------------------------------
+# Typed annotations + field()/relationship() metadata drive everything.
+# generate_cls() can emit ObjectScript source; compile_to_iris() can compile it.
+
+from iris_orm import IRISModel, field, relationship
+from iris_orm import schema
+from iris_orm import stubs
+
+
+class Author(IRISModel):
+    _iris_classname = "Demo.Author"
+
+    Name: str = field(required=True, maxlen=200, description="Full name of the author")
+    Email: str = field(maxlen=255, description="Contact email")
+    Bio: str = field(description="Short biography")
 
 
 class Post(IRISModel):
     _iris_classname = "Demo.Post"
-    # IRISMeta auto-injects: Title, Body, Author (str), Created (datetime), Views (int)
 
+    Title: str = field(required=True, maxlen=500, description="Post title")
+    Body: str = field(description="Post body text")
 
-# ---------------------------------------------------------------------------
-# 2. Create & save
-# ---------------------------------------------------------------------------
-
-def create_examples() -> None:
-    alice = Person.create(Name="Alice", Age=30)
-    alice.save()
-    print(f"Saved Alice with pk={alice.pk}")
-
-    bob = Person.create(Name="Bob", Age=25)
-    bob.save()
-    print(f"Saved Bob   with pk={bob.pk}")
-
-    post = Post.create(
-        Title="Hello IRIS ORM",
-        Body="This post was created from Python.",
-        Author="Alice",
-        Views=0,
-    )
-    post.save()
-    print(f"Saved Post  with pk={post.pk}")
-
-
-# ---------------------------------------------------------------------------
-# 3. Open by ID
-# ---------------------------------------------------------------------------
-
-def open_by_id(person_id: str) -> None:
-    person = Person.get(person_id)
-    if person is None:
-        print(f"Person {person_id!r} not found")
-        return
-    print(f"Opened: Name={person.Name!r}  Age={person.Age}")
-
-
-# ---------------------------------------------------------------------------
-# 4. Update a property
-# ---------------------------------------------------------------------------
-
-def birthday(person_id: str) -> None:
-    person = Person.get(person_id)
-    if person is None:
-        return
-    person.Age = (person.Age or 0) + 1
-    person.save()
-    print(f"Happy birthday {person.Name}! Now {person.Age}.")
-
-
-# ---------------------------------------------------------------------------
-# 5. Query — all(), filter(), count(), first()
-# ---------------------------------------------------------------------------
-
-def query_examples() -> None:
-    # All persons
-    print("All persons:")
-    for p in Person.objects.all():
-        print(f"  [{p.pk}] {p.Name}, age {p.Age}")
-
-    # Filter
-    print("Posts by Alice:")
-    for post in Post.objects.filter(Author="Alice"):
-        print(f"  [{post.pk}] {post.Title!r}  views={post.Views}")
-
-    # Count
-    total = Person.objects.count()
-    print(f"Total persons: {total}")
-
-    # First
-    first_post = Post.objects.first()
-    if first_post:
-        print(f"First post: {first_post.Title!r}")
-
-
-# ---------------------------------------------------------------------------
-# 6. Delete
-# ---------------------------------------------------------------------------
-
-def delete_example(person_id: str) -> None:
-    person = Person.get(person_id)
-    if person is None:
-        print("Not found, nothing to delete.")
-        return
-    name = person.Name
-    person.delete()
-    print(f"Deleted {name!r} (pk={person_id}). pk after delete: {person.pk}")
-
-
-# ---------------------------------------------------------------------------
-# 7. Stub generation (offline, no IRIS needed for the CLI itself)
-# ---------------------------------------------------------------------------
-
-def show_stub_command() -> None:
-    print(
-        "\nTo generate .pyi stubs for IDE auto-complete, run:\n"
-        "  python -m iris_orm.stubs Demo.Person ./src/python/\n"
-        "  python -m iris_orm.stubs Demo.Post   ./src/python/\n"
-        "This writes Demo/Person.pyi and Demo/Post.pyi.\n"
+    author = relationship(
+        "Demo.Author",
+        inverse="Posts",
+        cardinality="parent",
+        description="The author of this post",
     )
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# Generate ObjectScript source
+# ---------------------------------------------------------------------------
+# Uncomment to write .cls files:
+#
+# author_path = schema.write_cls(Author, "./output/cls")
+# post_path   = schema.write_cls(Post,   "./output/cls")
+# print(author_path, post_path)
+
+# ---------------------------------------------------------------------------
+# Print generated ObjectScript to stdout
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    create_examples()
-    query_examples()
-    show_stub_command()
+    print("=== Demo.Author ===")
+    print(schema.generate_cls(Author))
+    print()
+    print("=== Demo.Post ===")
+    print(schema.generate_cls(Post))
+    print()
+    print("=== Demo.Author stub ===")
+    # Note: stubs.generate_stub() needs IRIS for Plan A introspection, but for
+    # registered Plan C classes it uses the in-memory registry.
+    # print(stubs.generate_stub("Demo.Author"))
+    print("(run with a live IRIS connection to generate stubs via introspection)")
+    print()
+    print("CLI usage:")
+    print("  python -m iris_orm.schema Demo.Post ./output/cls/")
+    print("  python -m iris_orm.schema Demo.Post ./output/cls/ --compile")
+    print("  python -m iris_orm.stubs  Demo.Post ./output/python/")

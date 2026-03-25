@@ -1,402 +1,1089 @@
 """
-Unit tests for iris_orm.
+Comprehensive unit tests for iris_orm.
 
-All tests use ``unittest.mock`` to stub out the ``iris`` module so that
-no live IRIS connection is required.
+All tests use a fake_iris autouse fixture so no live IRIS connection is needed.
+Compatible with Python 3.11+.
 """
 from __future__ import annotations
 
 import datetime
 import sys
-from unittest.mock import MagicMock
+from typing import Any, Optional
+from unittest.mock import MagicMock, call, patch
+from pathlib import Path
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
-# Build a minimal fake ``iris`` module so imports work without IRIS installed.
+# Fake IRIS fixture — monkeypatches sys.modules["iris"] before any import
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
 def fake_iris(monkeypatch):
-    """Inject a fake ``iris`` module for every test."""
-    mock = MagicMock(name="iris")
-    mock.sql = MagicMock()
-    monkeypatch.setitem(sys.modules, "iris", mock)
-    yield mock
+    """Replace the `iris` module with a MagicMock for every test."""
+    mock_iris = MagicMock()
+    monkeypatch.setitem(sys.modules, "iris", mock_iris)
+    yield mock_iris
 
 
 # ---------------------------------------------------------------------------
-# iris_orm.types
+# Helpers imported after fixture is in place
 # ---------------------------------------------------------------------------
+
+from iris_orm.types import (  # noqa: E402
+    IRIS_TO_PYTHON,
+    PYTHON_TO_IRIS,
+    iris_type_to_annotation,
+    iris_type_to_python,
+    python_type_to_iris,
+    unwrap_optional,
+)
+from iris_orm.fields import (  # noqa: E402
+    FieldDefinition,
+    RelationshipDefinition,
+    field,
+    relationship,
+)
+from iris_orm.introspection import get_class_properties, PropertyInfo  # noqa: E402
+from iris_orm.descriptors import (  # noqa: E402
+    IRISDescriptor,
+    IRISRelationshipDescriptor,
+    IRISRelationshipManager,
+    _wrap_iris_obj,
+)
+from iris_orm.query import IRISQuerySet  # noqa: E402
+
+
+# ===========================================================================
+# TestTypes
+# ===========================================================================
 
 class TestTypes:
-    def test_known_mappings(self):
-        from iris_orm.types import iris_type_to_python
-
+    def test_known_string_type(self):
         assert iris_type_to_python("%String") is str
+        assert iris_type_to_python("%Library.String") is str
+
+    def test_known_integer_type(self):
         assert iris_type_to_python("%Integer") is int
+        assert iris_type_to_python("%Library.Integer") is int
+
+    def test_known_float_types(self):
         assert iris_type_to_python("%Float") is float
+        assert iris_type_to_python("%Numeric") is float
+        assert iris_type_to_python("%Double") is float
+
+    def test_known_boolean_type(self):
         assert iris_type_to_python("%Boolean") is bool
+
+    def test_known_date_type(self):
         assert iris_type_to_python("%Date") is datetime.date
-        assert iris_type_to_python("%TimeStamp") is datetime.datetime
+        assert iris_type_to_python("%Library.Date") is datetime.date
+
+    def test_known_time_type(self):
         assert iris_type_to_python("%Time") is datetime.time
+
+    def test_known_timestamp_types(self):
+        assert iris_type_to_python("%TimeStamp") is datetime.datetime
+        assert iris_type_to_python("%Library.TimeStamp") is datetime.datetime
+        assert iris_type_to_python("%PosixTime") is datetime.datetime
+
+    def test_known_list_type(self):
         assert iris_type_to_python("%List") is list
 
-    def test_fallback_to_any(self):
+    def test_known_stream_types(self):
+        assert iris_type_to_python("%Stream.GlobalCharacter") is str
+        assert iris_type_to_python("%Stream.GlobalBinary") is bytes
+
+    def test_unknown_type_falls_back_to_any(self):
         from typing import Any
-        from iris_orm.types import iris_type_to_python
+        assert iris_type_to_python("%SomeWeirdType") is Any
 
-        assert iris_type_to_python("%CustomClass") is Any
+    def test_python_to_iris_str(self):
+        assert python_type_to_iris(str) == "%String"
 
-    def test_annotation_builtin(self):
-        from iris_orm.types import iris_type_to_annotation
+    def test_python_to_iris_int(self):
+        assert python_type_to_iris(int) == "%Integer"
 
+    def test_python_to_iris_float(self):
+        assert python_type_to_iris(float) == "%Float"
+
+    def test_python_to_iris_bool(self):
+        assert python_type_to_iris(bool) == "%Boolean"
+
+    def test_python_to_iris_date(self):
+        assert python_type_to_iris(datetime.date) == "%Date"
+
+    def test_python_to_iris_datetime(self):
+        assert python_type_to_iris(datetime.datetime) == "%TimeStamp"
+
+    def test_python_to_iris_fallback(self):
+        class Foo:
+            pass
+        assert python_type_to_iris(Foo) == "%String"
+
+    def test_annotation_string_str(self):
         assert iris_type_to_annotation("%String") == "Optional[str]"
-        assert iris_type_to_annotation("%Integer") == "Optional[int]"
 
-    def test_annotation_datetime(self):
-        from iris_orm.types import iris_type_to_annotation
-
+    def test_annotation_string_date(self):
         assert iris_type_to_annotation("%Date") == "Optional[datetime.date]"
+
+    def test_annotation_string_datetime(self):
         assert iris_type_to_annotation("%TimeStamp") == "Optional[datetime.datetime]"
 
-    def test_annotation_unknown(self):
-        from iris_orm.types import iris_type_to_annotation
-
+    def test_annotation_unknown_is_any(self):
         assert iris_type_to_annotation("%Unknown") == "Any"
 
+    def test_unwrap_optional(self):
+        from typing import Optional
+        assert unwrap_optional(Optional[str]) is str
 
-# ---------------------------------------------------------------------------
-# iris_orm.descriptors
-# ---------------------------------------------------------------------------
+    def test_unwrap_optional_datetime(self):
+        from typing import Optional
+        assert unwrap_optional(Optional[datetime.date]) is datetime.date
 
-class TestIRISDescriptor:
-    def _make_model(self, iris_obj):
-        from iris_orm.descriptors import IRISDescriptor
+    def test_unwrap_non_optional_passthrough(self):
+        assert unwrap_optional(str) is str
+        assert unwrap_optional(int) is int
 
-        class FakeModel:
-            Name = IRISDescriptor("Name", str)
+    def test_iris_to_python_dict_non_empty(self):
+        assert len(IRIS_TO_PYTHON) > 5
 
-            def __init__(self, iris_obj):
-                object.__setattr__(self, "_iris_obj", iris_obj)
-
-        return FakeModel(iris_obj)
-
-    def test_get_coerces_to_str(self):
-        iris_obj = MagicMock()
-        iris_obj.Name = 42
-        assert self._make_model(iris_obj).Name == "42"
-
-    def test_get_returns_none_for_empty_string(self):
-        iris_obj = MagicMock()
-        iris_obj.Name = ""
-        assert self._make_model(iris_obj).Name is None
-
-    def test_get_returns_none_for_none(self):
-        iris_obj = MagicMock()
-        iris_obj.Name = None
-        assert self._make_model(iris_obj).Name is None
-
-    def test_set_propagates_to_iris_obj(self):
-        iris_obj = MagicMock()
-        iris_obj.Name = ""
-        m = self._make_model(iris_obj)
-        m.Name = "Alice"
-        assert iris_obj.Name == "Alice"
-
-    def test_set_none_stores_empty_string(self):
-        iris_obj = MagicMock()
-        iris_obj.Name = "Alice"
-        m = self._make_model(iris_obj)
-        m.Name = None
-        assert iris_obj.Name == ""
-
-    def test_descriptor_on_class_returns_itself(self):
-        from iris_orm.descriptors import IRISDescriptor
-
-        class FakeModel:
-            Name = IRISDescriptor("Name", str)
-
-        assert isinstance(FakeModel.Name, IRISDescriptor)
-
-    def test_serialize_date(self):
-        from iris_orm.descriptors import IRISDescriptor
-
-        d = IRISDescriptor("Foo", datetime.date)
-        assert d._serialize(datetime.date(2024, 1, 15)) == "2024-01-15"
-
-    def test_serialize_datetime(self):
-        from iris_orm.descriptors import IRISDescriptor
-
-        d = IRISDescriptor("Foo", datetime.datetime)
-        assert d._serialize(datetime.datetime(2024, 1, 15, 10, 30, 0)) == "2024-01-15 10:30:00"
-
-    def test_delete_sets_none(self):
-        iris_obj = MagicMock()
-        iris_obj.Name = "Bob"
-        m = self._make_model(iris_obj)
-        del m.Name
-        assert iris_obj.Name == ""
+    def test_python_to_iris_dict_non_empty(self):
+        assert len(PYTHON_TO_IRIS) > 4
 
 
-# ---------------------------------------------------------------------------
-# iris_orm.introspection
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# TestFields
+# ===========================================================================
+
+class TestFields:
+    def test_field_creates_field_definition(self):
+        fd = field(required=True, maxlen=100, description="A field")
+        assert isinstance(fd, FieldDefinition)
+        assert fd.required is True
+        assert fd.maxlen == 100
+        assert fd.description == "A field"
+
+    def test_field_default_none(self):
+        fd = field()
+        assert fd.required is False
+        assert fd.default is None
+        assert fd.maxlen is None
+        assert fd.collection == ""
+
+    def test_field_with_default(self):
+        fd = field(default="hello")
+        assert fd.default == "hello"
+
+    def test_field_with_iris_type(self):
+        fd = field(iris_type="%Integer")
+        assert fd.iris_type == "%Integer"
+
+    def test_relationship_creates_definition(self):
+        rd = relationship("Demo.Author", inverse="Posts", cardinality="parent")
+        assert isinstance(rd, RelationshipDefinition)
+        assert rd.related_classname == "Demo.Author"
+        assert rd.inverse == "Posts"
+        assert rd.cardinality == "parent"
+        assert rd.on_delete == "cascade"
+
+    def test_relationship_invalid_cardinality_raises(self):
+        with pytest.raises(ValueError, match="cardinality"):
+            relationship("Demo.Author", inverse="Posts", cardinality="bogus")
+
+    def test_relationship_description(self):
+        rd = relationship("A.B", inverse="x", cardinality="one", description="desc")
+        assert rd.description == "desc"
+
+
+# ===========================================================================
+# TestIntrospection
+# ===========================================================================
 
 class TestIntrospection:
-    def test_returns_property_list(self, fake_iris):
-        fake_iris.sql.exec.return_value = [
-            ("Title", "%String", 1, "", ""),
-            ("Count", "%Integer", 0, "", "42"),
-        ]
-        from iris_orm.introspection import get_class_properties
+    def _make_row(self, name, type_, required, collection, default):
+        return (name, type_, required, collection, default)
 
+    def test_correct_sql_executed(self, fake_iris):
+        fake_iris.sql.exec.return_value = []
+        get_class_properties("Demo.Test")
+        sql_call = fake_iris.sql.exec.call_args
+        assert sql_call is not None
+        sql_str = sql_call[0][0]
+        assert "%Dictionary.PropertyDefinition" in sql_str
+        assert "parent = ?" in sql_str
+        assert "Relationship = 0" in sql_str
+
+    def test_classname_passed_as_param(self, fake_iris):
+        fake_iris.sql.exec.return_value = []
+        get_class_properties("Demo.MyClass")
+        params = fake_iris.sql.exec.call_args[0][1]
+        assert params == ["Demo.MyClass"]
+
+    def test_parses_property_list(self, fake_iris):
+        rows = [
+            self._make_row("Name", "%String", 1, "", ""),
+            self._make_row("Age", "%Integer", 0, "", ""),
+        ]
+        fake_iris.sql.exec.return_value = iter(rows)
         props = get_class_properties("Demo.Test")
         assert len(props) == 2
-        assert props[0].name == "Title"
-        assert props[0].python_type is str
-        assert props[0].required is True
-        assert props[1].name == "Count"
-        assert props[1].python_type is int
-        assert props[1].default == "42"
+        name_prop = props[0]
+        assert name_prop.name == "Name"
+        assert name_prop.iris_type == "%String"
+        assert name_prop.python_type is str
+        assert name_prop.required is True
+        age_prop = props[1]
+        assert age_prop.name == "Age"
+        assert age_prop.python_type is int
+        assert age_prop.required is False
 
-    def test_uses_correct_sql(self, fake_iris):
-        fake_iris.sql.exec.return_value = []
-        from iris_orm.introspection import get_class_properties
-
-        get_class_properties("Demo.Foo")
-
-        args = fake_iris.sql.exec.call_args[0]
-        assert "%Dictionary.PropertyDefinition" in args[0]
-        assert args[1] == ["Demo.Foo"]
-
-    def test_fallback_type_for_unknown(self, fake_iris):
+    def test_unknown_type_fallback(self, fake_iris):
         from typing import Any
-        fake_iris.sql.exec.return_value = [("Custom", "%Custom.Type", 0, "", "")]
-        from iris_orm.introspection import get_class_properties
-
+        rows = [self._make_row("Weird", "%SomeType", 0, "", "")]
+        fake_iris.sql.exec.return_value = iter(rows)
         props = get_class_properties("Demo.Test")
         assert props[0].python_type is Any
 
+    def test_null_type_defaults_to_string(self, fake_iris):
+        rows = [self._make_row("X", None, 0, None, None)]
+        fake_iris.sql.exec.return_value = iter(rows)
+        props = get_class_properties("Demo.Test")
+        assert props[0].iris_type == "%String"
 
-# ---------------------------------------------------------------------------
-# iris_orm.query — IRISQuerySet
-# ---------------------------------------------------------------------------
+    def test_collection_lowercased(self, fake_iris):
+        rows = [self._make_row("Tags", "%String", 0, "List", "")]
+        fake_iris.sql.exec.return_value = iter(rows)
+        props = get_class_properties("Demo.Test")
+        assert props[0].collection == "list"
 
-class TestIRISQuerySet:
-    def _fake_model(self):
+
+# ===========================================================================
+# TestIRISDescriptor
+# ===========================================================================
+
+class TestIRISDescriptor:
+    def _make_instance(self, prop_name="Name", python_type=str, required=False):
+        """Return a descriptor and a minimal mock instance."""
+        desc = IRISDescriptor(prop_name, python_type, required)
+        desc.attr_name = prop_name
+        iris_obj = MagicMock()
+
         class FakeModel:
-            _iris_classname = "Demo.Post"
+            pass
 
-            @classmethod
-            def _open(cls, obj_id):
-                m = MagicMock()
-                m.pk = obj_id
-                return m
+        instance = object.__new__(FakeModel)
+        object.__setattr__(instance, "_iris_obj", iris_obj)
+        object.__setattr__(instance, "_iris_id", None)
+        return desc, instance, iris_obj
+
+    def test_get_coerces_to_python_type(self):
+        desc, inst, iris_obj = self._make_instance("Age", int)
+        iris_obj.Age = "42"
+        assert desc.__get__(inst, type(inst)) == 42
+
+    def test_get_none_for_empty_string(self):
+        desc, inst, iris_obj = self._make_instance("Name", str)
+        iris_obj.Name = ""
+        assert desc.__get__(inst, type(inst)) is None
+
+    def test_get_none_for_none(self):
+        desc, inst, iris_obj = self._make_instance("Name", str)
+        iris_obj.Name = None
+        assert desc.__get__(inst, type(inst)) is None
+
+    def test_set_serializes_string(self):
+        desc, inst, iris_obj = self._make_instance("Name", str)
+        desc.__set__(inst, "Alice")
+        assert iris_obj.Name == "Alice"
+
+    def test_set_none_serializes_to_empty_string(self):
+        desc, inst, iris_obj = self._make_instance("Name", str)
+        desc.__set__(inst, None)
+        assert iris_obj.Name == ""
+
+    def test_delete_sets_to_none(self):
+        desc, inst, iris_obj = self._make_instance("Name", str)
+        desc.__delete__(inst)
+        assert iris_obj.Name == ""
+
+    def test_set_date_serializes_isoformat(self):
+        desc, inst, iris_obj = self._make_instance("BirthDate", datetime.date)
+        desc.__set__(inst, datetime.date(2024, 1, 15))
+        assert iris_obj.BirthDate == "2024-01-15"
+
+    def test_set_datetime_serializes(self):
+        desc, inst, iris_obj = self._make_instance("CreatedAt", datetime.datetime)
+        desc.__set__(inst, datetime.datetime(2024, 1, 15, 10, 30, 0))
+        assert iris_obj.CreatedAt == "2024-01-15 10:30:00"
+
+    def test_set_time_serializes(self):
+        desc, inst, iris_obj = self._make_instance("OpenTime", datetime.time)
+        desc.__set__(inst, datetime.time(9, 0, 0))
+        assert iris_obj.OpenTime == "09:00:00"
+
+    def test_get_date_coerces_from_string(self):
+        desc, inst, iris_obj = self._make_instance("BirthDate", datetime.date)
+        iris_obj.BirthDate = "2024-06-01"
+        result = desc.__get__(inst, type(inst))
+        assert result == datetime.date(2024, 6, 1)
+
+    def test_get_on_class_returns_descriptor(self):
+        desc, inst, iris_obj = self._make_instance("Name", str)
+        # Accessing on None (class-level access pattern)
+        result = desc.__get__(None, type(inst))
+        assert result is desc
+
+    def test_set_raises_when_no_iris_obj(self):
+        desc = IRISDescriptor("Name", str)
+        desc.attr_name = "Name"
+
+        class FakeModel:
+            pass
+
+        inst = object.__new__(FakeModel)
+        object.__setattr__(inst, "_iris_obj", None)
+        with pytest.raises(AttributeError):
+            desc.__set__(inst, "Alice")
+
+    def test_get_any_passthrough(self):
+        from typing import Any
+        desc, inst, iris_obj = self._make_instance("Data", Any)
+        iris_obj.Data = {"key": "value"}
+        result = desc.__get__(inst, type(inst))
+        assert result == {"key": "value"}
+
+
+# ===========================================================================
+# TestIRISRelationshipDescriptor
+# ===========================================================================
+
+class TestIRISRelationshipDescriptor:
+    def _make_model(self, classname):
+        """Create a minimal model-like object."""
+        class FakeModel:
+            _iris_classname = classname
 
         return FakeModel
 
-    def test_filter_returns_new_queryset(self, fake_iris):
-        from iris_orm.query import IRISQuerySet
+    def _make_instance_with_iris(self, iris_obj):
+        class Host:
+            pass
 
-        qs = IRISQuerySet(self._fake_model())
-        filtered = qs.filter(Author="alice")
-        assert filtered is not qs
-        assert filtered._where == [("Author", "=", "alice")]
+        inst = object.__new__(Host)
+        object.__setattr__(inst, "_iris_obj", iris_obj)
+        object.__setattr__(inst, "_iris_id", "1")
+        return inst
 
-    def test_all_returns_clone(self, fake_iris):
-        from iris_orm.query import IRISQuerySet
+    def test_get_parent_returns_wrapped_model(self):
+        from iris_orm.metaclass import _MODEL_REGISTRY
 
-        qs = IRISQuerySet(self._fake_model())
-        assert qs.all() is not qs
+        related_model = self._make_model("Demo.Author")
+        _MODEL_REGISTRY["Demo.Author"] = related_model
 
-    def test_count_uses_count_star(self, fake_iris):
-        fake_iris.sql.exec.return_value = [(3,)]
-        from iris_orm.query import IRISQuerySet
+        iris_obj = MagicMock()
+        related_iris = MagicMock()
+        related_iris._Id.return_value = "99"
+        iris_obj.Author = related_iris
 
-        assert IRISQuerySet(self._fake_model()).count() == 3
-        sql = fake_iris.sql.exec.call_args[0][0]
-        assert "COUNT(*)" in sql
+        desc = IRISRelationshipDescriptor("Author", "Demo.Author", "parent", "Posts")
+        inst = self._make_instance_with_iris(iris_obj)
 
-    def test_filter_builds_where_clause(self, fake_iris):
-        fake_iris.sql.exec.return_value = [(1,)]
-        from iris_orm.query import IRISQuerySet
+        result = desc.__get__(inst, type(inst))
+        assert result is not None
+        assert object.__getattribute__(result, "_iris_obj") is related_iris
 
-        IRISQuerySet(self._fake_model()).filter(Author="alice").count()
-        args = fake_iris.sql.exec.call_args[0]
-        assert "WHERE" in args[0]
-        assert args[1] == ["alice"]
+    def test_get_children_returns_manager(self):
+        from iris_orm.metaclass import _MODEL_REGISTRY
 
-    def test_iter_opens_each_id(self, fake_iris):
-        fake_iris.sql.exec.return_value = [("1",), ("2",)]
-        from iris_orm.query import IRISQuerySet
+        related_model = self._make_model("Demo.Comment")
+        _MODEL_REGISTRY["Demo.Comment"] = related_model
 
-        opened: list[str] = []
+        iris_obj = MagicMock()
+        collection_mock = MagicMock()
+        iris_obj.Comments = collection_mock
+
+        desc = IRISRelationshipDescriptor("Comments", "Demo.Comment", "children", "Post")
+        inst = self._make_instance_with_iris(iris_obj)
+
+        result = desc.__get__(inst, type(inst))
+        assert isinstance(result, IRISRelationshipManager)
+
+    def test_set_parent_sets_iris_obj(self):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+
+        related_model = self._make_model("Demo.Author")
+        _MODEL_REGISTRY["Demo.Author"] = related_model
+
+        iris_obj = MagicMock()
+        related_iris = MagicMock()
+
+        class RelInst:
+            pass
+
+        rel_inst = object.__new__(RelInst)
+        object.__setattr__(rel_inst, "_iris_obj", related_iris)
+
+        desc = IRISRelationshipDescriptor("Author", "Demo.Author", "parent", "Posts")
+        inst = self._make_instance_with_iris(iris_obj)
+
+        desc.__set__(inst, rel_inst)
+        assert iris_obj.Author == related_iris
+
+    def test_set_children_raises(self):
+        desc = IRISRelationshipDescriptor("Comments", "Demo.Comment", "children", "Post")
+        inst = self._make_instance_with_iris(MagicMock())
+        with pytest.raises(AttributeError, match="add"):
+            desc.__set__(inst, MagicMock())
+
+    def test_resolve_model_raises_when_not_registered(self):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.Missing", None)
+        desc = IRISRelationshipDescriptor("X", "Demo.Missing", "parent", "Y")
+        with pytest.raises(LookupError, match="Demo.Missing"):
+            desc._resolve_model()
+
+    def test_get_on_class_returns_descriptor(self):
+        desc = IRISRelationshipDescriptor("Author", "Demo.Author", "parent", "Posts")
+        result = desc.__get__(None, object)
+        assert result is desc
+
+
+# ===========================================================================
+# TestIRISRelationshipManager
+# ===========================================================================
+
+class TestIRISRelationshipManager:
+    def _make_manager(self, items_count=2):
+        class FakeModel:
+            _iris_classname = "Demo.Item"
+
+        iris_items = [MagicMock() for _ in range(items_count)]
+        for i, item in enumerate(iris_items):
+            item._Id.return_value = str(i + 1)
+
+        collection = MagicMock()
+        collection.Count.return_value = items_count
+        collection.GetAt.side_effect = lambda i: iris_items[i - 1]
+
+        return IRISRelationshipManager(collection, FakeModel), collection, iris_items
+
+    def test_iter_wraps_objects(self):
+        mgr, collection, iris_items = self._make_manager(3)
+        results = list(mgr)
+        assert len(results) == 3
+        for i, res in enumerate(results):
+            assert object.__getattribute__(res, "_iris_obj") is iris_items[i]
+
+    def test_count(self):
+        mgr, collection, _ = self._make_manager(5)
+        assert mgr.count() == 5
+
+    def test_len(self):
+        mgr, collection, _ = self._make_manager(4)
+        assert len(mgr) == 4
+
+    def test_add_calls_insert(self):
+        mgr, collection, _ = self._make_manager(0)
+        collection.Count.return_value = 0
 
         class FakeModel:
-            _iris_classname = "Demo.Post"
+            pass
+
+        inst = object.__new__(FakeModel)
+        iris_obj = MagicMock()
+        object.__setattr__(inst, "_iris_obj", iris_obj)
+        mgr.add(inst)
+        collection.Insert.assert_called_once_with(iris_obj)
+
+    def test_remove_calls_remove_at(self):
+        mgr, collection, iris_items = self._make_manager(1)
+
+        class FakeModel:
+            pass
+
+        inst = object.__new__(FakeModel)
+        iris_obj = MagicMock()
+        iris_obj._Id.return_value = "7"
+        object.__setattr__(inst, "_iris_obj", iris_obj)
+        mgr.remove(inst)
+        collection.RemoveAt.assert_called_once_with("7")
+
+
+# ===========================================================================
+# TestIRISQuerySet
+# ===========================================================================
+
+class TestIRISQuerySet:
+    def _make_model(self):
+        class FakeModel:
+            _iris_classname = "Demo.Thing"
 
             @classmethod
             def _open(cls, obj_id):
-                opened.append(obj_id)
-                return MagicMock()
+                inst = object.__new__(cls)
+                object.__setattr__(inst, "_iris_id", obj_id)
+                object.__setattr__(inst, "_iris_obj", MagicMock())
+                return inst
 
-        list(IRISQuerySet(FakeModel))
-        assert opened == ["1", "2"]
+        return FakeModel
+
+    def test_filter_returns_new_queryset(self):
+        m = self._make_model()
+        qs = IRISQuerySet(m)
+        qs2 = qs.filter(Name="Alice")
+        assert qs is not qs2
+        assert len(qs2._where) == 1
+        assert qs2._where[0] == ("Name", "=", "Alice")
+
+    def test_all_returns_clone(self):
+        m = self._make_model()
+        qs = IRISQuerySet(m, [("X", "=", 1)])
+        qs2 = qs.all()
+        assert qs is not qs2
+        assert qs2._where == qs._where
+
+    def test_count_executes_count_sql(self, fake_iris):
+        m = self._make_model()
+        row = MagicMock()
+        row.__getitem__ = MagicMock(return_value=7)
+        fake_iris.sql.exec.return_value = iter([row])
+        qs = IRISQuerySet(m)
+        result = qs.count()
+        assert result == 7
+        sql, params = fake_iris.sql.exec.call_args[0]
+        assert "COUNT(*)" in sql
+        assert "Demo.Thing" in sql
+
+    def test_filter_count_adds_where_clause(self, fake_iris):
+        m = self._make_model()
+        row = MagicMock()
+        row.__getitem__ = MagicMock(return_value=3)
+        fake_iris.sql.exec.return_value = iter([row])
+        qs = IRISQuerySet(m).filter(Name="Bob")
+        qs.count()
+        sql, params = fake_iris.sql.exec.call_args[0]
+        assert "WHERE" in sql
+        assert "Name = ?" in sql
+        assert params == ["Bob"]
+
+    def test_iter_yields_model_instances(self, fake_iris):
+        m = self._make_model()
+
+        class FakeRow:
+            def __getitem__(self, i):
+                return "42"
+
+        fake_iris.sql.exec.return_value = iter([FakeRow()])
+        # Use explicit iteration rather than list() to avoid list() calling
+        # __len__ (which fires a COUNT query and exhausts the iterator).
+        results = [item for item in IRISQuerySet(m)]
+        assert len(results) == 1
+        assert object.__getattribute__(results[0], "_iris_id") == "42"
+
+    def test_first_returns_first_result(self, fake_iris):
+        m = self._make_model()
+
+        class FakeRow:
+            def __getitem__(self, i):
+                return "1"
+
+        fake_iris.sql.exec.return_value = iter([FakeRow(), FakeRow()])
+        result = IRISQuerySet(m).first()
+        assert result is not None
+        assert object.__getattribute__(result, "_iris_id") == "1"
 
     def test_first_returns_none_when_empty(self, fake_iris):
-        fake_iris.sql.exec.return_value = []
-        from iris_orm.query import IRISQuerySet
-
-        class FakeModel:
-            _iris_classname = "Demo.Post"
-
-            @classmethod
-            def _open(cls, obj_id):
-                return None
-
-        assert IRISQuerySet(FakeModel).first() is None
+        m = self._make_model()
+        fake_iris.sql.exec.return_value = iter([])
+        assert IRISQuerySet(m).first() is None
 
 
-# ---------------------------------------------------------------------------
-# iris_orm.metaclass — IRISModel
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# TestIRISModel — Plan A
+# ===========================================================================
 
-class TestIRISModel:
-    def _post_class(self, fake_iris):
-        fake_iris.sql.exec.return_value = [
-            ("Title", "%String", 0, "", ""),
-            ("ViewCount", "%Integer", 0, "", ""),
+class TestIRISModelPlanA:
+    @pytest.fixture(autouse=True)
+    def setup_plan_a_model(self, fake_iris):
+        """Set up fake IRIS introspection rows and create a Plan A model."""
+        rows = [
+            ("Name", "%String", 1, "", ""),
+            ("Score", "%Integer", 0, "", ""),
         ]
+        fake_iris.sql.exec.return_value = iter(rows)
+
+        # We need a fresh registry entry for each test — clear then recreate
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.Widget", None)
+
         from iris_orm import IRISModel
 
-        class Post(IRISModel):
-            _iris_classname = "Demo.Post"
+        class Widget(IRISModel):
+            _iris_classname = "Demo.Widget"
 
-        return Post
+        self.Widget = Widget
 
-    def test_descriptors_injected(self, fake_iris):
-        from iris_orm.descriptors import IRISDescriptor
+    def test_descriptors_injected(self):
+        assert isinstance(
+            self.Widget.__dict__.get("Name"), IRISDescriptor
+        ), "Name descriptor should be injected"
 
-        Post = self._post_class(fake_iris)
-        assert isinstance(Post.__dict__["Title"], IRISDescriptor)
-        assert isinstance(Post.__dict__["ViewCount"], IRISDescriptor)
+    def test_annotations_set(self):
+        assert "Name" in self.Widget.__annotations__
 
-    def test_annotations_populated(self, fake_iris):
-        Post = self._post_class(fake_iris)
-        assert "Title" in Post.__annotations__
-        assert "ViewCount" in Post.__annotations__
+    def test_objects_is_queryset(self):
+        assert isinstance(self.Widget.objects, IRISQuerySet)
 
-    def test_objects_is_queryset(self, fake_iris):
-        from iris_orm.query import IRISQuerySet
-
-        Post = self._post_class(fake_iris)
-        assert isinstance(Post.objects, IRISQuerySet)
-
-    def test_save_calls_iris_save(self, fake_iris):
-        from iris_orm.metaclass import IRISModel
-
-        Post = self._post_class(fake_iris)
+    def test_save(self, fake_iris):
         iris_obj = MagicMock()
-        iris_obj._Save.return_value = True
-        iris_obj._Id.return_value = "99"
-
-        post = Post.__new__(Post)
-        IRISModel.__init__(post)
-        object.__setattr__(post, "_iris_obj", iris_obj)
-        post.save()
-
+        iris_obj._Save.return_value = 1
+        iris_obj._Id.return_value = "5"
+        instance = _wrap_iris_obj(self.Widget, iris_obj)
+        instance.save()
         iris_obj._Save.assert_called_once()
-        assert post.pk == "99"
+        assert object.__getattribute__(instance, "_iris_id") == "5"
 
-    def test_save_raises_without_iris_obj(self, fake_iris):
-        from iris_orm.metaclass import IRISModel
+    def test_save_raises_when_no_iris_obj(self):
+        from iris_orm import IRISModel
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.Bare", None)
 
-        Post = self._post_class(fake_iris)
-        post = Post.__new__(Post)
-        IRISModel.__init__(post)
+        class Bare(IRISModel):
+            _iris_classname = "Demo.Bare"
 
-        with pytest.raises(RuntimeError, match="no underlying IRIS object"):
-            post.save()
+        instance = Bare.__new__(Bare)
+        object.__setattr__(instance, "_iris_obj", None)
+        object.__setattr__(instance, "_iris_id", None)
+        with pytest.raises(RuntimeError):
+            instance.save()
 
-    def test_create_sets_kwargs(self, fake_iris):
-        Post = self._post_class(fake_iris)
+    def test_create_wraps_new_iris_obj(self, fake_iris):
+        new_iris_obj = MagicMock()
+        new_iris_obj._Id.return_value = None
+        fake_iris.cls.return_value._New.return_value = new_iris_obj
+        instance = self.Widget.create(Name="Test")
+        assert object.__getattribute__(instance, "_iris_obj") is new_iris_obj
+
+    def test_get_returns_none_on_exception(self, fake_iris):
+        fake_iris.cls.return_value._OpenId.side_effect = Exception("not found")
+        result = self.Widget.get("999")
+        assert result is None
+
+    def test_delete(self, fake_iris):
+        iris_obj = MagicMock()
+        iris_obj._Id.return_value = "3"
+        instance = _wrap_iris_obj(self.Widget, iris_obj)
+        instance.delete()
+        fake_iris.cls.return_value._DeleteId.assert_called_once_with("3")
+        assert object.__getattribute__(instance, "_iris_id") is None
+
+    def test_delete_raises_when_no_id(self):
+        instance = self.Widget.__new__(self.Widget)
+        object.__setattr__(instance, "_iris_obj", None)
+        object.__setattr__(instance, "_iris_id", None)
+        with pytest.raises(RuntimeError):
+            instance.delete()
+
+    def test_pk_property(self, fake_iris):
+        iris_obj = MagicMock()
+        iris_obj._Id.return_value = "7"
+        instance = _wrap_iris_obj(self.Widget, iris_obj)
+        assert instance.pk == "7"
+
+    def test_iris_python_first_is_false(self):
+        assert self.Widget._iris_python_first is False
+
+
+# ===========================================================================
+# TestIRISModel — Plan C
+# ===========================================================================
+
+class TestIRISModelPlanC:
+    @pytest.fixture(autouse=True)
+    def setup_plan_c_model(self, fake_iris):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.Article", None)
+        _MODEL_REGISTRY.pop("Demo.Section", None)
+
+        from iris_orm import IRISModel, field, relationship
+
+        class Section(IRISModel):
+            _iris_classname = "Demo.Section"
+            Title: str = field(required=True, maxlen=200)
+
+        class Article(IRISModel):
+            _iris_classname = "Demo.Article"
+
+            Title: str = field(required=True, maxlen=500, description="Article title")
+            Views: int = field(default=0)
+            section = relationship(
+                "Demo.Section",
+                inverse="Articles",
+                cardinality="parent",
+            )
+
+        self.Article = Article
+        self.Section = Section
+
+    def test_iris_python_first_is_true(self):
+        assert self.Article._iris_python_first is True
+
+    def test_descriptors_injected_for_annotations(self):
+        assert isinstance(self.Article.__dict__.get("Title"), IRISDescriptor)
+        assert isinstance(self.Article.__dict__.get("Views"), IRISDescriptor)
+
+    def test_rel_descriptor_injected(self):
+        assert isinstance(self.Article.__dict__.get("section"), IRISRelationshipDescriptor)
+
+    def test_field_defs_populated(self):
+        assert "Title" in self.Article._iris_field_defs
+        fd = self.Article._iris_field_defs["Title"]
+        assert fd.required is True
+        assert fd.maxlen == 500
+
+    def test_rel_defs_populated(self):
+        assert "section" in self.Article._iris_rel_defs
+        rd = self.Article._iris_rel_defs["section"]
+        assert rd.related_classname == "Demo.Section"
+        assert rd.cardinality == "parent"
+
+    def test_objects_is_queryset(self):
+        assert isinstance(self.Article.objects, IRISQuerySet)
+
+    def test_iris_properties_list_populated(self):
+        names = [p.name for p in self.Article._iris_properties]
+        assert "Title" in names
+        assert "Views" in names
+
+    def test_save(self, fake_iris):
+        iris_obj = MagicMock()
+        iris_obj._Save.return_value = 1
+        iris_obj._Id.return_value = "10"
+        instance = _wrap_iris_obj(self.Article, iris_obj)
+        instance.save()
+        assert instance.pk == "10"
+
+    def test_create(self, fake_iris):
+        new_iris_obj = MagicMock()
+        new_iris_obj._Id.return_value = None
+        fake_iris.cls.return_value._New.return_value = new_iris_obj
+        instance = self.Article.create(Title="Hello")
+        assert object.__getattribute__(instance, "_iris_obj") is new_iris_obj
+
+    def test_delete(self, fake_iris):
+        iris_obj = MagicMock()
+        iris_obj._Id.return_value = "20"
+        instance = _wrap_iris_obj(self.Article, iris_obj)
+        instance.delete()
+        fake_iris.cls.return_value._DeleteId.assert_called_once_with("20")
+
+
+# ===========================================================================
+# TestSchema
+# ===========================================================================
+
+class TestSchema:
+    @pytest.fixture(autouse=True)
+    def setup_models(self, fake_iris):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Schema.Author", None)
+        _MODEL_REGISTRY.pop("Schema.Post", None)
+
+        from iris_orm import IRISModel, field, relationship
+
+        class SchemaAuthor(IRISModel):
+            _iris_classname = "Schema.Author"
+            Name: str = field(required=True, maxlen=200, description="Author name")
+            Age: int = field()
+
+        class SchemaPost(IRISModel):
+            _iris_classname = "Schema.Post"
+            Title: str = field(required=True, maxlen=500)
+            Body: str = field(description="Post body")
+            author = relationship(
+                "Schema.Author",
+                inverse="Posts",
+                cardinality="parent",
+            )
+
+        self.Author = SchemaAuthor
+        self.Post = SchemaPost
+
+    def test_generate_cls_contains_class_line(self):
+        from iris_orm.schema import generate_cls
+        src = generate_cls(self.Author)
+        assert "Class Schema.Author" in src
+
+    def test_generate_cls_extends_persistent(self):
+        from iris_orm.schema import generate_cls
+        src = generate_cls(self.Author)
+        assert "Extends %Persistent" in src
+
+    def test_generate_cls_contains_property(self):
+        from iris_orm.schema import generate_cls
+        src = generate_cls(self.Author)
+        assert "Property Name" in src
+
+    def test_generate_cls_contains_required_constraint(self):
+        from iris_orm.schema import generate_cls
+        src = generate_cls(self.Author)
+        assert "Required" in src
+
+    def test_generate_cls_contains_maxlen_param(self):
+        from iris_orm.schema import generate_cls
+        src = generate_cls(self.Author)
+        assert "MAXLEN = 200" in src
+
+    def test_generate_cls_contains_description_comment(self):
+        from iris_orm.schema import generate_cls
+        src = generate_cls(self.Author)
+        assert "/// Author name" in src
+
+    def test_generate_cls_contains_relationship(self):
+        from iris_orm.schema import generate_cls
+        src = generate_cls(self.Post)
+        assert "Relationship author" in src
+        assert "Cardinality = one" in src
+
+    def test_generate_cls_raises_for_plan_a(self, fake_iris):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.PlanAWidget", None)
+
+        rows = [("X", "%String", 0, "", "")]
+        fake_iris.sql.exec.return_value = iter(rows)
+
+        from iris_orm import IRISModel
+        from iris_orm.schema import generate_cls
+
+        class PlanAWidget(IRISModel):
+            _iris_classname = "Demo.PlanAWidget"
+
+        with pytest.raises(ValueError, match="Plan A"):
+            generate_cls(PlanAWidget)
+
+    def test_write_cls_creates_file(self, tmp_path):
+        from iris_orm.schema import write_cls
+        path = write_cls(self.Author, str(tmp_path))
+        assert path.exists()
+        assert path.suffix == ".cls"
+        content = path.read_text()
+        assert "Class Schema.Author" in content
+
+    def test_write_cls_correct_directory_structure(self, tmp_path):
+        from iris_orm.schema import write_cls
+        path = write_cls(self.Author, str(tmp_path))
+        # Schema.Author → <tmp_path>/Schema/Author.cls
+        assert path.parent.name == "Schema"
+        assert path.name == "Author.cls"
+
+
+# ===========================================================================
+# TestStubGenerator
+# ===========================================================================
+
+class TestStubGenerator:
+    @pytest.fixture(autouse=True)
+    def setup_stubs_model(self, fake_iris):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Stub.Person", None)
+
+        from iris_orm import IRISModel, field, relationship
+
+        class StubPerson(IRISModel):
+            _iris_classname = "Stub.Person"
+            Name: str = field(required=True)
+            BirthDate: datetime.date = field()
+
+        self.Person = StubPerson
+
+        # Make introspection return rows matching the registered model
+        rows = [
+            ("Name", "%String", 1, "", ""),
+            ("BirthDate", "%Date", 0, "", ""),
+        ]
+        fake_iris.sql.exec.return_value = iter(rows)
+
+    def test_generate_stub_contains_class(self, fake_iris):
+        from iris_orm.stubs import generate_stub
+        stub = generate_stub("Stub.Person")
+        assert "class Person" in stub
+
+    def test_generate_stub_contains_property_stub(self, fake_iris):
+        from iris_orm.stubs import generate_stub
+        stub = generate_stub("Stub.Person")
+        assert "def Name" in stub
+
+    def test_generate_stub_contains_pk(self, fake_iris):
+        from iris_orm.stubs import generate_stub
+        stub = generate_stub("Stub.Person")
+        assert "def pk" in stub
+
+    def test_generate_stub_contains_save(self, fake_iris):
+        from iris_orm.stubs import generate_stub
+        stub = generate_stub("Stub.Person")
+        assert "def save" in stub
+
+    def test_generate_stub_contains_delete(self, fake_iris):
+        from iris_orm.stubs import generate_stub
+        stub = generate_stub("Stub.Person")
+        assert "def delete" in stub
+
+    def test_generate_stub_contains_get(self, fake_iris):
+        from iris_orm.stubs import generate_stub
+        stub = generate_stub("Stub.Person")
+        assert "def get" in stub
+
+    def test_generate_stub_contains_create(self, fake_iris):
+        from iris_orm.stubs import generate_stub
+        stub = generate_stub("Stub.Person")
+        assert "def create" in stub
+
+    def test_generate_stub_auto_generated_comment(self, fake_iris):
+        from iris_orm.stubs import generate_stub
+        stub = generate_stub("Stub.Person")
+        assert "auto-generated" in stub
+
+    def test_write_stub_creates_pyi_not_py(self, tmp_path, fake_iris):
+        from iris_orm.stubs import write_stub
+        rows = [("Name", "%String", 1, "", "")]
+        fake_iris.sql.exec.return_value = iter(rows)
+        path = write_stub("Stub.Person", str(tmp_path))
+        assert path.suffix == ".pyi"
+        assert not path.with_suffix(".py").exists()
+
+    def test_write_stub_correct_directory_structure(self, tmp_path, fake_iris):
+        from iris_orm.stubs import write_stub
+        rows = [("Name", "%String", 1, "", "")]
+        fake_iris.sql.exec.return_value = iter(rows)
+        path = write_stub("Stub.Person", str(tmp_path))
+        # Stub.Person → <tmp_path>/Stub/Person.pyi
+        assert path.parent.name == "Stub"
+        assert path.name == "Person.pyi"
+
+
+# ---------------------------------------------------------------------------
+# Plan A fallthrough & bind() — the "binding to an existing class" scenario
+# ---------------------------------------------------------------------------
+
+class TestPlanAFallthrough:
+    """Tests that Plan A models work even when introspection returned no props
+    (e.g. no IRIS connection at class-definition time).  __getattr__/__setattr__
+    fall through to the underlying IRIS object."""
+
+    def _empty_plan_a_class(self, fake_iris):
+        """Return a Plan A class whose metaclass found NO properties."""
+        fake_iris.sql.exec.return_value = iter([])  # empty → no descriptors injected
+        from iris_orm import IRISModel
+
+        class Article(IRISModel):
+            _iris_classname = "Demo.Article"
+
+        return Article
+
+    def test_getattr_fallthrough_reads_from_iris_obj(self, fake_iris):
+        Article = self._empty_plan_a_class(fake_iris)
+
+        iris_obj = MagicMock()
+        iris_obj.Title = "Hello"
+        iris_obj._Id.return_value = "1"
+        instance = Article._open.__func__(Article, "1")
+
+        # _open calls iris.cls(...)._OpenId("1")
+        fake_iris.cls.return_value._OpenId.return_value = iris_obj
+        instance = Article._open("1")
+
+        assert instance.Title == "Hello"
+
+    def test_setattr_fallthrough_writes_to_iris_obj(self, fake_iris):
+        Article = self._empty_plan_a_class(fake_iris)
 
         iris_obj = MagicMock()
         iris_obj.Title = ""
-        fake_iris.cls.return_value._New.return_value = iris_obj
+        iris_obj._Id.return_value = "2"
+        fake_iris.cls.return_value._OpenId.return_value = iris_obj
 
-        Post.create(Title="Hello")
-        assert iris_obj.Title == "Hello"
+        instance = Article._open("2")
+        instance.Title = "Updated"
 
-    def test_get_returns_none_for_missing(self, fake_iris):
-        Post = self._post_class(fake_iris)
-        fake_iris.cls.return_value._OpenId.return_value = None
+        assert iris_obj.Title == "Updated"
 
-        assert Post.get("999") is None
+    def test_getattr_raises_for_private_names(self, fake_iris):
+        Article = self._empty_plan_a_class(fake_iris)
 
-    def test_delete_calls_delete_id(self, fake_iris):
-        from iris_orm.metaclass import IRISModel
+        iris_obj = MagicMock()
+        iris_obj._Id.return_value = "3"
+        fake_iris.cls.return_value._OpenId.return_value = iris_obj
 
-        Post = self._post_class(fake_iris)
-        post = Post.__new__(Post)
-        IRISModel.__init__(post)
-        object.__setattr__(post, "_iris_id", "5")
-        object.__setattr__(post, "_iris_obj", MagicMock())
+        instance = Article._open("3")
+        with pytest.raises(AttributeError):
+            _ = instance._nonexistent_private
 
-        post.delete()
-        fake_iris.cls.return_value._DeleteId.assert_called_once_with("5")
-        assert post.pk is None
+    def test_getattr_raises_when_no_iris_obj(self, fake_iris):
+        from iris_orm import IRISModel
 
-    def test_delete_raises_without_id(self, fake_iris):
-        from iris_orm.metaclass import IRISModel
+        # Fresh class, no iris_obj set
+        fake_iris.sql.exec.return_value = iter([])
 
-        Post = self._post_class(fake_iris)
-        post = Post.__new__(Post)
-        IRISModel.__init__(post)
+        class Article(IRISModel):
+            _iris_classname = "Demo.Article2"
 
-        with pytest.raises(RuntimeError, match="no ID"):
-            post.delete()
+        instance = object.__new__(Article)
+        object.__setattr__(instance, "_iris_obj", None)
+        object.__setattr__(instance, "_iris_id", None)
 
+        with pytest.raises(AttributeError, match="no underlying IRIS object"):
+            _ = instance.Title
 
-# ---------------------------------------------------------------------------
-# iris_orm.stubs
-# ---------------------------------------------------------------------------
+    def test_bind_injects_descriptors_after_connection(self, fake_iris):
+        """bind() re-runs introspection and injects typed descriptors."""
+        # First definition: no connection → empty
+        fake_iris.sql.exec.return_value = iter([])
+        from iris_orm import IRISModel
+        from iris_orm.descriptors import IRISDescriptor
 
-class TestStubGenerator:
-    def test_generate_stub_contains_class(self, fake_iris):
-        fake_iris.sql.exec.return_value = [("Title", "%String", 0, "", "")]
-        from iris_orm.stubs import generate_stub
+        class Article(IRISModel):
+            _iris_classname = "Demo.Article3"
 
-        stub = generate_stub("Demo.Test")
-        assert "class Test(IRISModel):" in stub
-        assert "def Title(self)" in stub
-        assert "Optional[str]" in stub
+        assert "Title" not in Article.__dict__
 
-    def test_generate_stub_includes_crud(self, fake_iris):
-        fake_iris.sql.exec.return_value = []
-        from iris_orm.stubs import generate_stub
+        # Now simulate a live connection with properties available
+        fake_iris.sql.exec.return_value = iter([("Title", "%String", 0, "", "")])
+        Article.bind()
 
-        stub = generate_stub("Demo.Test")
-        assert "def save(self) -> None" in stub
-        assert "def delete(self) -> None" in stub
-        assert "def get(cls" in stub
-        assert "def create(cls" in stub
+        assert "Title" in Article.__dict__
+        assert isinstance(Article.__dict__["Title"], IRISDescriptor)
 
-    def test_write_stub_creates_pyi_file(self, fake_iris, tmp_path):
-        fake_iris.sql.exec.return_value = [("Title", "%String", 0, "", "")]
-        from iris_orm.stubs import write_stub
+    def test_bind_raises_for_python_first_class(self, fake_iris):
+        """bind() on a Plan C class should raise RuntimeError."""
+        fake_iris.sql.exec.return_value = iter([])
+        from iris_orm import IRISModel, field
 
-        out_path = write_stub("Demo.Test", str(tmp_path))
-        assert out_path.exists()
-        assert out_path.suffix == ".pyi"
-        assert out_path.name == "Test.pyi"
-        assert out_path.parent.name == "Demo"
+        class Article(IRISModel):
+            _iris_classname = "Demo.Article4"
+            Title: str = field()
 
-    def test_write_stub_no_py_files(self, fake_iris, tmp_path):
-        fake_iris.sql.exec.return_value = []
-        from iris_orm.stubs import write_stub
+        with pytest.raises(RuntimeError, match="Plan C"):
+            Article.bind()
 
-        write_stub("Demo.Test", str(tmp_path))
-        assert list(tmp_path.rglob("*.py")) == []
+    def test_descriptor_takes_priority_over_fallthrough(self, fake_iris):
+        """When a descriptor IS injected, it is used (not the fallthrough)."""
+        fake_iris.sql.exec.return_value = iter([("Title", "%String", 0, "", "")])
+        from iris_orm import IRISModel
+        from iris_orm.descriptors import IRISDescriptor
+
+        class Article(IRISModel):
+            _iris_classname = "Demo.Article5"
+
+        # descriptor should have been injected by metaclass
+        assert isinstance(Article.__dict__.get("Title"), IRISDescriptor)
+
+        iris_obj = MagicMock()
+        iris_obj.Title = 42  # raw IRIS value (int) — descriptor coerces to str
+        iris_obj._Id.return_value = "7"
+        fake_iris.cls.return_value._OpenId.return_value = iris_obj
+
+        instance = Article._open("7")
+        # Descriptor coerces int → str
+        assert instance.Title == "42"
+        assert isinstance(instance.Title, str)

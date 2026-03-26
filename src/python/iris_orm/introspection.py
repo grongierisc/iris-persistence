@@ -4,8 +4,12 @@ IRIS class introspection via %Dictionary.PropertyDefinition.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from .types import iris_type_to_python
+
+if TYPE_CHECKING:
+    from .connection import IRISConnection
 
 
 @dataclass(frozen=True)
@@ -18,12 +22,19 @@ class PropertyInfo:
     default: str      # raw IRIS default expression
 
 
-def get_class_properties(classname: str) -> list[PropertyInfo]:
+def get_class_properties(
+    classname: str,
+    connection: IRISConnection = None,  # type: ignore[assignment]
+) -> list[PropertyInfo]:
     """
-    Query %Dictionary.PropertyDefinition via iris.sql to retrieve the public,
+    Query %Dictionary.PropertyDefinition to retrieve the public,
     non-relationship properties of an IRIS class.
+
+    If *connection* is None an embedded :class:`IRISConnection` is used.
     """
-    import iris  # noqa: PLC0415 — imported lazily so package works without IRIS
+    if connection is None:
+        from .connection import IRISConnection as _Conn  # noqa: PLC0415
+        connection = _Conn()
 
     sql = (
         "SELECT Name, Type, Required, Collection, InitialExpression "
@@ -33,7 +44,7 @@ def get_class_properties(classname: str) -> list[PropertyInfo]:
         "AND Private = 0 "
         "AND Internal = 0"
     )
-    rs = iris.sql.exec(sql, [classname])
+    rs = connection.sql_exec(sql, [classname])
     props: list[PropertyInfo] = []
     for row in rs:
         name: str = row[0]

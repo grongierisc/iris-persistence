@@ -10,6 +10,7 @@ from __future__ import annotations
 import typing
 from typing import Any, ClassVar, Optional, get_type_hints
 
+from .connection import IRISConnection
 from .descriptors import IRISDescriptor, IRISRelationshipDescriptor, _wrap_iris_obj
 from .fields import FieldDefinition, RelationshipDefinition
 from .introspection import PropertyInfo, get_class_properties
@@ -18,6 +19,20 @@ from .types import python_type_to_iris, unwrap_optional
 
 # Global registry: IRIS classname → Python model class
 _MODEL_REGISTRY: dict[str, type] = {}
+
+
+# ---------------------------------------------------------------------------
+# Schema property descriptor (class-level access via Post.schema)
+# ---------------------------------------------------------------------------
+
+class _SchemaProperty:
+    """Class-level descriptor that returns a :class:`SchemaManager` for the owning class."""
+
+    def __get__(self, obj: Any, objtype: type | None = None) -> Any:
+        if objtype is None:
+            objtype = type(obj)
+        from .schema import SchemaManager  # noqa: PLC0415
+        return SchemaManager(objtype)
 
 
 def _is_classvar(annotation: Any) -> bool:
@@ -68,6 +83,10 @@ class IRISMeta(type):
             mcs._setup_python_first(cls, iris_classname, namespace, user_annotations)
         else:
             mcs._setup_plan_a(cls, iris_classname, namespace)
+
+        # Ensure every concrete model class has its own snapshot dict.
+        if "_iris_schema_snapshot" not in namespace:
+            cls._iris_schema_snapshot = {}  # type: ignore[attr-defined]
 
         _MODEL_REGISTRY[iris_classname] = cls
         cls.objects = IRISQuerySet(cls)  # type: ignore[attr-defined]
@@ -166,7 +185,8 @@ class IRISMeta(type):
         namespace: dict[str, Any],
     ) -> None:
         try:
-            props = get_class_properties(iris_classname)
+            conn = IRISConnection(getattr(cls, "_iris_engine", None))
+            props = get_class_properties(iris_classname, conn)
         except Exception:
             props = []
 
@@ -197,6 +217,9 @@ class IRISModel(metaclass=IRISMeta):
     """Base class for all IRIS ORM models."""
 
     _iris_classname: ClassVar[str] = ""
+    _iris_engine: ClassVar[Any] = None          # SQLAlchemy engine or None for embedded
+    _iris_schema_snapshot: ClassVar[dict[str, str]] = {}  # {prop_name: iris_type} at last sync
+    _iris_storage: ClassVar[str] = ""           # preserved Storage block text
 
     # Set by metaclass:
     _iris_properties: ClassVar[list[PropertyInfo]]
@@ -205,13 +228,15 @@ class IRISModel(metaclass=IRISMeta):
     _iris_python_first: ClassVar[bool]
     objects: ClassVar[IRISQuerySet]
 
+    # Git-style schema manager — accessed as Post.schema
+    schema: ClassVar[Any] = _SchemaProperty()
+
     def __init__(self, **kwargs: Any) -> None:
         object.__setattr__(self, "_iris_id", None)
         classname = type(self)._iris_classname
         iris_obj = None
         if classname:
-            import iris  # noqa: PLC0415
-            iris_obj = iris.cls(classname)._New()
+            iris_obj = IRISConnection(type(self)._iris_engine).iris_cls(classname)._New()
         object.__setattr__(self, "_iris_obj", iris_obj)
         for key, value in kwargs.items():
             setattr(self, key, value)
@@ -290,8 +315,7 @@ class IRISModel(metaclass=IRISMeta):
         obj_id = object.__getattribute__(self, "_iris_id")
         if not obj_id:
             raise RuntimeError("Cannot delete: object has no ID (not yet saved).")
-        import iris  # noqa: PLC0415
-        iris.cls(self._iris_classname)._DeleteId(obj_id)
+        IRISConnection(type(self)._iris_engine).iris_cls(self._iris_classname)._DeleteId(obj_id)
         object.__setattr__(self, "_iris_obj", None)
         object.__setattr__(self, "_iris_id", None)
 
@@ -318,8 +342,7 @@ class IRISModel(metaclass=IRISMeta):
         Create a new (unsaved) instance backed by a fresh IRIS object.
         Call .save() to persist.
         """
-        import iris  # noqa: PLC0415
-        iris_obj = iris.cls(cls._iris_classname)._New()
+        iris_obj = IRISConnection(cls._iris_engine).iris_cls(cls._iris_classname)._New()
         instance = _wrap_iris_obj(cls, iris_obj)
         for key, value in kwargs.items():
             setattr(instance, key, value)
@@ -329,8 +352,7 @@ class IRISModel(metaclass=IRISMeta):
     def _open(cls, obj_id: str) -> Optional["IRISModel"]:
         """Open an existing IRIS object by ID. Returns None if not found."""
         try:
-            import iris  # noqa: PLC0415
-            iris_obj = iris.cls(cls._iris_classname)._OpenId(obj_id)
+            iris_obj = IRISConnection(cls._iris_engine).iris_cls(cls._iris_classname)._OpenId(obj_id)
             if iris_obj is None:
                 return None
             return _wrap_iris_obj(cls, iris_obj)

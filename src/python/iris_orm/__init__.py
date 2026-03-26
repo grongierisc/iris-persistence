@@ -7,6 +7,7 @@ Supports two modes:
 """
 from __future__ import annotations
 
+from .connection import IRISConnection
 from .metaclass import IRISModel, IRISMeta, _MODEL_REGISTRY
 from .query import IRISQuerySet
 from .fields import field, relationship, FieldDefinition, RelationshipDefinition
@@ -20,6 +21,7 @@ from .types import (
 from . import schema
 
 __all__ = [
+    "IRISConnection",
     "IRISModel",
     "IRISMeta",
     "_MODEL_REGISTRY",
@@ -36,4 +38,4 @@ __all__ = [
     "schema",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

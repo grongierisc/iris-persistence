@@ -551,9 +551,10 @@ class TestIRISQuerySet:
         qs = IRISQuerySet(m)
         result = qs.count()
         assert result == 7
-        sql, params = fake_iris.sql.exec.call_args[0]
-        assert "COUNT(*)" in sql
-        assert "Demo.Thing" in sql
+        # No WHERE → called with sql only (no params arg)
+        call_args = fake_iris.sql.exec.call_args[0]
+        assert "COUNT(*)" in call_args[0]
+        assert "Demo.Thing" in call_args[0]
 
     def test_filter_count_adds_where_clause(self, fake_iris):
         m = self._make_model()
@@ -1087,3 +1088,441 @@ class TestPlanAFallthrough:
         # Descriptor coerces int → str
         assert instance.Title == "42"
         assert isinstance(instance.Title, str)
+
+
+# ===========================================================================
+# TestIRISConnection
+# ===========================================================================
+
+class TestIRISConnection:
+    def test_embedded_sql_exec_calls_iris_sql_exec(self, fake_iris):
+        from iris_orm.connection import IRISConnection
+        fake_iris.sql.exec.return_value = iter([])
+        conn = IRISConnection()
+        conn.sql_exec("SELECT 1", [])
+        fake_iris.sql.exec.assert_called_once()
+
+    def test_embedded_sql_exec_passes_params(self, fake_iris):
+        from iris_orm.connection import IRISConnection
+        fake_iris.sql.exec.return_value = iter([])
+        conn = IRISConnection()
+        conn.sql_exec("SELECT ?", ["hello"])
+        call_args = fake_iris.sql.exec.call_args
+        assert call_args[0][1] == ["hello"]
+
+    def test_embedded_sql_exec_empty_params(self, fake_iris):
+        from iris_orm.connection import IRISConnection
+        fake_iris.sql.exec.return_value = iter([])
+        conn = IRISConnection()
+        conn.sql_exec("SELECT 1")
+        call_args = fake_iris.sql.exec.call_args[0]
+        # No params → iris.sql.exec called with sql only (no second arg)
+        assert call_args[0] == "SELECT 1"
+        assert len(call_args) == 1
+
+    def test_embedded_iris_cls_returns_iris_cls(self, fake_iris):
+        from iris_orm.connection import IRISConnection
+        conn = IRISConnection()
+        result = conn.iris_cls("Demo.Foo")
+        fake_iris.cls.assert_called_with("Demo.Foo")
+        assert result is fake_iris.cls.return_value
+
+    def test_remote_sql_exec_calls_engine_connect(self, fake_iris):
+        from iris_orm.connection import IRISConnection
+        mock_engine = MagicMock()
+        mock_conn = MagicMock()
+        mock_engine.connect.return_value = mock_conn
+        mock_sa = MagicMock()
+        mock_sa.text.return_value = "mock_text_clause"
+        with patch.dict(sys.modules, {"sqlalchemy": mock_sa}):
+            conn = IRISConnection(mock_engine)
+            conn.sql_exec("SELECT ?", ["val"])
+        mock_engine.connect.assert_called_once()
+        mock_conn.execute.assert_called_once()
+
+    def test_remote_iris_cls_raises_not_implemented(self, fake_iris):
+        from iris_orm.connection import IRISConnection
+        mock_engine = MagicMock()
+        conn = IRISConnection(mock_engine)
+        with pytest.raises(NotImplementedError, match="remote connection"):
+            conn.iris_cls("Demo.Foo")
+
+    def test_context_manager_embedded(self, fake_iris):
+        from iris_orm.connection import IRISConnection
+        fake_iris.sql.exec.return_value = iter([])
+        with IRISConnection() as conn:
+            conn.sql_exec("SELECT 1")
+        fake_iris.sql.exec.assert_called_once()
+
+    def test_context_manager_remote_opens_and_closes_conn(self, fake_iris):
+        from iris_orm.connection import IRISConnection
+        mock_engine = MagicMock()
+        mock_sa_conn = MagicMock()
+        mock_engine.connect.return_value = mock_sa_conn
+        mock_sa = MagicMock()
+        mock_sa.text.return_value = "mock_text"
+        with patch.dict(sys.modules, {"sqlalchemy": mock_sa}):
+            with IRISConnection(mock_engine) as conn:
+                conn.sql_exec("SELECT 1")
+        mock_engine.connect.assert_called_once()
+        mock_sa_conn.close.assert_called_once()
+
+
+# ===========================================================================
+# TestConflictError
+# ===========================================================================
+
+class TestConflictError:
+    def test_raises_with_correct_message(self):
+        from iris_orm.schema import ConflictError, PropertyConflict
+        conflicts = [
+            PropertyConflict("Title", "%String", "%Integer", "%Float"),
+            PropertyConflict("Body", "%String", "%Boolean", "%TimeStamp"),
+        ]
+        with pytest.raises(ConflictError) as exc_info:
+            raise ConflictError(conflicts)
+        assert "2 conflict(s)" in str(exc_info.value)
+        assert "Title" in str(exc_info.value)
+        assert "Body" in str(exc_info.value)
+
+    def test_stores_conflicts_list(self):
+        from iris_orm.schema import ConflictError, PropertyConflict
+        conflicts = [PropertyConflict("X", "%String", "%Integer", "%Float")]
+        err = ConflictError(conflicts)
+        assert err.conflicts is conflicts
+
+    def test_property_conflict_dataclass(self):
+        from iris_orm.schema import PropertyConflict
+        pc = PropertyConflict("Name", "%String", "%Integer", "%Float")
+        assert pc.name == "Name"
+        assert pc.snapshot_type == "%String"
+        assert pc.python_type == "%Integer"
+        assert pc.iris_type == "%Float"
+
+
+# ===========================================================================
+# TestSchemaDiff
+# ===========================================================================
+
+class TestSchemaDiff:
+    def _make_diff(self, **kwargs):
+        from iris_orm.schema import SchemaDiff
+        defaults = dict(
+            classname="Demo.Post",
+            python_added=[],
+            python_removed=[],
+            python_changed=[],
+            iris_added=[],
+            iris_removed=[],
+            iris_changed=[],
+            conflicts=[],
+        )
+        defaults.update(kwargs)
+        return SchemaDiff(**defaults)
+
+    def test_in_sync_when_empty(self):
+        d = self._make_diff()
+        assert d.in_sync is True
+
+    def test_not_in_sync_with_python_added(self):
+        d = self._make_diff(python_added=["NewProp"])
+        assert d.in_sync is False
+
+    def test_not_in_sync_with_iris_added(self):
+        d = self._make_diff(iris_added=["RemoteProp"])
+        assert d.in_sync is False
+
+    def test_not_in_sync_with_conflicts(self):
+        from iris_orm.schema import PropertyConflict
+        d = self._make_diff(conflicts=[PropertyConflict("X", "%String", "%Integer", "%Float")])
+        assert d.in_sync is False
+
+    def test_str_in_sync(self):
+        d = self._make_diff()
+        s = str(d)
+        assert "up to date" in s
+
+    def test_str_shows_python_added(self):
+        d = self._make_diff(python_added=["Score"])
+        s = str(d)
+        assert "Score" in s
+        assert "Python added" in s
+
+    def test_str_shows_conflicts(self):
+        from iris_orm.schema import PropertyConflict
+        d = self._make_diff(conflicts=[PropertyConflict("Title", "%String", "%Integer", "%Float")])
+        s = str(d)
+        assert "Conflict" in s
+        assert "Title" in s
+
+    def test_str_shows_iris_added(self):
+        d = self._make_diff(iris_added=["RemoteProp"])
+        s = str(d)
+        assert "RemoteProp" in s
+        assert "IRIS added" in s
+
+
+# ===========================================================================
+# TestSchemaManager
+# ===========================================================================
+
+class TestSchemaManager:
+    @pytest.fixture(autouse=True)
+    def setup_model(self, fake_iris):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Mgr.Post", None)
+        from iris_orm import IRISModel, field
+
+        class MgrPost(IRISModel):
+            _iris_classname = "Mgr.Post"
+            Title: str = field(required=True)
+            Body: str = field()
+
+        self.Post = MgrPost
+        # Start with empty snapshot
+        self.Post._iris_schema_snapshot = {}
+
+    def test_fetch_returns_property_map(self, fake_iris):
+        fake_iris.sql.exec.return_value = iter([
+            ("Title", "%String", 1, "", ""),
+            ("Body", "%String", 0, "", ""),
+        ])
+        result = self.Post.schema.fetch()
+        assert result == {"Title": "%String", "Body": "%String"}
+
+    def test_fetch_calls_sql_exec(self, fake_iris):
+        fake_iris.sql.exec.return_value = iter([])
+        self.Post.schema.fetch()
+        fake_iris.sql.exec.assert_called_once()
+        sql_arg = fake_iris.sql.exec.call_args[0][0]
+        assert "%Dictionary.PropertyDefinition" in sql_arg
+
+    def test_status_python_added_when_snapshot_empty(self, fake_iris):
+        fake_iris.sql.exec.return_value = iter([])
+        d = self.Post.schema.status()
+        assert "Title" in d.python_added
+        assert "Body" in d.python_added
+
+    def test_status_iris_added_when_iris_has_extra(self, fake_iris):
+        self.Post._iris_schema_snapshot = {"Title": "%String", "Body": "%String"}
+        fake_iris.sql.exec.return_value = iter([
+            ("Title", "%String", 1, "", ""),
+            ("Body", "%String", 0, "", ""),
+            ("Score", "%Integer", 0, "", ""),
+        ])
+        d = self.Post.schema.status()
+        assert "Score" in d.iris_added
+        assert d.python_added == []
+
+    def test_status_python_removed(self, fake_iris):
+        self.Post._iris_schema_snapshot = {"Title": "%String", "Body": "%String", "OldField": "%String"}
+        fake_iris.sql.exec.return_value = iter([
+            ("Title", "%String", 1, "", ""),
+            ("Body", "%String", 0, "", ""),
+        ])
+        d = self.Post.schema.status()
+        assert "OldField" in d.python_removed
+
+    def test_status_conflict_when_both_changed_differently(self, fake_iris):
+        # snapshot: Title=%Integer, python: Title=%String, iris: Title=%Float → conflict
+        self.Post._iris_schema_snapshot = {"Title": "%Integer", "Body": "%String"}
+        fake_iris.sql.exec.return_value = iter([
+            ("Title", "%Float", 1, "", ""),
+            ("Body", "%String", 0, "", ""),
+        ])
+        d = self.Post.schema.status()
+        assert len(d.conflicts) == 1
+        assert d.conflicts[0].name == "Title"
+        assert d.conflicts[0].snapshot_type == "%Integer"
+        assert d.conflicts[0].python_type == "%String"
+        assert d.conflicts[0].iris_type == "%Float"
+
+    def test_status_in_sync_when_all_match(self, fake_iris):
+        self.Post._iris_schema_snapshot = {"Title": "%String", "Body": "%String"}
+        fake_iris.sql.exec.return_value = iter([
+            ("Title", "%String", 1, "", ""),
+            ("Body", "%String", 0, "", ""),
+        ])
+        d = self.Post.schema.status()
+        assert d.in_sync
+
+    def test_commit_sets_snapshot(self, fake_iris):
+        fake_iris.sql.exec.return_value = iter([])
+        self.Post.schema.commit()
+        assert self.Post._iris_schema_snapshot == {"Title": "%String", "Body": "%String"}
+
+    def test_commit_uses_current_python_props(self, fake_iris):
+        fake_iris.sql.exec.return_value = iter([])
+        self.Post.schema.commit()
+        assert "Title" in self.Post._iris_schema_snapshot
+        assert "Body" in self.Post._iris_schema_snapshot
+
+    def test_push_raises_conflict_error(self, fake_iris):
+        from iris_orm.schema import ConflictError
+        # snapshot: Title=%Integer; python: Title=%String; iris: Title=%Float → conflict
+        self.Post._iris_schema_snapshot = {"Title": "%Integer", "Body": "%String"}
+        fake_iris.sql.exec.return_value = iter([
+            ("Title", "%Float", 1, "", ""),
+            ("Body", "%String", 0, "", ""),
+        ])
+        with pytest.raises(ConflictError):
+            self.Post.schema.push()
+
+    def test_push_creates_property_def_for_new_props(self, fake_iris):
+        # snapshot empty → Title and Body are python_added; IRIS is empty
+        fake_iris.sql.exec.return_value = iter([])
+        self.Post.schema.push()
+        # Should have called iris.cls("%Dictionary.PropertyDefinition")
+        calls = [str(c) for c in fake_iris.cls.call_args_list]
+        assert any("%Dictionary.PropertyDefinition" in c for c in calls)
+
+    def test_push_property_def_save_called(self, fake_iris):
+        fake_iris.sql.exec.return_value = iter([])
+        prop_def_instance = MagicMock()
+        fake_iris.cls.return_value._New.return_value = prop_def_instance
+        self.Post.schema.push()
+        assert prop_def_instance._Save.called
+
+    def test_push_warns_on_python_removed(self, fake_iris):
+        # snapshot has OldField but python doesn't
+        self.Post._iris_schema_snapshot = {"Title": "%String", "Body": "%String", "OldField": "%String"}
+        fake_iris.sql.exec.return_value = iter([
+            ("Title", "%String", 1, "", ""),
+            ("Body", "%String", 0, "", ""),
+        ])
+        with pytest.warns(UserWarning, match="OldField"):
+            self.Post.schema.push()
+
+    def test_pull_raises_conflict_error(self, fake_iris):
+        from iris_orm.schema import ConflictError
+        self.Post._iris_schema_snapshot = {"Title": "%Integer", "Body": "%String"}
+        fake_iris.sql.exec.return_value = iter([
+            ("Title", "%Float", 1, "", ""),
+            ("Body", "%String", 0, "", ""),
+        ])
+        with pytest.raises(ConflictError):
+            self.Post.schema.pull()
+
+    def test_pull_updates_snapshot_with_iris_added(self, fake_iris):
+        self.Post._iris_schema_snapshot = {"Title": "%String", "Body": "%String"}
+        rows = [
+            ("Title", "%String", 1, "", ""),
+            ("Body", "%String", 0, "", ""),
+            ("Score", "%Integer", 0, "", ""),
+        ]
+        fake_iris.sql.exec.side_effect = [iter(rows), iter(rows)]
+        self.Post.schema.pull()
+        assert "Score" in self.Post._iris_schema_snapshot
+
+    def test_pull_injects_descriptor_for_iris_added(self, fake_iris):
+        from iris_orm.descriptors import IRISDescriptor
+        self.Post._iris_schema_snapshot = {"Title": "%String", "Body": "%String"}
+        rows = [
+            ("Title", "%String", 1, "", ""),
+            ("Body", "%String", 0, "", ""),
+            ("Score", "%Integer", 0, "", ""),
+        ]
+        fake_iris.sql.exec.side_effect = [iter(rows), iter(rows)]
+        self.Post.schema.pull()
+        assert isinstance(self.Post.__dict__.get("Score"), IRISDescriptor)
+
+    def test_pull_returns_diff(self, fake_iris):
+        from iris_orm.schema import SchemaDiff
+        self.Post._iris_schema_snapshot = {"Title": "%String", "Body": "%String"}
+        rows = [
+            ("Title", "%String", 1, "", ""),
+            ("Body", "%String", 0, "", ""),
+        ]
+        fake_iris.sql.exec.return_value = iter(rows)
+        result = self.Post.schema.pull()
+        assert isinstance(result, SchemaDiff)
+
+
+# ===========================================================================
+# TestIRISModelEngine
+# ===========================================================================
+
+class TestIRISModelEngine:
+    def test_engine_stored_on_class(self, fake_iris):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Eng.Model", None)
+        from iris_orm import IRISModel, field
+        mock_engine = MagicMock()
+
+        class EngModel(IRISModel):
+            _iris_classname = "Eng.Model"
+            _iris_engine = mock_engine
+            Name: str = field()
+
+        assert EngModel._iris_engine is mock_engine
+
+    def test_create_with_engine_raises_not_implemented(self, fake_iris):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Eng.Model2", None)
+        from iris_orm import IRISModel, field
+        mock_engine = MagicMock()
+
+        class EngModel2(IRISModel):
+            _iris_classname = "Eng.Model2"
+            _iris_engine = mock_engine
+            Name: str = field()
+
+        with pytest.raises(NotImplementedError):
+            EngModel2.create(Name="test")
+
+    def test_delete_with_engine_raises_not_implemented(self, fake_iris):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Eng.Model3", None)
+        from iris_orm import IRISModel, field
+        mock_engine = MagicMock()
+
+        class EngModel3(IRISModel):
+            _iris_classname = "Eng.Model3"
+            _iris_engine = mock_engine
+            Name: str = field()
+
+        # Create an instance with a fake iris_obj and id to trigger delete
+        inst = object.__new__(EngModel3)
+        object.__setattr__(inst, "_iris_obj", MagicMock())
+        object.__setattr__(inst, "_iris_id", "42")
+        with pytest.raises(NotImplementedError):
+            inst.delete()
+
+    def test_schema_property_accessible_on_class(self, fake_iris):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Eng.Model4", None)
+        from iris_orm import IRISModel, field
+        from iris_orm.schema import SchemaManager
+
+        class EngModel4(IRISModel):
+            _iris_classname = "Eng.Model4"
+            Name: str = field()
+
+        mgr = EngModel4.schema
+        assert isinstance(mgr, SchemaManager)
+        assert mgr._cls is EngModel4
+
+    def test_schema_snapshot_is_independent_per_class(self, fake_iris):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Eng.A", None)
+        _MODEL_REGISTRY.pop("Eng.B", None)
+        from iris_orm import IRISModel, field
+
+        class EngA(IRISModel):
+            _iris_classname = "Eng.A"
+            X: str = field()
+
+        class EngB(IRISModel):
+            _iris_classname = "Eng.B"
+            Y: str = field()
+
+        EngA._iris_schema_snapshot = {"X": "%String"}
+        assert EngB._iris_schema_snapshot == {}
+
+    def test_version_updated(self):
+        import iris_orm
+        assert iris_orm.__version__ == "0.3.0"
+
+    def test_iris_connection_exported(self):
+        from iris_orm import IRISConnection
+        assert IRISConnection is not None

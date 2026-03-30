@@ -3,16 +3,15 @@ Git-style schema sync for IRIS ORM (Plan C).
 
 API
 ---
-Post.schema.status()   → 3-way diff (snapshot ↔ Python, snapshot ↔ IRIS)
-Post.schema.fetch()    → read IRIS schema into cache, no changes applied
-Post.schema.pull()     → fetch + apply IRIS additions to Python snapshot; ConflictError on conflicts
-Post.schema.push()     → apply Python additions to IRIS via %Dictionary; ConflictError on conflicts
-Post.schema.commit()   → snapshot current Python definition as new baseline
+Post.schema.status()           → 3-way diff (snapshot ↔ Python, snapshot ↔ IRIS)
+Post.schema.fetch()            → read IRIS schema into cache, no changes applied
+Post.schema.pull()             → fetch + apply IRIS additions to Python snapshot; ConflictError on conflicts
+Post.schema.push()             → apply Python additions/changes to IRIS via %Dictionary; ConflictError on conflicts
+Post.schema.commit()           → snapshot current Python definition as new baseline
+Post.schema.ensure_iris_class() → create or update the IRIS class using %Dictionary (no .cls files)
+Post.schema.delete_property(name) → permanently delete a property from IRIS via %Dictionary
 
-Storage preservation
---------------------
-The Storage block is NEVER modified by any schema operation.
-Priority: _iris_storage class attr > existing .cls file > omit (IRIS auto-generates).
+Schema operations use %Dictionary exclusively — no .cls file generation or compilation is required.
 
 Connection
 ----------
@@ -20,9 +19,7 @@ Uses the model's _iris_engine (None = embedded iris module, or SQLAlchemy engine
 """
 from __future__ import annotations
 
-import os
 import re
-import tempfile
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +34,73 @@ _CARD_MAP: dict[str, str] = {
 }
 
 _STORAGE_RE = re.compile(r"(Storage\s+\w+\s*\{.*?\}\s*\n?)", re.DOTALL)
+
+
+# ---------------------------------------------------------------------------
+# %Dictionary helpers
+# ---------------------------------------------------------------------------
+
+def _class_exists_in_iris(classname: str, conn: Any) -> bool:
+    """Return True if the IRIS class already exists in %Dictionary."""
+    rs = conn.sql_exec(
+        "SELECT Name FROM %Dictionary.ClassDefinition WHERE Name = ?",
+        [classname],
+    )
+    for _ in rs:
+        return True
+    return False
+
+
+def _upsert_property_via_dict(
+    classname: str,
+    prop: Any,
+    field_def: Any | None,
+    conn: Any,
+) -> None:
+    """Create or update a single property in IRIS using %Dictionary.PropertyDefinition."""
+    prop_def_cls = conn.iris_cls("%Dictionary.PropertyDefinition")
+    prop_id = f"{classname}||{prop.name}"
+    try:
+        prop_def = prop_def_cls._OpenId(prop_id)
+    except Exception:
+        prop_def = prop_def_cls._New()
+        prop_def.Name = prop.name
+        prop_def.parent = classname
+
+    prop_def.Type = prop.iris_type or "%String"
+    if field_def is not None:
+        prop_def.Required = int(field_def.required)
+        if field_def.collection:
+            prop_def.Collection = field_def.collection.capitalize()
+        if field_def.description:
+            prop_def.Description = field_def.description
+        if field_def.maxlen is not None:
+            prop_def.Parameters.SetAt(str(field_def.maxlen), "MAXLEN")
+    prop_def._Save()
+
+
+def _upsert_relationship_via_dict(
+    classname: str,
+    rel_name: str,
+    rel_def: Any,
+    conn: Any,
+) -> None:
+    """Create or update a single relationship in IRIS using %Dictionary.RelationshipDefinition."""
+    rel_def_cls = conn.iris_cls("%Dictionary.RelationshipDefinition")
+    rel_id = f"{classname}||{rel_name}"
+    try:
+        rel_iris = rel_def_cls._OpenId(rel_id)
+    except Exception:
+        rel_iris = rel_def_cls._New()
+        rel_iris.Name = rel_name
+        rel_iris.parent = classname
+
+    rel_iris.Type = rel_def.related_classname
+    rel_iris.Cardinality = _CARD_MAP.get(rel_def.cardinality, rel_def.cardinality)
+    rel_iris.Inverse = rel_def.inverse
+    if rel_def.description:
+        rel_iris.Description = rel_def.description
+    rel_iris._Save()
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +281,7 @@ class SchemaManager:
 
     # ------------------------------------------------------------------
     def push(self) -> SchemaDiff:
-        """Apply Python additions to IRIS. Raises ConflictError on conflicts."""
+        """Apply Python additions/changes to IRIS. Raises ConflictError on conflicts."""
         if getattr(self._cls, "_iris_serial", False):
             raise RuntimeError(
                 "Serial classes (%SerialObject) have no independent IRIS identity — "
@@ -227,23 +291,36 @@ class SchemaManager:
         if d.conflicts:
             raise ConflictError(d.conflicts)
 
-        if d.python_added:
+        if d.python_added or d.python_changed:
             from .connection import IRISConnection  # noqa: PLC0415
 
             engine = getattr(self._cls, "_iris_engine", None)
             conn = IRISConnection(engine)
-            prop_def_cls = conn.iris_cls("%Dictionary.PropertyDefinition")
+            field_defs = getattr(self._cls, "_iris_field_defs", {})
+
+            # Ensure the class exists in IRIS before adding properties.
+            if not _class_exists_in_iris(self._cls._iris_classname, conn):
+                self.ensure_iris_class()
+                return d
+
+            prop_map = {p.name: p for p in self._cls._iris_properties}
+
             for name in d.python_added:
-                prop = next(
-                    (p for p in self._cls._iris_properties if p.name == name), None
-                )
+                prop = prop_map.get(name)
                 if prop is None:
                     continue
-                prop_def = prop_def_cls._New()
-                prop_def.Name = name
-                prop_def.parent = self._cls._iris_classname
-                prop_def.Type = prop.iris_type
-                prop_def._Save()
+                _upsert_property_via_dict(
+                    self._cls._iris_classname, prop, field_defs.get(name), conn
+                )
+
+            for name, _snap_type, _new_type in d.python_changed:
+                prop = prop_map.get(name)
+                if prop is None:
+                    continue
+                _upsert_property_via_dict(
+                    self._cls._iris_classname, prop, field_defs.get(name), conn
+                )
+
             # Recompile the class in IRIS.
             try:
                 conn.iris_cls("%SYSTEM.OBJ").Compile(self._cls._iris_classname, "ck")
@@ -254,12 +331,79 @@ class SchemaManager:
             warnings.warn(
                 f"Property {name!r} removed from Python model but NOT deleted from "
                 f"IRIS class {self._cls._iris_classname!r} "
-                "(destructive operations are not performed automatically).",
+                "(use Model.schema.delete_property(name) to delete explicitly).",
                 UserWarning,
                 stacklevel=2,
             )
 
         return d
+
+    # ------------------------------------------------------------------
+    def ensure_iris_class(self) -> None:
+        """
+        Create or update the IRIS class using %Dictionary — no .cls files.
+
+        If the class does not yet exist in IRIS it is created with the correct
+        superclass (%Persistent or %SerialObject).  All properties and
+        relationships defined on the Python model are then created or updated
+        via %Dictionary.PropertyDefinition / %Dictionary.RelationshipDefinition,
+        and the class is recompiled with %SYSTEM.OBJ.Compile.
+
+        This is the recommended replacement for compile_to_iris().
+        """
+        if not getattr(self._cls, "_iris_python_first", False):
+            raise ValueError(
+                "ensure_iris_class() requires a Python-first (Plan C) model class; "
+                f"{self._cls.__name__!r} was created in Plan A (introspection) mode."
+            )
+        _ensure_iris_class_impl(self._cls)
+
+    # ------------------------------------------------------------------
+    def delete_property(self, name: str) -> None:
+        """
+        Permanently delete a property from the IRIS class via %Dictionary.
+
+        The property is removed from %Dictionary.PropertyDefinition, the class
+        is recompiled, and the descriptor + metadata are removed from the Python
+        model so the two sides stay in sync.
+
+        .. warning::
+            This operation is destructive and cannot be undone.  All data
+            stored in this property will be lost once the class is recompiled
+            and the storage is rebuilt.
+        """
+        from .connection import IRISConnection  # noqa: PLC0415
+
+        engine = getattr(self._cls, "_iris_engine", None)
+        conn = IRISConnection(engine)
+        prop_id = f"{self._cls._iris_classname}||{name}"
+        try:
+            conn.iris_cls("%Dictionary.PropertyDefinition")._DeleteId(prop_id)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to delete property {name!r} from "
+                f"{self._cls._iris_classname!r}: {exc}"
+            ) from exc
+
+        try:
+            conn.iris_cls("%SYSTEM.OBJ").Compile(self._cls._iris_classname, "ck")
+        except Exception as exc:
+            warnings.warn(f"Recompile after delete failed: {exc}", stacklevel=2)
+
+        # Keep Python model in sync.
+        self._cls._iris_properties = [
+            p for p in self._cls._iris_properties if p.name != name
+        ]
+        field_defs = getattr(self._cls, "_iris_field_defs", {})
+        field_defs.pop(name, None)
+        snapshot = dict(getattr(self._cls, "_iris_schema_snapshot", {}))
+        snapshot.pop(name, None)
+        self._cls._iris_schema_snapshot = snapshot
+        if hasattr(self._cls, name):
+            try:
+                delattr(self._cls, name)
+            except AttributeError:
+                pass
 
     # ------------------------------------------------------------------
     def pull(self, output_root: str = ".") -> SchemaDiff:
@@ -305,27 +449,122 @@ class SchemaManager:
         return d
 
     # ------------------------------------------------------------------
-    # .cls file generation (same as old schema.py, with storage preservation)
+    # .cls file generation (kept for backward compatibility; deprecated)
     # ------------------------------------------------------------------
 
     def generate_cls(self, storage: str | None = None) -> str:
-        """Generate an ObjectScript .cls source string."""
+        """
+        Generate an ObjectScript .cls source string.
+
+        .. deprecated::
+            Use :meth:`ensure_iris_class` to create or update the IRIS class
+            directly via %Dictionary without generating intermediate files.
+        """
+        warnings.warn(
+            "generate_cls() is deprecated. Use ensure_iris_class() to manage the "
+            "IRIS class directly via %Dictionary without .cls files.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return _generate_cls_impl(self._cls, storage=storage)
 
     def write_cls(self, output_root: str) -> Path:
-        """Write the generated .cls source to disk and return the path."""
+        """
+        Write the generated .cls source to disk and return the path.
+
+        .. deprecated::
+            Use :meth:`ensure_iris_class` to create or update the IRIS class
+            directly via %Dictionary without generating intermediate files.
+        """
+        warnings.warn(
+            "write_cls() is deprecated. Use ensure_iris_class() to manage the "
+            "IRIS class directly via %Dictionary without .cls files.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return _write_cls_impl(self._cls, output_root)
 
     def compile_to_iris(self, flags: str = "ck") -> None:
-        """Compile the generated .cls source into a running IRIS instance."""
-        _compile_to_iris_impl(self._cls, flags=flags)
+        """
+        Create or update the IRIS class using %Dictionary — no .cls files.
+
+        .. deprecated::
+            Renamed to :meth:`ensure_iris_class`.  This alias calls
+            ``ensure_iris_class()`` and will be removed in a future release.
+        """
+        warnings.warn(
+            "compile_to_iris() is deprecated and will be removed in a future release. "
+            "Use ensure_iris_class() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        _ensure_iris_class_impl(self._cls, flags=flags)
 
 
 # ---------------------------------------------------------------------------
 # Internal generation helpers
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Internal implementation helpers
+# ---------------------------------------------------------------------------
+
+def _ensure_iris_class_impl(model_class: type, flags: str = "ck") -> None:
+    """
+    Create or update an IRIS class using %Dictionary — no .cls files needed.
+
+    Steps:
+    1. Create the %Dictionary.ClassDefinition if the class does not yet exist.
+    2. Upsert every property via %Dictionary.PropertyDefinition.
+    3. Upsert every relationship via %Dictionary.RelationshipDefinition.
+    4. Recompile with %SYSTEM.OBJ.Compile.
+    """
+    if not getattr(model_class, "_iris_python_first", False):
+        raise ValueError(
+            "ensure_iris_class() requires a Python-first (Plan C) model class; "
+            f"{model_class.__name__!r} was created in Plan A (introspection) mode."
+        )
+
+    from .connection import IRISConnection  # noqa: PLC0415
+
+    is_serial: bool = getattr(model_class, "_iris_serial", False)
+    classname: str = model_class._iris_classname  # type: ignore[attr-defined]
+    field_defs = getattr(model_class, "_iris_field_defs", {})
+    rel_defs = getattr(model_class, "_iris_rel_defs", {})
+    iris_properties = getattr(model_class, "_iris_properties", [])
+
+    engine = getattr(model_class, "_iris_engine", None)
+    conn = IRISConnection(engine)
+
+    # 1. Create the class definition if it does not already exist.
+    if not _class_exists_in_iris(classname, conn):
+        class_def = conn.iris_cls("%Dictionary.ClassDefinition")._New()
+        class_def.Name = classname
+        class_def.Super = "%SerialObject" if is_serial else "%Persistent"
+        class_def._Save()
+
+    # 2. Upsert all properties.
+    for prop in iris_properties:
+        _upsert_property_via_dict(classname, prop, field_defs.get(prop.name), conn)
+
+    # 3. Upsert all relationships (not applicable to serial objects).
+    if not is_serial:
+        for rel_name, rd in rel_defs.items():
+            _upsert_relationship_via_dict(classname, rel_name, rd, conn)
+
+    # 4. Recompile.
+    try:
+        conn.iris_cls("%SYSTEM.OBJ").Compile(classname, flags)
+    except Exception as exc:
+        warnings.warn(f"Recompile failed: {exc}", stacklevel=2)
+
+
+# ---------------------------------------------------------------------------
+# Legacy .cls generation helpers (kept for backward compatibility)
+# ---------------------------------------------------------------------------
+
 def _generate_cls_impl(model_class: type, storage: str | None = None) -> str:
+    """Generate an ObjectScript .cls source string (legacy; prefer ensure_iris_class)."""
     if not getattr(model_class, "_iris_python_first", False):
         raise ValueError(
             f"generate_cls() requires a Python-first (Plan C) model class; "
@@ -398,6 +637,7 @@ def _generate_cls_impl(model_class: type, storage: str | None = None) -> str:
 
 
 def _write_cls_impl(model_class: type, output_root: str) -> Path:
+    """Write .cls source to disk (legacy; prefer ensure_iris_class)."""
     source = _generate_cls_impl(model_class)
     classname: str = model_class._iris_classname  # type: ignore[attr-defined]
     parts = classname.split(".")
@@ -410,54 +650,58 @@ def _write_cls_impl(model_class: type, output_root: str) -> Path:
     return output_path
 
 
-def _compile_to_iris_impl(model_class: type, flags: str = "ck") -> None:
-    import iris  # noqa: PLC0415
-
-    source = _generate_cls_impl(model_class)
-    sys_obj = iris.cls("%SYSTEM.OBJ")
-
-    try:
-        stream = iris.cls("%Stream.GlobalCharacter")._New()
-        stream.Write(source)
-        result = sys_obj.LoadStream(stream, flags)
-        print(f"compile_to_iris: LoadStream result = {result!r}")
-        return
-    except Exception as exc:
-        print(f"compile_to_iris: LoadStream failed ({exc}), trying file-based Load …")
-
-    with tempfile.NamedTemporaryFile(
-        suffix=".cls", mode="w", encoding="utf-8", delete=False
-    ) as tmp:
-        tmp.write(source)
-        tmp_path = tmp.name
-
-    try:
-        result = sys_obj.Load(tmp_path, flags)
-        print(f"compile_to_iris: Load result = {result!r}")
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-
-
 # ---------------------------------------------------------------------------
-# Backward-compatible module-level functions
+# Backward-compatible module-level functions (deprecated)
 # ---------------------------------------------------------------------------
 
 def generate_cls(model_class: type) -> str:
-    """Generate an ObjectScript .cls source string (backward-compatible wrapper)."""
+    """
+    Generate an ObjectScript .cls source string.
+
+    .. deprecated::
+        Use ``Model.schema.ensure_iris_class()`` to manage the IRIS class
+        directly via %Dictionary without .cls files.
+    """
+    warnings.warn(
+        "generate_cls() is deprecated. Use Model.schema.ensure_iris_class() "
+        "to manage the IRIS class directly via %Dictionary without .cls files.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     return _generate_cls_impl(model_class)
 
 
 def write_cls(model_class: type, output_root: str) -> Path:
-    """Write the generated .cls source to disk (backward-compatible wrapper)."""
+    """
+    Write the generated .cls source to disk.
+
+    .. deprecated::
+        Use ``Model.schema.ensure_iris_class()`` to manage the IRIS class
+        directly via %Dictionary without .cls files.
+    """
+    warnings.warn(
+        "write_cls() is deprecated. Use Model.schema.ensure_iris_class() "
+        "to manage the IRIS class directly via %Dictionary without .cls files.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     return _write_cls_impl(model_class, output_root)
 
 
 def compile_to_iris(model_class: type) -> None:
-    """Compile the generated .cls source into IRIS (backward-compatible wrapper)."""
-    _compile_to_iris_impl(model_class)
+    """
+    Create or update the IRIS class using %Dictionary (no .cls files).
+
+    .. deprecated::
+        Renamed to ``Model.schema.ensure_iris_class()``.  This module-level
+        alias will be removed in a future release.
+    """
+    warnings.warn(
+        "compile_to_iris() is deprecated. Use Model.schema.ensure_iris_class() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    _ensure_iris_class_impl(model_class)
 
 
 # ---------------------------------------------------------------------------
@@ -470,21 +714,11 @@ def main() -> None:
     import sys
 
     parser = argparse.ArgumentParser(
-        description="Generate ObjectScript .cls from an iris_orm model class.",
+        description="Create or update an IRIS class via %Dictionary from an iris_orm model.",
     )
     parser.add_argument(
         "iris_classname",
         help="IRIS class name of the registered Python-first model, e.g. Demo.Post",
-    )
-    parser.add_argument(
-        "output_root",
-        help="Directory root to write the .cls file into.",
-    )
-    parser.add_argument(
-        "--compile",
-        action="store_true",
-        default=False,
-        help="Also compile the generated class into the connected IRIS instance.",
     )
     parser.add_argument(
         "--module",
@@ -507,11 +741,8 @@ def main() -> None:
         )
         sys.exit(1)
 
-    path = _write_cls_impl(model_class, args.output_root)
-    print(f"Written: {path}")
-
-    if args.compile:
-        _compile_to_iris_impl(model_class)
+    _ensure_iris_class_impl(model_class)
+    print(f"ensure_iris_class: {args.iris_classname} created/updated via %Dictionary.")
 
 
 if __name__ == "__main__":

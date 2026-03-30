@@ -3,8 +3,8 @@
 =====================================================
 
 Use this when Python is the source of truth.  You define the schema in Python
-using typed annotations + field() metadata, then generate the ObjectScript
-.cls file and optionally compile it directly into IRIS.
+using typed annotations + field() metadata, then create the IRIS class directly
+via %Dictionary — no .cls files required.
 
 No IRIS class needs to exist beforehand — iris_orm creates it for you.
 """
@@ -12,7 +12,6 @@ from __future__ import annotations
 import sys
 sys.path.insert(0, "./src/python/")
 from iris_orm import IRISModel, field
-from iris_orm import schema
 
 # ---------------------------------------------------------------------------
 # 1. Define the model in Python
@@ -28,38 +27,20 @@ class Article(IRISModel):
     Views:   int = field(default=0, description="View counter")
     Published: bool = field(default=False)
 
-    # Storage block — set once, never touched by the ORM again.
-    # Leave empty to let IRIS auto-generate on first compile.
-    _iris_storage: str = ""
+
+# ---------------------------------------------------------------------------
+# 2. Create or update the IRIS class via %Dictionary (no .cls files)
+# ---------------------------------------------------------------------------
+# This creates the class definition and all properties directly in IRIS
+# using %Dictionary.ClassDefinition and %Dictionary.PropertyDefinition.
+# Call this whenever you add, change, or remove properties in your model.
+
+Article.schema.ensure_iris_class()
+print("IRIS class created/updated via %Dictionary")
 
 
 # ---------------------------------------------------------------------------
-# 2. Generate ObjectScript source
-# ---------------------------------------------------------------------------
-
-cls_source = Article.schema.generate_cls()
-print("=== Generated ObjectScript ===")
-print(cls_source)
-
-
-# ---------------------------------------------------------------------------
-# 3. Write to disk (preserves existing Storage block if file already exists)
-# ---------------------------------------------------------------------------
-
-output_path = Article.schema.write_cls("./output/cls")
-print(f"Written: {output_path}")
-
-
-# ---------------------------------------------------------------------------
-# 4. Compile into IRIS
-# ---------------------------------------------------------------------------
-# This compiles the generated source directly into the connected IRIS instance.
-
-# Article.schema.compile_to_iris()
-
-
-# ---------------------------------------------------------------------------
-# 5. CRUD — identical to Plan A once compiled
+# 3. CRUD — identical to Plan A once the class exists
 # ---------------------------------------------------------------------------
 
 a = Article(Title="Hello iris_orm", Slug="hello-iris-orm", Body="...")
@@ -78,7 +59,7 @@ for art in Article.objects.all():
 
 
 # ---------------------------------------------------------------------------
-# 6. Stub generation for IDE auto-complete
+# 4. Stub generation for IDE auto-complete
 # ---------------------------------------------------------------------------
 # python -m iris_orm.stubs Demo.Article ./src/python/
 # → writes ./src/python/Demo/Article.pyi

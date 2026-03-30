@@ -7,22 +7,19 @@ for keeping Python model definitions and live IRIS class definitions in sync.
 
 Commands
 --------
-  Model.schema.status()    → 3-way diff: snapshot ↔ Python  AND  snapshot ↔ IRIS
-  Model.schema.fetch()     → read live IRIS schema (no changes applied)
-  Model.schema.push()      → Python additions → IRIS   (raises ConflictError on conflict)
-  Model.schema.pull()      → IRIS additions → Python   (raises ConflictError on conflict)
-  Model.schema.commit()    → mark current Python state as the new baseline snapshot
+  Model.schema.ensure_iris_class()  → create or update the IRIS class via %Dictionary (no .cls files)
+  Model.schema.status()             → 3-way diff: snapshot ↔ Python  AND  snapshot ↔ IRIS
+  Model.schema.fetch()              → read live IRIS schema (no changes applied)
+  Model.schema.push()               → Python additions/changes → IRIS   (raises ConflictError on conflict)
+  Model.schema.pull()               → IRIS additions → Python   (raises ConflictError on conflict)
+  Model.schema.commit()             → mark current Python state as the new baseline snapshot
+  Model.schema.delete_property(name) → permanently delete a property from IRIS via %Dictionary
 
 Conflict detection
 ------------------
 A _iris_schema_snapshot dict records the agreed state after the last commit().
 If BOTH Python and IRIS changed the same property since then → ConflictError.
 Resolve by editing one side to match, then re-run push/pull.
-
-Storage blocks
---------------
-The Storage block is NEVER touched by any sync operation.
-Set _iris_storage on the model to preserve a hand-tuned Storage definition.
 """
 from __future__ import annotations
 
@@ -43,12 +40,9 @@ class Product(IRISModel):
     # Snapshot of agreed state (empty = never committed)
     _iris_schema_snapshot: dict = {}
 
-    # Paste hand-tuned Storage here — never modified by sync
-    _iris_storage: str = ""
 
-
-# Compile initial version to IRIS
-Product.schema.compile_to_iris()
+# Create the class in IRIS directly via %Dictionary — no .cls files
+Product.schema.ensure_iris_class()
 
 # Commit current Python state as baseline
 Product.schema.commit()
@@ -57,14 +51,13 @@ print(f"  snapshot = {Product._iris_schema_snapshot}")
 
 
 # ---------------------------------------------------------------------------
-# 2. Python adds a new field
+# 2. Python adds a new field → push() writes it to IRIS via %Dictionary
 # ---------------------------------------------------------------------------
 # Simulate: developer adds Description to the Python class.
 # In practice you edit the class body; here we patch _iris_properties
 # for demonstration purposes.
 
 from iris_orm.introspection import PropertyInfo
-from iris_orm.types import python_type_to_iris
 
 new_prop = PropertyInfo(
     name="Description",
@@ -80,11 +73,10 @@ Product._iris_properties.append(new_prop)
 d = Product.schema.status()
 print(f"\nAfter adding Description in Python:\n{d}")
 
-# push() writes it to IRIS and leaves snapshot unchanged
-# (call commit() explicitly after reviewing)
+# push() writes it to IRIS via %Dictionary.PropertyDefinition and recompiles
 try:
     Product.schema.push()
-    print("push() succeeded — Description added to IRIS")
+    print("push() succeeded — Description added to IRIS via %Dictionary")
 except ConflictError as e:
     print(f"Conflict: {e}")
 
@@ -158,11 +150,20 @@ except ConflictError as e:
 
 
 # ---------------------------------------------------------------------------
-# 5. Removed properties — warnings only, never auto-deleted
+# 5. Explicitly delete a property from IRIS via %Dictionary
 # ---------------------------------------------------------------------------
-# The ORM never drops an IRIS property automatically (data loss risk).
-# Removals from Python are reported by status() but not applied by push().
+# Unlike push() (which only warns on removals), delete_property() is
+# explicit and permanent.  Use it when you intentionally drop a field.
 
-print("\nNote: removing a property from Python triggers a warning, not deletion.")
-print("Run: Model.schema.status() to see what's out of sync.")
-print("Delete from IRIS manually via Studio / %Dictionary if intentional.")
+# Product.schema.delete_property("Stock")
+# print("Stock property deleted from IRIS via %Dictionary")
+
+
+# ---------------------------------------------------------------------------
+# 6. Removed properties — warnings only from push(), never auto-deleted
+# ---------------------------------------------------------------------------
+# The ORM never drops an IRIS property automatically from push() (data loss risk).
+# Use delete_property() explicitly when intentional.
+
+print("\nNote: removing a property from Python triggers a warning in push(), not deletion.")
+print("Use Model.schema.delete_property(name) to delete explicitly via %Dictionary.")

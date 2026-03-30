@@ -93,8 +93,8 @@ print(f"\nDeleted pk={t.pk} (should be None after delete): {t.pk}")
 # connection is established), descriptors won't be injected by the metaclass.
 # Call .bind() once the connection is ready:
 #
-#   class Test(IRISModel):
-#       _iris_classname = "Demo.Test"
-#
-#   # ... later, connection established ...
-#   Test.bind()   # re-runs introspection, injects typed descriptors
+class Test(IRISModel):
+    _iris_classname = "Demo.Test"
+
+# ... later, connection established ...
+Test.bind()   # re-runs introspection, injects typed descriptors

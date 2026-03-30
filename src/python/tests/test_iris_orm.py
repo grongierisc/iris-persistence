@@ -1922,3 +1922,312 @@ class TestIRISSerial:
         mgr = SchemaManager(StatusSer)
         with pytest.raises(RuntimeError, match="SerialObject"):
             mgr.status()
+
+
+# ===========================================================================
+# TestEnsureIrisClass
+# ===========================================================================
+
+class TestEnsureIrisClass:
+    @pytest.fixture(autouse=True)
+    def setup_model(self, fake_iris):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Dict.Widget", None)
+        from iris_orm import IRISModel, field
+
+        class DictWidget(IRISModel):
+            _iris_classname = "Dict.Widget"
+            Name: str = field(required=True, maxlen=200)
+            Score: int = field(default=0)
+
+        self.Widget = DictWidget
+        self.fake_iris = fake_iris
+
+    def _make_conn(self, class_exists=False):
+        """Return a fake IRISConnection whose sql_exec indicates class existence."""
+        from iris_orm.connection import IRISConnection
+        conn = MagicMock(spec=IRISConnection)
+        # sql_exec for _class_exists_in_iris: returns row if class exists
+        conn.sql_exec.return_value = iter([("Dict.Widget",)] if class_exists else [])
+        return conn
+
+    def test_ensure_iris_class_creates_class_when_missing(self, fake_iris):
+        from iris_orm.schema import _ensure_iris_class_impl
+
+        with patch("iris_orm.connection.IRISConnection") as MockConn:
+            conn = MockConn.return_value
+            conn.sql_exec.return_value = iter([])  # class does not exist
+
+            _ensure_iris_class_impl(self.Widget)
+
+            # Should have created %Dictionary.ClassDefinition
+            conn.iris_cls.assert_any_call("%Dictionary.ClassDefinition")
+
+    def test_ensure_iris_class_raises_for_plan_a(self, fake_iris):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Dict.PlanA", None)
+        from iris_orm import IRISModel
+        from iris_orm.schema import _ensure_iris_class_impl
+
+        rows = [("X", "%String", 0, "", "")]
+        fake_iris.sql.exec.return_value = iter(rows)
+
+        class PlanAOnly(IRISModel):
+            _iris_classname = "Dict.PlanA"
+
+        with pytest.raises(ValueError, match="Plan A"):
+            _ensure_iris_class_impl(PlanAOnly)
+
+    def test_ensure_iris_class_skips_creation_when_exists(self, fake_iris):
+        from iris_orm.schema import _ensure_iris_class_impl
+
+        with patch("iris_orm.connection.IRISConnection") as MockConn:
+            conn = MockConn.return_value
+            # Class exists → sql_exec returns a row
+            conn.sql_exec.return_value = iter([("Dict.Widget",)])
+
+            _ensure_iris_class_impl(self.Widget)
+
+            # _New should NOT be called on ClassDefinition
+            for call_args in conn.iris_cls.call_args_list:
+                if call_args[0][0] == "%Dictionary.ClassDefinition":
+                    conn.iris_cls.return_value._New.assert_not_called()
+                    break
+
+    def test_ensure_iris_class_upserts_all_properties(self, fake_iris):
+        from iris_orm.schema import _ensure_iris_class_impl
+
+        with patch("iris_orm.connection.IRISConnection") as MockConn:
+            conn = MockConn.return_value
+            conn.sql_exec.return_value = iter([("Dict.Widget",)])  # class exists
+
+            _ensure_iris_class_impl(self.Widget)
+
+            # %Dictionary.PropertyDefinition should have been accessed for each prop
+            prop_def_calls = [
+                c for c in conn.iris_cls.call_args_list
+                if c[0][0] == "%Dictionary.PropertyDefinition"
+            ]
+            assert len(prop_def_calls) == len(self.Widget._iris_properties)
+
+    def test_ensure_iris_class_compiles_after_changes(self, fake_iris):
+        from iris_orm.schema import _ensure_iris_class_impl
+
+        with patch("iris_orm.connection.IRISConnection") as MockConn:
+            conn = MockConn.return_value
+            conn.sql_exec.return_value = iter([("Dict.Widget",)])
+
+            _ensure_iris_class_impl(self.Widget)
+
+            conn.iris_cls.assert_any_call("%SYSTEM.OBJ")
+
+    def test_ensure_iris_class_via_schema_manager(self, fake_iris):
+        from iris_orm.schema import SchemaManager
+
+        mgr = SchemaManager(self.Widget)
+        with patch("iris_orm.schema._ensure_iris_class_impl") as mock_ensure:
+            mgr.ensure_iris_class()
+            mock_ensure.assert_called_once_with(self.Widget)
+
+    def test_compile_to_iris_deprecated_alias(self, fake_iris):
+        import warnings
+        from iris_orm.schema import SchemaManager
+
+        mgr = SchemaManager(self.Widget)
+        with patch("iris_orm.schema._ensure_iris_class_impl"), \
+             warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            mgr.compile_to_iris()
+            assert any(issubclass(warning.category, DeprecationWarning) for warning in w)
+
+    def test_module_level_compile_to_iris_deprecated(self, fake_iris):
+        import warnings
+        from iris_orm.schema import compile_to_iris
+
+        with patch("iris_orm.schema._ensure_iris_class_impl"), \
+             warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            compile_to_iris(self.Widget)
+            assert any(issubclass(warning.category, DeprecationWarning) for warning in w)
+
+    def test_module_level_generate_cls_deprecated(self):
+        import warnings
+        from iris_orm.schema import generate_cls
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            generate_cls(self.Widget)
+            assert any(issubclass(warning.category, DeprecationWarning) for warning in w)
+
+    def test_module_level_write_cls_deprecated(self, tmp_path):
+        import warnings
+        from iris_orm.schema import write_cls
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            write_cls(self.Widget, str(tmp_path))
+            assert any(issubclass(warning.category, DeprecationWarning) for warning in w)
+
+
+# ===========================================================================
+# TestDeleteProperty
+# ===========================================================================
+
+class TestDeleteProperty:
+    @pytest.fixture(autouse=True)
+    def setup_model(self, fake_iris):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Del.Article", None)
+        from iris_orm import IRISModel, field
+
+        class DelArticle(IRISModel):
+            _iris_classname = "Del.Article"
+            Title: str = field(required=True)
+            Body: str = field()
+
+        self.Article = DelArticle
+
+    def test_delete_property_calls_delete_id(self, fake_iris):
+        from iris_orm.schema import SchemaManager
+
+        mgr = SchemaManager(self.Article)
+        with patch("iris_orm.connection.IRISConnection") as MockConn:
+            conn = MockConn.return_value
+            mgr.delete_property("Body")
+            conn.iris_cls.assert_any_call("%Dictionary.PropertyDefinition")
+            conn.iris_cls.return_value._DeleteId.assert_called_once_with("Del.Article||Body")
+
+    def test_delete_property_recompiles_class(self, fake_iris):
+        from iris_orm.schema import SchemaManager
+
+        mgr = SchemaManager(self.Article)
+        with patch("iris_orm.connection.IRISConnection") as MockConn:
+            conn = MockConn.return_value
+            mgr.delete_property("Body")
+            conn.iris_cls.assert_any_call("%SYSTEM.OBJ")
+            conn.iris_cls.return_value.Compile.assert_called_once_with("Del.Article", "ck")
+
+    def test_delete_property_removes_from_iris_properties(self, fake_iris):
+        from iris_orm.schema import SchemaManager
+
+        assert any(p.name == "Body" for p in self.Article._iris_properties)
+        mgr = SchemaManager(self.Article)
+        with patch("iris_orm.connection.IRISConnection"):
+            mgr.delete_property("Body")
+        assert not any(p.name == "Body" for p in self.Article._iris_properties)
+
+    def test_delete_property_removes_from_field_defs(self, fake_iris):
+        from iris_orm.schema import SchemaManager
+
+        assert "Body" in self.Article._iris_field_defs
+        mgr = SchemaManager(self.Article)
+        with patch("iris_orm.connection.IRISConnection"):
+            mgr.delete_property("Body")
+        assert "Body" not in self.Article._iris_field_defs
+
+    def test_delete_property_removes_from_snapshot(self, fake_iris):
+        from iris_orm.schema import SchemaManager
+
+        self.Article._iris_schema_snapshot = {"Title": "%String", "Body": "%String"}
+        mgr = SchemaManager(self.Article)
+        with patch("iris_orm.connection.IRISConnection"):
+            mgr.delete_property("Body")
+        assert "Body" not in self.Article._iris_schema_snapshot
+
+    def test_delete_property_raises_on_iris_failure(self, fake_iris):
+        from iris_orm.schema import SchemaManager
+
+        mgr = SchemaManager(self.Article)
+        with patch("iris_orm.connection.IRISConnection") as MockConn:
+            conn = MockConn.return_value
+            conn.iris_cls.return_value._DeleteId.side_effect = Exception("not found")
+            with pytest.raises(RuntimeError, match="Failed to delete"):
+                mgr.delete_property("Body")
+
+
+# ===========================================================================
+# TestPushEnhancements
+# ===========================================================================
+
+class TestPushEnhancements:
+    @pytest.fixture(autouse=True)
+    def setup_model(self, fake_iris):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Push.Product", None)
+        from iris_orm import IRISModel, field
+
+        class PushProduct(IRISModel):
+            _iris_classname = "Push.Product"
+            Name: str = field(required=True)
+            Price: float = field()
+
+        PushProduct._iris_schema_snapshot = {"Name": "%String"}
+        self.Product = PushProduct
+
+    def test_push_calls_upsert_for_added_properties(self, fake_iris):
+        from iris_orm.schema import SchemaManager
+
+        mgr = SchemaManager(self.Product)
+        with patch("iris_orm.connection.IRISConnection") as MockConn, \
+             patch("iris_orm.schema._class_exists_in_iris", return_value=True), \
+             patch("iris_orm.schema._upsert_property_via_dict") as mock_upsert:
+
+            mock_fetch = MagicMock(return_value={"Name": "%String"})
+            mgr.fetch = mock_fetch
+
+            mgr.push()
+            # Price was added (in python but not in snapshot)
+            assert mock_upsert.called
+
+    def test_push_creates_class_if_missing(self, fake_iris):
+        from iris_orm.schema import SchemaManager
+
+        mgr = SchemaManager(self.Product)
+        with patch("iris_orm.connection.IRISConnection"), \
+             patch("iris_orm.schema._class_exists_in_iris", return_value=False), \
+             patch("iris_orm.schema._ensure_iris_class_impl") as mock_ensure:
+
+            mock_fetch = MagicMock(return_value={"Name": "%String"})
+            mgr.fetch = mock_fetch
+
+            mgr.push()
+            mock_ensure.assert_called_once_with(self.Product)
+
+    def test_push_warns_on_removed_properties(self, fake_iris):
+        from iris_orm.schema import SchemaManager
+        import warnings
+
+        # snapshot has Price but python model doesn't have it anymore
+        self.Product._iris_schema_snapshot = {"Name": "%String", "OldProp": "%String"}
+        # OldProp not in _iris_properties → python_removed = ["OldProp"]
+        mgr = SchemaManager(self.Product)
+        with patch("iris_orm.connection.IRISConnection"), \
+             patch("iris_orm.schema._class_exists_in_iris", return_value=True), \
+             patch("iris_orm.schema._upsert_property_via_dict"):
+
+            mock_fetch = MagicMock(return_value={"Name": "%String", "OldProp": "%String"})
+            mgr.fetch = mock_fetch
+
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                mgr.push()
+                removal_warnings = [x for x in w if "delete_property" in str(x.message)]
+                assert len(removal_warnings) == 1
+
+    def test_push_upserts_changed_properties(self, fake_iris):
+        from iris_orm.schema import SchemaManager
+
+        # snapshot has Name as %Integer, python has %String → changed
+        self.Product._iris_schema_snapshot = {"Name": "%Integer", "Price": "%Double"}
+        mgr = SchemaManager(self.Product)
+
+        with patch("iris_orm.connection.IRISConnection"), \
+             patch("iris_orm.schema._class_exists_in_iris", return_value=True), \
+             patch("iris_orm.schema._upsert_property_via_dict") as mock_upsert:
+
+            mock_fetch = MagicMock(return_value={"Name": "%Integer", "Price": "%Double"})
+            mgr.fetch = mock_fetch
+
+            mgr.push()
+            upserted_names = {call[0][1].name for call in mock_upsert.call_args_list}
+            assert "Name" in upserted_names

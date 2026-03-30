@@ -87,6 +87,10 @@ class IRISMeta(type):
         # Ensure every concrete model class has its own snapshot dict.
         if "_iris_schema_snapshot" not in namespace:
             cls._iris_schema_snapshot = {}  # type: ignore[attr-defined]
+        if "_iris_class_parameters" not in namespace:
+            cls._iris_class_parameters = {}  # type: ignore[attr-defined]
+        if "_iris_indexes" not in namespace:
+            cls._iris_indexes = []  # type: ignore[attr-defined]
 
         _MODEL_REGISTRY[iris_classname] = cls
         if not getattr(cls, "_iris_serial", False):
@@ -261,6 +265,11 @@ class IRISModel(metaclass=IRISMeta):
     _iris_engine: ClassVar[Any] = None          # SQLAlchemy engine or None for embedded
     _iris_schema_snapshot: ClassVar[dict[str, str]] = {}  # {prop_name: iris_type} at last sync
     _iris_storage: ClassVar[str] = ""           # preserved Storage block text
+    _iris_storage_mode: ClassVar[str] = ""
+    _iris_lockfile_path: ClassVar[str] = ""
+    _iris_superclass: ClassVar[str] = "%Persistent"
+    _iris_class_parameters: ClassVar[dict[str, str]] = {}
+    _iris_indexes: ClassVar[list[dict[str, Any]]] = []
 
     # Set by metaclass:
     _iris_properties: ClassVar[list[PropertyInfo]]
@@ -439,6 +448,11 @@ class IRISSerial(metaclass=IRISMeta):
     _iris_engine: ClassVar[Any] = None
     _iris_schema_snapshot: ClassVar[dict[str, str]] = {}
     _iris_storage: ClassVar[str] = ""
+    _iris_storage_mode: ClassVar[str] = ""
+    _iris_lockfile_path: ClassVar[str] = ""
+    _iris_superclass: ClassVar[str] = "%SerialObject"
+    _iris_class_parameters: ClassVar[dict[str, str]] = {}
+    _iris_indexes: ClassVar[list[dict[str, Any]]] = []
 
     # Set by metaclass:
     _iris_properties: ClassVar[list[PropertyInfo]]

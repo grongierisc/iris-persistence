@@ -10,6 +10,8 @@ They all require a live IRIS connection (embedded or remote).
 | `03_relationships.py` | One-to-many and parent/child relationships |
 | `04_schema_sync.py` | Git-style schema sync: status / push / pull / commit |
 | `05_remote_connection.py` | Connecting to a remote IRIS server via SQLAlchemy engine |
+| `07_brownfield_scaffold.py` | Brownfield import: scaffold Python + sidecar state from IRIS or `.cls` |
+| `08_python_first_sync.py` | Python-first sync with lockfile-based storage preservation |
 
 ## Running
 
@@ -18,6 +20,8 @@ They all require a live IRIS connection (embedded or remote).
 python examples/01_plan_a.py
 python examples/02_plan_c.py
 ...
+python examples/07_brownfield_scaffold.py
+python examples/08_python_first_sync.py
 
 # With a remote IRIS server (edit the connection string first):
 python examples/05_remote_connection.py

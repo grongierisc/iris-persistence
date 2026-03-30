@@ -11,6 +11,7 @@ from .connection import IRISConnection
 from .metaclass import IRISModel, IRISSerial, IRISMeta, _MODEL_REGISTRY
 from .query import IRISQuerySet
 from .fields import field, relationship, FieldDefinition, RelationshipDefinition
+from .errors import StorageConflictError, LockfileDriftError, UnsupportedClassFeatureError
 from .types import (
     iris_type_to_python,
     python_type_to_iris,
@@ -27,6 +28,9 @@ __all__ = [
     "IRISMeta",
     "_MODEL_REGISTRY",
     "IRISQuerySet",
+    "StorageConflictError",
+    "LockfileDriftError",
+    "UnsupportedClassFeatureError",
     "field",
     "relationship",
     "FieldDefinition",

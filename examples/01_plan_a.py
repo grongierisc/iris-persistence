@@ -16,7 +16,7 @@ Assumes the following class exists in IRIS:
     }
 """
 import sys
-sys.path.insert(0, "./src/python/")  # for easier imports in examples
+sys.path.insert(0, "..")  # for easier imports in examples
 from iris_orm import IRISModel
 
 # ---------------------------------------------------------------------------

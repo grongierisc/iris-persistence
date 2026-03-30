@@ -21,9 +21,14 @@ from __future__ import annotations
 
 import re
 import warnings
-from dataclasses import dataclass
+import inspect
+from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
 from typing import Any, Optional
+
+from .errors import LockfileDriftError, StorageConflictError
+from .introspection import get_class_details
+from .lockfile import compute_hash, load_lockfile
 
 # Cardinality mapping from Python strings → ObjectScript keywords
 _CARD_MAP: dict[str, str] = {
@@ -123,6 +128,120 @@ class ConflictError(Exception):
         )
 
 
+def _load_model_lockfile(model_class: type) -> Any | None:
+    """Load a scaffold lockfile for *model_class* if configured."""
+    lockfile_path = getattr(model_class, "_iris_lockfile_path", "")
+    if not lockfile_path:
+        return None
+    path = _resolve_lockfile_path(model_class, lockfile_path)
+    if not path.exists():
+        raise LockfileDriftError(f"Missing scaffold lockfile: {path}")
+    return load_lockfile(path)
+
+
+def _resolve_lockfile_path(model_class: type, lockfile_path: str | Path) -> Path:
+    """Resolve a model lockfile path relative to the model's module when needed."""
+    path = Path(lockfile_path)
+    if path.is_absolute():
+        return path
+    try:
+        module_file = Path(inspect.getfile(model_class)).resolve()
+    except (TypeError, OSError):
+        return path
+    return (module_file.parent / path).resolve()
+
+
+def _normalized_index_payload(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        [
+            {
+                "name": str(item.get("name", "")),
+                "properties": str(item.get("properties", "")),
+                "unique": bool(item.get("unique")),
+                "primary_key": bool(item.get("primary_key")),
+            }
+            for item in items
+        ],
+        key=lambda item: item["name"],
+    )
+
+
+def _get_storage_mode(model_class: type, lockfile: Any | None = None) -> str:
+    mode = getattr(model_class, "_iris_storage_mode", "")
+    if mode:
+        return str(mode)
+    if lockfile is not None:
+        return lockfile.storage_mode
+    return ""
+
+
+def _get_model_storage(model_class: type, lockfile: Any | None = None) -> str:
+    value = getattr(model_class, "_iris_storage", "") or ""
+    if value:
+        return str(value)
+    if lockfile is not None:
+        return lockfile.storage_definition
+    return ""
+
+
+def _lockfile_drift_messages(model_class: type, conn: Any) -> tuple[list[str], list[str]]:
+    """Return ``(lockfile_drift, storage_conflicts)`` for *model_class*."""
+    try:
+        lockfile = _load_model_lockfile(model_class)
+    except LockfileDriftError as exc:
+        return ([str(exc)], [])
+
+    if lockfile is None:
+        return ([], [])
+
+    if not _class_exists_in_iris(model_class._iris_classname, conn):  # type: ignore[attr-defined]
+        return ([], [])
+
+    details = get_class_details(model_class._iris_classname, conn)  # type: ignore[attr-defined]
+    drift: list[str] = []
+    storage_conflicts: list[str] = []
+
+    if lockfile.super and lockfile.super != details.super:
+        drift.append(
+            f"Superclass differs: lockfile={lockfile.super!r}, live={details.super!r}"
+        )
+
+    if dict(lockfile.class_parameters) != dict(details.class_parameters):
+        drift.append("Class parameters differ from lockfile")
+
+    live_indexes = _normalized_index_payload(
+        [
+            {
+                "name": idx.name,
+                "properties": idx.properties,
+                "unique": idx.unique,
+                "primary_key": idx.primary_key,
+            }
+            for idx in details.indexes
+        ]
+    )
+    if _normalized_index_payload(lockfile.indexes) != live_indexes:
+        drift.append("Indexes differ from lockfile")
+
+    if lockfile.storage_mode == "preserve":
+        live_hash = compute_hash(details.storage_definition or "")
+        if live_hash != lockfile.storage_hash:
+            storage_conflicts.append(
+                f"Storage differs: lockfile hash={lockfile.storage_hash}, live hash={live_hash}"
+            )
+
+    return (drift, storage_conflicts)
+
+
+def _assert_no_sidecar_drift(model_class: type, conn: Any) -> None:
+    """Raise if a scaffold lockfile is missing or stale for *model_class*."""
+    lock_drift, storage_conflicts = _lockfile_drift_messages(model_class, conn)
+    if storage_conflicts:
+        raise StorageConflictError("; ".join(storage_conflicts))
+    if lock_drift:
+        raise LockfileDriftError("; ".join(lock_drift))
+
+
 # ---------------------------------------------------------------------------
 # Schema diff
 # ---------------------------------------------------------------------------
@@ -140,13 +259,15 @@ class SchemaDiff:
     iris_changed:   list[tuple[str, str, str]]  # (name, snapshot_type, iris_type)
     # Conflicts: both sides changed the same prop differently
     conflicts:      list[PropertyConflict]
+    lockfile_drift: list[str] = dataclass_field(default_factory=list)
+    storage_conflicts: list[str] = dataclass_field(default_factory=list)
 
     @property
     def in_sync(self) -> bool:
         return not (
             self.python_added or self.python_removed or self.python_changed
             or self.iris_added or self.iris_removed or self.iris_changed
-            or self.conflicts
+            or self.conflicts or self.lockfile_drift or self.storage_conflicts
         )
 
     def __str__(self) -> str:
@@ -161,6 +282,14 @@ class SchemaDiff:
                     f"  ! {c.name}: snapshot={c.snapshot_type!r}, "
                     f"python={c.python_type!r}, iris={c.iris_type!r}"
                 )
+        if self.storage_conflicts:
+            lines.append("Storage conflicts:")
+            for item in self.storage_conflicts:
+                lines.append(f"  ! {item}")
+        if self.lockfile_drift:
+            lines.append("Lockfile drift:")
+            for item in self.lockfile_drift:
+                lines.append(f"  ! {item}")
         if self.python_added:
             lines.append("Python added (not yet pushed to IRIS):")
             for name in self.python_added:
@@ -220,6 +349,10 @@ class SchemaManager:
             p.name: p.iris_type for p in self._cls._iris_properties
         }
         iris_props: dict[str, str] = self.fetch()
+        from .connection import IRISConnection  # noqa: PLC0415
+
+        conn = IRISConnection(getattr(self._cls, "_iris_engine", None))
+        lockfile_drift, storage_conflicts = _lockfile_drift_messages(self._cls, conn)
 
         python_added   = [k for k in python_props if k not in snapshot]
         python_removed = [k for k in snapshot if k not in python_props]
@@ -262,6 +395,8 @@ class SchemaManager:
             iris_removed=iris_removed,
             iris_changed=iris_changed,
             conflicts=conflicts,
+            lockfile_drift=lockfile_drift,
+            storage_conflicts=storage_conflicts,
         )
 
     # ------------------------------------------------------------------
@@ -291,11 +426,13 @@ class SchemaManager:
         if d.conflicts:
             raise ConflictError(d.conflicts)
 
-        if d.python_added or d.python_changed:
-            from .connection import IRISConnection  # noqa: PLC0415
+        from .connection import IRISConnection  # noqa: PLC0415
 
-            engine = getattr(self._cls, "_iris_engine", None)
-            conn = IRISConnection(engine)
+        engine = getattr(self._cls, "_iris_engine", None)
+        conn = IRISConnection(engine)
+        _assert_no_sidecar_drift(self._cls, conn)
+
+        if d.python_added or d.python_changed:
             field_defs = getattr(self._cls, "_iris_field_defs", {})
 
             # Ensure the class exists in IRIS before adding properties.
@@ -356,6 +493,10 @@ class SchemaManager:
                 "ensure_iris_class() requires a Python-first (Plan C) model class; "
                 f"{self._cls.__name__!r} was created in Plan A (introspection) mode."
             )
+        from .connection import IRISConnection  # noqa: PLC0415
+
+        conn = IRISConnection(getattr(self._cls, "_iris_engine", None))
+        _assert_no_sidecar_drift(self._cls, conn)
         _ensure_iris_class_impl(self._cls)
 
     # ------------------------------------------------------------------
@@ -532,16 +673,37 @@ def _ensure_iris_class_impl(model_class: type, flags: str = "ck") -> None:
     field_defs = getattr(model_class, "_iris_field_defs", {})
     rel_defs = getattr(model_class, "_iris_rel_defs", {})
     iris_properties = getattr(model_class, "_iris_properties", [])
+    lockfile = None
+    try:
+        lockfile = _load_model_lockfile(model_class)
+    except LockfileDriftError:
+        lockfile = None
 
     engine = getattr(model_class, "_iris_engine", None)
     conn = IRISConnection(engine)
 
     # 1. Create the class definition if it does not already exist.
+    class_def = None
     if not _class_exists_in_iris(classname, conn):
         class_def = conn.iris_cls("%Dictionary.ClassDefinition")._New()
         class_def.Name = classname
         class_def.Super = "%SerialObject" if is_serial else "%Persistent"
         class_def._Save()
+    else:
+        try:
+            class_def = conn.iris_cls("%Dictionary.ClassDefinition")._OpenId(classname)
+        except Exception:
+            class_def = None
+
+    storage_mode = _get_storage_mode(model_class, lockfile)
+    storage_text = _get_model_storage(model_class, lockfile)
+    if storage_mode == "managed" and storage_text and class_def is not None:
+        try:
+            setattr(class_def, "Storage", storage_text)
+            setattr(class_def, "StorageDefinition", storage_text)
+            class_def._Save()
+        except Exception as exc:
+            warnings.warn(f"Managed storage apply failed: {exc}", stacklevel=2)
 
     # 2. Upsert all properties.
     for prop in iris_properties:
@@ -626,7 +788,12 @@ def _generate_cls_impl(model_class: type, storage: str | None = None) -> str:
 
     # Storage block: class attr → explicit arg → omit. Skip entirely for serials.
     if not is_serial:
-        storage_text = storage or getattr(model_class, "_iris_storage", "") or ""
+        lockfile = None
+        try:
+            lockfile = _load_model_lockfile(model_class)
+        except LockfileDriftError:
+            lockfile = None
+        storage_text = storage or _get_model_storage(model_class, lockfile) or ""
         if storage_text:
             source = _STORAGE_RE.sub("", source)
             source = source.rstrip()

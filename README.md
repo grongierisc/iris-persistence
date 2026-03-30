@@ -126,7 +126,7 @@ python -m iris_orm.migrations current
 ## 1.5. Module layout
 
 ```
-src/python/iris_orm/
+iris_orm/
   connection.py        IRISConnection (embedded + remote SQLAlchemy)
   metaclass.py         IRISMeta, IRISModel, IRISSerial
   descriptors.py       IRISDescriptor, IRISRelationshipDescriptor, …

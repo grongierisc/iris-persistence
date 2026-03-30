@@ -213,3 +213,58 @@ class IRISRelationshipDescriptor:
         else:
             related_iris_obj = object.__getattribute__(value, "_iris_obj")
             setattr(iris_obj, self.prop_name, related_iris_obj)
+
+
+# ---------------------------------------------------------------------------
+# Serial object descriptor
+# ---------------------------------------------------------------------------
+
+class IRISSerialDescriptor:
+    """Data descriptor that proxies an embedded IRIS %SerialObject property."""
+
+    def __init__(self, prop_name: str, serial_classname: str) -> None:
+        self.prop_name = prop_name
+        self.serial_classname = serial_classname
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        self.attr_name = name
+
+    def _resolve_model(self) -> type:
+        from .metaclass import _MODEL_REGISTRY as _REG  # noqa: PLC0415
+        model = _REG.get(self.serial_classname)
+        if model is None:
+            raise LookupError(
+                f"No model registered for IRIS serial class '{self.serial_classname}'. "
+                "Ensure the serial model class is defined before accessing this property."
+            )
+        return model
+
+    def __get__(self, obj: Any, objtype: type | None = None) -> Any:
+        if obj is None:
+            return self
+        iris_obj = object.__getattribute__(obj, "_iris_obj")
+        if iris_obj is None:
+            return None
+        raw = getattr(iris_obj, self.prop_name)
+        if raw is None or raw == "":
+            return None
+        serial_class = self._resolve_model()
+        return _wrap_iris_obj(serial_class, raw)
+
+    def __set__(self, obj: Any, value: Any) -> None:
+        iris_obj = object.__getattribute__(obj, "_iris_obj")
+        if iris_obj is None:
+            raise AttributeError(
+                f"Cannot set '{self.prop_name}': IRIS object not loaded."
+            )
+        if value is None:
+            setattr(iris_obj, self.prop_name, "")
+        else:
+            serial_iris_obj = object.__getattribute__(value, "_iris_obj")
+            setattr(iris_obj, self.prop_name, serial_iris_obj)
+
+    def __repr__(self) -> str:
+        return (
+            f"IRISSerialDescriptor(prop_name={self.prop_name!r}, "
+            f"serial_classname={self.serial_classname!r})"
+        )

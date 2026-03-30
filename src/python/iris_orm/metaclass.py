@@ -11,7 +11,7 @@ import typing
 from typing import Any, ClassVar, Optional, get_type_hints
 
 from .connection import IRISConnection
-from .descriptors import IRISDescriptor, IRISRelationshipDescriptor, _wrap_iris_obj
+from .descriptors import IRISDescriptor, IRISRelationshipDescriptor, IRISSerialDescriptor, _wrap_iris_obj
 from .fields import FieldDefinition, RelationshipDefinition
 from .introspection import PropertyInfo, get_class_properties
 from .query import IRISQuerySet
@@ -89,7 +89,8 @@ class IRISMeta(type):
             cls._iris_schema_snapshot = {}  # type: ignore[attr-defined]
 
         _MODEL_REGISTRY[iris_classname] = cls
-        cls.objects = IRISQuerySet(cls)  # type: ignore[attr-defined]
+        if not getattr(cls, "_iris_serial", False):
+            cls.objects = IRISQuerySet(cls)  # type: ignore[attr-defined]
         return cls
 
     # ------------------------------------------------------------------
@@ -108,7 +109,20 @@ class IRISMeta(type):
         try:
             resolved = get_type_hints(cls)
         except Exception:
-            resolved = dict(user_annotations)
+            # PEP 563 (from __future__ import annotations) stores all annotations
+            # as strings. When get_type_hints can't resolve them (e.g. for classes
+            # defined inside functions), fall back to scanning _MODEL_REGISTRY by
+            # Python class name so that serial/model type annotations still work.
+            resolved = {}
+            for k, v in user_annotations.items():
+                if isinstance(v, str):
+                    found: Any = next(
+                        (mc for mc in _MODEL_REGISTRY.values() if mc.__name__ == v),
+                        v,
+                    )
+                    resolved[k] = found
+                else:
+                    resolved[k] = v
 
         for attr_name, raw_type in user_annotations.items():
             # Skip relationship annotations handled below.
@@ -128,6 +142,29 @@ class IRISMeta(type):
 
             fd.prop_name = attr_name
             fd.python_type = inner_type
+
+            # Check if inner_type is an IRISSerial subclass.
+            if getattr(inner_type, "_iris_serial", False):
+                iris_type = inner_type._iris_classname
+                fd.iris_type = iris_type
+                prop_info = PropertyInfo(
+                    name=attr_name,
+                    iris_type=iris_type,
+                    python_type=inner_type,
+                    required=fd.required,
+                    collection=fd.collection,
+                    default="" if fd.default is None else str(fd.default),
+                )
+                iris_properties.append(prop_info)
+                iris_field_defs[attr_name] = fd
+                if attr_name not in namespace or isinstance(namespace[attr_name], FieldDefinition):
+                    descriptor = IRISSerialDescriptor(attr_name, iris_type)
+                    descriptor.attr_name = attr_name
+                    setattr(cls, attr_name, descriptor)
+                if not hasattr(cls, "__annotations__"):
+                    cls.__annotations__ = {}
+                cls.__annotations__[attr_name] = Optional[inner_type]  # type: ignore[valid-type]
+                continue
 
             # Determine IRIS type.
             iris_type = fd.iris_type or python_type_to_iris(inner_type)
@@ -198,7 +235,11 @@ class IRISMeta(type):
             # Don't overwrite user-defined attributes.
             if attr_name in namespace:
                 continue
-            descriptor = IRISDescriptor(attr_name, prop.python_type, prop.required)
+            serial_class = _MODEL_REGISTRY.get(prop.iris_type)
+            if serial_class is not None and getattr(serial_class, "_iris_serial", False):
+                descriptor: IRISDescriptor | IRISSerialDescriptor = IRISSerialDescriptor(attr_name, prop.iris_type)
+            else:
+                descriptor = IRISDescriptor(attr_name, prop.python_type, prop.required)
             descriptor.attr_name = attr_name
             setattr(cls, attr_name, descriptor)
             cls.__annotations__[attr_name] = Optional[prop.python_type]  # type: ignore[valid-type]
@@ -372,6 +413,90 @@ class IRISModel(metaclass=IRISMeta):
             # ... later, after connecting:
             Post.bind()  # injects typed descriptors from %Dictionary.PropertyDefinition
         """
+        if getattr(cls, "_iris_python_first", False):
+            raise RuntimeError(
+                f"{cls.__name__} was defined in Python-first (Plan C) mode. "
+                "bind() is only needed for Plan A (introspection-first) classes."
+            )
+        IRISMeta._setup_plan_a(cls, cls._iris_classname, {})
+
+
+# ---------------------------------------------------------------------------
+# Serial base class
+# ---------------------------------------------------------------------------
+
+class IRISSerial(metaclass=IRISMeta):
+    """Base class for IRIS %SerialObject embedded types.
+
+    Serial objects have no independent persistence — they are always embedded
+    inside a parent %Persistent object and accessed as a property value.
+    Use IRISSerialDescriptor (injected automatically by IRISMeta) to proxy
+    serial properties on parent IRISModel classes.
+    """
+
+    _iris_classname: ClassVar[str] = ""
+    _iris_serial: ClassVar[bool] = True
+    _iris_engine: ClassVar[Any] = None
+    _iris_schema_snapshot: ClassVar[dict[str, str]] = {}
+    _iris_storage: ClassVar[str] = ""
+
+    # Set by metaclass:
+    _iris_properties: ClassVar[list[PropertyInfo]]
+    _iris_field_defs: ClassVar[dict[str, FieldDefinition]]
+    _iris_rel_defs: ClassVar[dict[str, RelationshipDefinition]]
+    _iris_python_first: ClassVar[bool]
+
+    def __init__(self, **kwargs: Any) -> None:
+        object.__setattr__(self, "_iris_obj", None)
+        object.__setattr__(self, "_iris_id", None)
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+    # ------------------------------------------------------------------
+    # Attribute fallthrough to underlying IRIS object (same as IRISModel)
+    # ------------------------------------------------------------------
+
+    def __getattr__(self, name: str) -> Any:
+        """Forward unknown attribute reads to the underlying IRIS object."""
+        if name.startswith("_"):
+            raise AttributeError(f"{type(self).__name__!r} has no attribute {name!r}")
+        try:
+            iris_obj = object.__getattribute__(self, "_iris_obj")
+        except AttributeError:
+            raise AttributeError(f"{type(self).__name__!r} has no attribute {name!r}")
+        if iris_obj is None:
+            raise AttributeError(
+                f"{type(self).__name__!r} has no attribute {name!r} "
+                "(no underlying IRIS object)"
+            )
+        return getattr(iris_obj, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Forward unknown attribute writes to the underlying IRIS object."""
+        for klass in type(self).__mro__:
+            if name in klass.__dict__:
+                descriptor = klass.__dict__[name]
+                if hasattr(descriptor, "__set__"):
+                    descriptor.__set__(self, value)
+                    return
+                break
+        if not name.startswith("_"):
+            try:
+                iris_obj = object.__getattribute__(self, "_iris_obj")
+                if iris_obj is not None:
+                    setattr(iris_obj, name, value)
+                    return
+            except AttributeError:
+                pass
+        object.__setattr__(self, name, value)
+
+    # ------------------------------------------------------------------
+    # Class-level helpers
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def bind(cls) -> None:
+        """Re-run Plan A introspection against a live IRIS connection."""
         if getattr(cls, "_iris_python_first", False):
             raise RuntimeError(
                 f"{cls.__name__} was defined in Python-first (Plan C) mode. "

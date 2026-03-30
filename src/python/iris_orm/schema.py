@@ -146,6 +146,11 @@ class SchemaManager:
     # ------------------------------------------------------------------
     def status(self) -> SchemaDiff:
         """3-way diff: snapshot vs Python, snapshot vs IRIS."""
+        if getattr(self._cls, "_iris_serial", False):
+            raise RuntimeError(
+                "Serial classes (%SerialObject) have no independent IRIS identity — "
+                "sync the parent %Persistent class instead."
+            )
         snapshot: dict[str, str] = dict(getattr(self._cls, "_iris_schema_snapshot", {}))
         python_props: dict[str, str] = {
             p.name: p.iris_type for p in self._cls._iris_properties
@@ -198,6 +203,11 @@ class SchemaManager:
     # ------------------------------------------------------------------
     def commit(self) -> None:
         """Snapshot current Python definition as new baseline."""
+        if getattr(self._cls, "_iris_serial", False):
+            raise RuntimeError(
+                "Serial classes (%SerialObject) have no independent IRIS identity — "
+                "sync the parent %Persistent class instead."
+            )
         python_props = {p.name: p.iris_type for p in self._cls._iris_properties}
         self._cls._iris_schema_snapshot = python_props
         print(
@@ -208,6 +218,11 @@ class SchemaManager:
     # ------------------------------------------------------------------
     def push(self) -> SchemaDiff:
         """Apply Python additions to IRIS. Raises ConflictError on conflicts."""
+        if getattr(self._cls, "_iris_serial", False):
+            raise RuntimeError(
+                "Serial classes (%SerialObject) have no independent IRIS identity — "
+                "sync the parent %Persistent class instead."
+            )
         d = self.status()
         if d.conflicts:
             raise ConflictError(d.conflicts)
@@ -249,6 +264,11 @@ class SchemaManager:
     # ------------------------------------------------------------------
     def pull(self, output_root: str = ".") -> SchemaDiff:
         """Apply IRIS additions to Python model snapshot. Raises ConflictError on conflicts."""
+        if getattr(self._cls, "_iris_serial", False):
+            raise RuntimeError(
+                "Serial classes (%SerialObject) have no independent IRIS identity — "
+                "sync the parent %Persistent class instead."
+            )
         d = self.status()
         if d.conflicts:
             raise ConflictError(d.conflicts)
@@ -312,13 +332,15 @@ def _generate_cls_impl(model_class: type, storage: str | None = None) -> str:
             f"{model_class.__name__!r} was created in Plan A (introspection) mode."
         )
 
+    is_serial: bool = getattr(model_class, "_iris_serial", False)
     classname: str = model_class._iris_classname  # type: ignore[attr-defined]
     field_defs = getattr(model_class, "_iris_field_defs", {})
     rel_defs = getattr(model_class, "_iris_rel_defs", {})
     iris_properties = getattr(model_class, "_iris_properties", [])
 
     lines: list[str] = []
-    lines.append(f"Class {classname} Extends %Persistent")
+    extends = "%SerialObject" if is_serial else "%Persistent"
+    lines.append(f"Class {classname} Extends {extends}")
     lines.append("{")
     lines.append("")
 
@@ -363,13 +385,14 @@ def _generate_cls_impl(model_class: type, storage: str | None = None) -> str:
     lines.append("}")
     source = "\n".join(lines) + "\n"
 
-    # Storage block: class attr → explicit arg → omit.
-    storage_text = storage or getattr(model_class, "_iris_storage", "") or ""
-    if storage_text:
-        source = _STORAGE_RE.sub("", source)
-        source = source.rstrip()
-        if source.endswith("}"):
-            source = source[:-1].rstrip() + "\n\n" + storage_text.strip() + "\n}\n"
+    # Storage block: class attr → explicit arg → omit. Skip entirely for serials.
+    if not is_serial:
+        storage_text = storage or getattr(model_class, "_iris_storage", "") or ""
+        if storage_text:
+            source = _STORAGE_RE.sub("", source)
+            source = source.rstrip()
+            if source.endswith("}"):
+                source = source[:-1].rstrip() + "\n\n" + storage_text.strip() + "\n}\n"
 
     return source
 

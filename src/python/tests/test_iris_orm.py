@@ -1521,8 +1521,404 @@ class TestIRISModelEngine:
 
     def test_version_updated(self):
         import iris_orm
-        assert iris_orm.__version__ == "0.3.0"
+        assert iris_orm.__version__ == "0.4.0"
 
     def test_iris_connection_exported(self):
         from iris_orm import IRISConnection
         assert IRISConnection is not None
+
+
+# ===========================================================================
+# TestIRISSerial
+# ===========================================================================
+
+class TestIRISSerial:
+    """Tests for IRISSerial base class and IRISSerialDescriptor."""
+
+    # -----------------------------------------------------------------------
+    # Helpers
+    # -----------------------------------------------------------------------
+
+    def _make_instance_with_iris(self, iris_obj):
+        class Host:
+            pass
+
+        inst = object.__new__(Host)
+        object.__setattr__(inst, "_iris_obj", iris_obj)
+        object.__setattr__(inst, "_iris_id", None)
+        return inst
+
+    # -----------------------------------------------------------------------
+    # Plan C basics
+    # -----------------------------------------------------------------------
+
+    def test_plan_c_serial_descriptors_injected(self):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.Ser.Addr1", None)
+        from iris_orm import IRISSerial
+
+        class Addr1(IRISSerial):
+            _iris_classname = "Demo.Ser.Addr1"
+            City: str
+            State: str
+
+        assert isinstance(Addr1.__dict__.get("City"), IRISDescriptor)
+        assert isinstance(Addr1.__dict__.get("State"), IRISDescriptor)
+
+    def test_plan_c_serial_is_python_first(self):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.Ser.Addr2", None)
+        from iris_orm import IRISSerial
+
+        class Addr2(IRISSerial):
+            _iris_classname = "Demo.Ser.Addr2"
+            City: str
+
+        assert Addr2._iris_python_first is True
+
+    def test_plan_c_serial_registered_in_model_registry(self):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.Ser.Addr3", None)
+        from iris_orm import IRISSerial
+
+        class Addr3(IRISSerial):
+            _iris_classname = "Demo.Ser.Addr3"
+            City: str
+
+        assert _MODEL_REGISTRY["Demo.Ser.Addr3"] is Addr3
+
+    def test_serial_has_no_objects_attribute(self):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.Ser.Addr4", None)
+        from iris_orm import IRISSerial
+
+        class Addr4(IRISSerial):
+            _iris_classname = "Demo.Ser.Addr4"
+            City: str
+
+        assert not hasattr(Addr4, "objects")
+
+    def test_serial_has_no_save_method(self):
+        from iris_orm import IRISSerial
+        assert not hasattr(IRISSerial, "save")
+
+    def test_serial_has_no_delete_method(self):
+        from iris_orm import IRISSerial
+        assert not hasattr(IRISSerial, "delete")
+
+    def test_serial_has_no_get_method(self):
+        from iris_orm import IRISSerial
+        assert not hasattr(IRISSerial, "get")
+
+    def test_serial_iris_id_is_none_on_init(self):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.Ser.Addr5", None)
+        from iris_orm import IRISSerial
+
+        class Addr5(IRISSerial):
+            _iris_classname = "Demo.Ser.Addr5"
+            City: str
+
+        addr = Addr5()
+        assert object.__getattribute__(addr, "_iris_id") is None
+
+    # -----------------------------------------------------------------------
+    # IRISSerialDescriptor unit tests
+    # -----------------------------------------------------------------------
+
+    def test_serial_descriptor_get_returns_none_for_none(self):
+        from iris_orm.descriptors import IRISSerialDescriptor
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.TSer.D1", None)
+        from iris_orm import IRISSerial
+
+        class TSer_D1(IRISSerial):
+            _iris_classname = "Demo.TSer.D1"
+            X: str
+
+        desc = IRISSerialDescriptor("Addr", "Demo.TSer.D1")
+        mock_iris_obj = MagicMock()
+        mock_iris_obj.Addr = None
+        inst = self._make_instance_with_iris(mock_iris_obj)
+        assert desc.__get__(inst, type(inst)) is None
+
+    def test_serial_descriptor_get_returns_none_for_empty_string(self):
+        from iris_orm.descriptors import IRISSerialDescriptor
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.TSer.D2", None)
+        from iris_orm import IRISSerial
+
+        class TSer_D2(IRISSerial):
+            _iris_classname = "Demo.TSer.D2"
+            X: str
+
+        desc = IRISSerialDescriptor("Addr", "Demo.TSer.D2")
+        mock_iris_obj = MagicMock()
+        mock_iris_obj.Addr = ""
+        inst = self._make_instance_with_iris(mock_iris_obj)
+        assert desc.__get__(inst, type(inst)) is None
+
+    def test_serial_descriptor_get_wraps_iris_obj(self):
+        from iris_orm.descriptors import IRISSerialDescriptor
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.TSer.D3", None)
+        from iris_orm import IRISSerial
+
+        class TSer_D3(IRISSerial):
+            _iris_classname = "Demo.TSer.D3"
+            X: str
+
+        raw_serial = MagicMock()
+        raw_serial._Id.side_effect = Exception("no id")
+
+        desc = IRISSerialDescriptor("Addr", "Demo.TSer.D3")
+        mock_iris_obj = MagicMock()
+        mock_iris_obj.Addr = raw_serial
+        inst = self._make_instance_with_iris(mock_iris_obj)
+
+        result = desc.__get__(inst, type(inst))
+        assert result is not None
+        assert object.__getattribute__(result, "_iris_obj") is raw_serial
+
+    def test_serial_descriptor_set_unwraps_iris_obj(self):
+        from iris_orm.descriptors import IRISSerialDescriptor
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.TSer.D4", None)
+        from iris_orm import IRISSerial
+
+        class TSer_D4(IRISSerial):
+            _iris_classname = "Demo.TSer.D4"
+            X: str
+
+        raw_serial = MagicMock()
+        desc = IRISSerialDescriptor("Addr", "Demo.TSer.D4")
+        mock_iris_obj = MagicMock()
+        host = self._make_instance_with_iris(mock_iris_obj)
+
+        # Create a value to set (a wrapped serial instance)
+        serial_inst = object.__new__(TSer_D4)
+        object.__setattr__(serial_inst, "_iris_obj", raw_serial)
+        object.__setattr__(serial_inst, "_iris_id", None)
+
+        desc.__set__(host, serial_inst)
+        assert mock_iris_obj.Addr == raw_serial
+
+    def test_serial_descriptor_set_none_stores_empty_string(self):
+        from iris_orm.descriptors import IRISSerialDescriptor
+
+        desc = IRISSerialDescriptor("Addr", "Demo.SomeSerial")
+        mock_iris_obj = MagicMock()
+        host = self._make_instance_with_iris(mock_iris_obj)
+        desc.__set__(host, None)
+        assert mock_iris_obj.Addr == ""
+
+    def test_serial_descriptor_resolve_raises_lookup_error_when_not_registered(self):
+        from iris_orm.descriptors import IRISSerialDescriptor
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.NoSuch.Serial", None)
+
+        desc = IRISSerialDescriptor("Prop", "Demo.NoSuch.Serial")
+        with pytest.raises(LookupError, match="Demo.NoSuch.Serial"):
+            desc._resolve_model()
+
+    def test_serial_descriptor_on_class_returns_descriptor(self):
+        from iris_orm.descriptors import IRISSerialDescriptor
+        desc = IRISSerialDescriptor("Addr", "Demo.Address")
+        result = desc.__get__(None, object)
+        assert result is desc
+
+    # -----------------------------------------------------------------------
+    # Parent model with serial property (Plan C)
+    # -----------------------------------------------------------------------
+
+    def test_parent_model_serial_property_injects_serial_descriptor(self):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.SerAddr.A", None)
+        _MODEL_REGISTRY.pop("Demo.SerCust.A", None)
+        from iris_orm import IRISSerial, IRISModel
+        from iris_orm.descriptors import IRISSerialDescriptor
+
+        class SerAddrA(IRISSerial):
+            _iris_classname = "Demo.SerAddr.A"
+            City: str
+
+        class SerCustA(IRISModel):
+            _iris_classname = "Demo.SerCust.A"
+            Name: str
+            Address: SerAddrA  # type: ignore[assignment]
+
+        assert isinstance(SerCustA.__dict__.get("Address"), IRISSerialDescriptor)
+
+    def test_parent_model_serial_property_get_wraps_serial(self):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.SerAddr.B", None)
+        _MODEL_REGISTRY.pop("Demo.SerCust.B", None)
+        from iris_orm import IRISSerial, IRISModel
+        from iris_orm.descriptors import _wrap_iris_obj
+
+        class SerAddrB(IRISSerial):
+            _iris_classname = "Demo.SerAddr.B"
+            City: str
+
+        class SerCustB(IRISModel):
+            _iris_classname = "Demo.SerCust.B"
+            Name: str
+            Address: SerAddrB  # type: ignore[assignment]
+
+        raw_serial = MagicMock()
+        raw_serial._Id.side_effect = Exception("no id")
+        mock_iris_obj = MagicMock()
+        mock_iris_obj.Address = raw_serial
+
+        cust = _wrap_iris_obj(SerCustB, mock_iris_obj)
+        result = cust.Address
+        assert result is not None
+        assert object.__getattribute__(result, "_iris_obj") is raw_serial
+        assert isinstance(result, SerAddrB)
+
+    def test_parent_model_serial_property_set_unwraps_serial(self):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.SerAddr.C", None)
+        _MODEL_REGISTRY.pop("Demo.SerCust.C", None)
+        from iris_orm import IRISSerial, IRISModel
+        from iris_orm.descriptors import _wrap_iris_obj
+
+        class SerAddrC(IRISSerial):
+            _iris_classname = "Demo.SerAddr.C"
+            City: str
+
+        class SerCustC(IRISModel):
+            _iris_classname = "Demo.SerCust.C"
+            Name: str
+            Address: SerAddrC  # type: ignore[assignment]
+
+        raw_serial = MagicMock()
+        mock_iris_obj = MagicMock()
+        cust = _wrap_iris_obj(SerCustC, mock_iris_obj)
+
+        addr = object.__new__(SerAddrC)
+        object.__setattr__(addr, "_iris_obj", raw_serial)
+        object.__setattr__(addr, "_iris_id", None)
+
+        cust.Address = addr
+        assert mock_iris_obj.Address == raw_serial
+
+    # -----------------------------------------------------------------------
+    # Schema generation
+    # -----------------------------------------------------------------------
+
+    def test_generate_cls_serial_extends_serial_object(self):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.Sch.Ser1", None)
+        from iris_orm import IRISSerial
+        from iris_orm.schema import generate_cls
+
+        class SchSer1(IRISSerial):
+            _iris_classname = "Demo.Sch.Ser1"
+            City: str
+
+        source = generate_cls(SchSer1)
+        assert "Extends %SerialObject" in source
+
+    def test_generate_cls_serial_not_persistent(self):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.Sch.Ser2", None)
+        from iris_orm import IRISSerial
+        from iris_orm.schema import generate_cls
+
+        class SchSer2(IRISSerial):
+            _iris_classname = "Demo.Sch.Ser2"
+            City: str
+
+        source = generate_cls(SchSer2)
+        assert "Extends %Persistent" not in source
+
+    def test_generate_cls_serial_has_no_storage_block(self):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.Sch.Ser3", None)
+        from iris_orm import IRISSerial
+        from iris_orm.schema import generate_cls
+
+        class SchSer3(IRISSerial):
+            _iris_classname = "Demo.Sch.Ser3"
+            City: str
+            _iris_storage = "Storage Default { <Data name='DefaultData'><Structure>listbuiltin</Structure></Data> }"
+
+        source = generate_cls(SchSer3)
+        assert "Storage" not in source
+
+    def test_generate_cls_serial_has_properties(self):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.Sch.Ser4", None)
+        from iris_orm import IRISSerial
+        from iris_orm.schema import generate_cls
+
+        class SchSer4(IRISSerial):
+            _iris_classname = "Demo.Sch.Ser4"
+            City: str
+            ZipCode: str
+
+        source = generate_cls(SchSer4)
+        assert "Property City As %String;" in source
+        assert "Property ZipCode As %String;" in source
+
+    def test_generate_cls_parent_with_serial_property_uses_classname_as_type(self):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.Sch.SerAddr5", None)
+        _MODEL_REGISTRY.pop("Demo.Sch.SerCust5", None)
+        from iris_orm import IRISSerial, IRISModel
+        from iris_orm.schema import generate_cls
+
+        class SerAddr5(IRISSerial):
+            _iris_classname = "Demo.Sch.SerAddr5"
+            City: str
+
+        class SerCust5(IRISModel):
+            _iris_classname = "Demo.Sch.SerCust5"
+            Name: str
+            Address: SerAddr5  # type: ignore[assignment]
+
+        source = generate_cls(SerCust5)
+        assert "Property Address As Demo.Sch.SerAddr5;" in source
+
+    def test_schema_manager_push_raises_for_serial(self):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.Sch.PushSer", None)
+        from iris_orm import IRISSerial
+        from iris_orm.schema import SchemaManager
+
+        class PushSer(IRISSerial):
+            _iris_classname = "Demo.Sch.PushSer"
+            City: str
+
+        mgr = SchemaManager(PushSer)
+        with pytest.raises(RuntimeError, match="SerialObject"):
+            mgr.push()
+
+    def test_schema_manager_pull_raises_for_serial(self):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.Sch.PullSer", None)
+        from iris_orm import IRISSerial
+        from iris_orm.schema import SchemaManager
+
+        class PullSer(IRISSerial):
+            _iris_classname = "Demo.Sch.PullSer"
+            City: str
+
+        mgr = SchemaManager(PullSer)
+        with pytest.raises(RuntimeError, match="SerialObject"):
+            mgr.pull()
+
+    def test_schema_manager_status_raises_for_serial(self):
+        from iris_orm.metaclass import _MODEL_REGISTRY
+        _MODEL_REGISTRY.pop("Demo.Sch.StatusSer", None)
+        from iris_orm import IRISSerial
+        from iris_orm.schema import SchemaManager
+
+        class StatusSer(IRISSerial):
+            _iris_classname = "Demo.Sch.StatusSer"
+            City: str
+
+        mgr = SchemaManager(StatusSer)
+        with pytest.raises(RuntimeError, match="SerialObject"):
+            mgr.status()

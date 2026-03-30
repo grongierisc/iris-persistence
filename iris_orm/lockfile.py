@@ -66,6 +66,9 @@ class IRISLockfile:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "IRISLockfile":
+        scaffold_style = str(payload.get("scaffold_style", "typed")).strip().lower()
+        if scaffold_style not in {"existing", "typed"}:
+            raise ValueError(f"Unsupported scaffold style: {scaffold_style!r}")
         return cls(
             classname=str(payload["classname"]),
             super=str(payload.get("super", "%Persistent")),
@@ -80,7 +83,7 @@ class IRISLockfile:
                 for item in list(payload.get("indexes", []))
             ],
             source=dict(payload.get("source", {})),
-            scaffold_style=str(payload.get("scaffold_style", "plan-c")),
+            scaffold_style=scaffold_style,
             generated_at=str(payload.get("generated_at", "")),
             generated_region_hash=str(payload.get("generated_region_hash", "")),
             unsupported_features=[

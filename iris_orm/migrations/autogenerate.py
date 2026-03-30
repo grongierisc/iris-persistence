@@ -34,7 +34,7 @@ def diff_models(
     conn: "IRISConnection",
 ) -> list[Operation]:
     """
-    Compare *models* (Python-first IRISModel subclasses) against
+    Compare *models* (declared IRISModel subclasses) against
     *applied_state* (the property/relationship snapshot from the last
     applied migration) and return the list of Operations needed to
     bring IRIS up to date.
@@ -42,7 +42,7 @@ def diff_models(
     Parameters
     ----------
     models:
-        List of IRISModel (Plan C) class objects to inspect.
+        List of declared IRISModel class objects to inspect.
     applied_state:
         ``{ classname: { "properties": {name: iris_type}, "relationships": {name: {...}} } }``
         Built by :func:`load_state_from_migrations`.
@@ -59,7 +59,7 @@ def diff_models(
     ops: list[Operation] = []
 
     for model in models:
-        if not getattr(model, "_iris_python_first", False):
+        if not getattr(model, "_iris_declared_model", False):
             continue
 
         classname: str = model._iris_classname

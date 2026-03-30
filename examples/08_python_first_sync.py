@@ -49,7 +49,7 @@ lockfile = IRISLockfile(
     class_parameters={"DEFAULTGLOBAL": "^Demo.ProductD"},
     indexes=[],
     source={"kind": "iris", "origin": "Demo.*"},
-    scaffold_style="plan-c",
+    scaffold_style="typed",
     generated_at=timestamp_utc(),
 )
 write_lockfile(LOCKFILE_PATH, lockfile)

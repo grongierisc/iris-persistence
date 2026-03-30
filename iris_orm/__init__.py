@@ -1,9 +1,9 @@
 """
 iris_orm — Python ORM for InterSystems IRIS.
 
-Supports two modes:
-  Plan A (introspection-first): set _iris_classname; metaclass queries IRIS.
-  Plan C (Python-first): write typed annotations + field()/relationship() metadata.
+Supports two workflows:
+  Existing-class binding: set _iris_classname and introspect IRIS metadata.
+  Declared models: write typed annotations + field()/relationship() metadata.
 """
 from __future__ import annotations
 

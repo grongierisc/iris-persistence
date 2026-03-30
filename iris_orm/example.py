@@ -1,12 +1,12 @@
 """
-iris_orm example — demonstrates Plan A and Plan C usage side-by-side.
+iris_orm example — demonstrates existing-class binding and declared models side-by-side.
 
 This file is for illustration only; it will not run without a live IRIS connection.
 """
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
-# Plan A — introspection-first
+# Existing-class binding
 # ---------------------------------------------------------------------------
 # The metaclass will query %Dictionary.PropertyDefinition at class definition
 # time and inject typed descriptors automatically.
@@ -30,7 +30,7 @@ from __future__ import annotations
 #     print(u.pk, u.Name)
 
 # ---------------------------------------------------------------------------
-# Plan C — Python-first
+# Declared model
 # ---------------------------------------------------------------------------
 # Typed annotations + field()/relationship() metadata drive everything.
 # generate_cls() can emit ObjectScript source; compile_to_iris() can compile it.
@@ -83,8 +83,8 @@ if __name__ == "__main__":
     print(schema.generate_cls(Post))
     print()
     print("=== Demo.Author stub ===")
-    # Note: stubs.generate_stub() needs IRIS for Plan A introspection, but for
-    # registered Plan C classes it uses the in-memory registry.
+    # Note: stubs.generate_stub() needs IRIS for existing-class introspection,
+    # but for registered declared classes it uses the in-memory registry.
     # print(stubs.generate_stub("Demo.Author"))
     print("(run with a live IRIS connection to generate stubs via introspection)")
     print()

@@ -2,7 +2,7 @@
 04_schema_sync.py — Git-style schema sync
 ==========================================
 
-The schema manager on every Plan C model provides a git-flavoured workflow
+The schema manager on every declared model provides a git-flavoured workflow
 for keeping Python model definitions and live IRIS class definitions in sync.
 
 Commands

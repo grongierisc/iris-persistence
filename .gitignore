@@ -6,3 +6,6 @@ iris-main.log
 .venv
 .venv-iris
 waitISC.log
+
+.iris_orm
+generated_models

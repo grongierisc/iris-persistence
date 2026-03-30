@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from typing import Any, Iterator, Optional
 
+from .connection import IRISConnection
+
 
 class IRISQuerySet:
     """Lazy, chainable queryset that builds SQL against an IRIS class table."""
@@ -36,8 +38,7 @@ class IRISQuerySet:
 
     def count(self) -> int:
         sql, params = self._build_sql(count_only=True)
-        import iris  # noqa: PLC0415
-        rs = iris.sql.exec(sql, params) if params else iris.sql.exec(sql)
+        rs = IRISConnection().sql_exec(sql, params)
         for row in rs:
             return int(row[0])
         return 0
@@ -49,8 +50,7 @@ class IRISQuerySet:
 
     def __iter__(self) -> Iterator[Any]:
         sql, params = self._build_sql(count_only=False)
-        import iris  # noqa: PLC0415
-        rs = iris.sql.exec(sql, params) if params else iris.sql.exec(sql)
+        rs = IRISConnection().sql_exec(sql, params)
         for row in rs:
             obj_id = str(row[0])
             instance = self._model._open(obj_id)

@@ -1,6 +1,6 @@
 """
-01_plan_a.py — Plan A: bind to an existing IRIS class
-======================================================
+01_existing_class.py — Bind to an existing IRIS class
+=====================================================
 
 Use this when the IRIS class already exists (created in Studio / VS Code
 ObjectScript extension / migration).  The metaclass queries

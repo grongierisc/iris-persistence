@@ -8,7 +8,7 @@ It covers two import paths:
 1. Live IRIS namespace → scaffold Python models + sidecar lockfiles
 2. Exported .cls tree   → scaffold Python models + sidecar lockfiles
 
-The generated Python defaults to editable Plan C models, while the sidecar
+The generated Python defaults to editable typed models, while the sidecar
 lockfiles preserve IRIS-owned details such as storage, indexes, and class
 parameters.
 """
@@ -39,7 +39,7 @@ written = scaffold_from_iris(
     "Demo.*",
     OUTPUT_ROOT,
     state_root=STATE_ROOT,
-    style="plan-c",
+    style="typed",
 )
 
 print("Scaffolded from live IRIS:")
@@ -63,7 +63,7 @@ if cls_root.exists():
         cls_root,
         OUTPUT_ROOT,
         state_root=STATE_ROOT,
-        style="plan-c",
+        style="typed",
         refresh=True,
     )
     print("\nScaffolded from .cls:")
@@ -83,7 +83,7 @@ refreshed = refresh_from_iris(
     "Demo.*",
     OUTPUT_ROOT,
     state_root=STATE_ROOT,
-    style="plan-c",
+    style="typed",
 )
 
 print("\nRefreshed scaffold from live IRIS:")

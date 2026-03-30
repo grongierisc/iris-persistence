@@ -158,8 +158,8 @@ class MigrationRunner:
         description:
             Short human-readable label, e.g. ``"add views field"``.
         models:
-            List of Python-first IRISModel classes to diff.
-            If omitted, all registered Plan-C models are used.
+            List of declared IRISModel classes to diff.
+            If omitted, all registered declared models are used.
 
         Returns
         -------
@@ -170,7 +170,7 @@ class MigrationRunner:
             from iris_orm.metaclass import _MODEL_REGISTRY  # noqa: PLC0415
             models = [
                 cls for cls in _MODEL_REGISTRY.values()
-                if getattr(cls, "_iris_python_first", False)
+                if getattr(cls, "_iris_declared_model", False)
             ]
 
         existing = _load_migration_files(self.migrations_dir)

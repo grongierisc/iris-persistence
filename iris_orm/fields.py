@@ -1,5 +1,5 @@
 """
-Field and relationship definition helpers for Python-first (Plan C) models.
+Field and relationship definition helpers for declared model classes.
 """
 from __future__ import annotations
 

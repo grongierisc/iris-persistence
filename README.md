@@ -29,12 +29,12 @@ for art in Article.objects.filter(Views=1):
     print(art.Title)
 ```
 
-## 1.2. Two modes
+## 1.2. Two workflows
 
 | Mode | When to use | How |
 |---|---|---|
-| **Plan A** (introspection) | IRIS class already exists | `_iris_classname = "Demo.X"` — descriptors auto-injected |
-| **Plan C** (Python-first) | Greenfield, Python is source of truth | Add typed annotations + `field()` metadata |
+| **Existing-class binding** | IRIS class already exists | `_iris_classname = "Demo.X"` — descriptors auto-injected |
+| **Declared model** | Greenfield, Python is source of truth | Add typed annotations + `field()` metadata |
 
 ## 1.3. Schema sync
 
@@ -127,7 +127,7 @@ python -m iris_orm.migrations current
 
 ```
 iris_orm/
-  connection.py        IRISConnection (embedded + remote SQLAlchemy)
+  connection.py        IRISConnection (embedded IRIS runtime helper)
   metaclass.py         IRISMeta, IRISModel, IRISSerial
   descriptors.py       IRISDescriptor, IRISRelationshipDescriptor, …
   fields.py            field(), relationship() helpers

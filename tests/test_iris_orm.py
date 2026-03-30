@@ -601,13 +601,13 @@ class TestIRISQuerySet:
 
 
 # ===========================================================================
-# TestIRISModel — Plan A
+# TestIRISModel — existing-class binding
 # ===========================================================================
 
-class TestIRISModelPlanA:
+class TestIRISModelExistingBinding:
     @pytest.fixture(autouse=True)
-    def setup_plan_a_model(self, fake_iris):
-        """Set up fake IRIS introspection rows and create a Plan A model."""
+    def setup_existing_binding_model(self, fake_iris):
+        """Set up fake IRIS introspection rows and create a bound model."""
         rows = [
             ("Name", "%String", 1, "", ""),
             ("Score", "%Integer", 0, "", ""),
@@ -692,17 +692,17 @@ class TestIRISModelPlanA:
         instance = _wrap_iris_obj(self.Widget, iris_obj)
         assert instance.pk == "7"
 
-    def test_iris_python_first_is_false(self):
-        assert self.Widget._iris_python_first is False
+    def test_declared_model_flag_is_false(self):
+        assert self.Widget._iris_declared_model is False
 
 
 # ===========================================================================
-# TestIRISModel — Plan C
+# TestIRISModel — declared models
 # ===========================================================================
 
-class TestIRISModelPlanC:
+class TestIRISModelDeclared:
     @pytest.fixture(autouse=True)
-    def setup_plan_c_model(self, fake_iris):
+    def setup_declared_model(self, fake_iris):
         from iris_orm.metaclass import _MODEL_REGISTRY
         _MODEL_REGISTRY.pop("Demo.Article", None)
         _MODEL_REGISTRY.pop("Demo.Section", None)
@@ -727,8 +727,8 @@ class TestIRISModelPlanC:
         self.Article = Article
         self.Section = Section
 
-    def test_iris_python_first_is_true(self):
-        assert self.Article._iris_python_first is True
+    def test_declared_model_flag_is_true(self):
+        assert self.Article._iris_declared_model is True
 
     def test_descriptors_injected_for_annotations(self):
         assert isinstance(self.Article.__dict__.get("Title"), IRISDescriptor)
@@ -847,9 +847,9 @@ class TestSchema:
         assert "Relationship author" in src
         assert "Cardinality = one" in src
 
-    def test_generate_cls_raises_for_plan_a(self, fake_iris):
+    def test_generate_cls_raises_for_existing_binding(self, fake_iris):
         from iris_orm.metaclass import _MODEL_REGISTRY
-        _MODEL_REGISTRY.pop("Demo.PlanAWidget", None)
+        _MODEL_REGISTRY.pop("Demo.BoundWidget", None)
 
         rows = [("X", "%String", 0, "", "")]
         fake_iris.sql.exec.return_value = iter(rows)
@@ -857,11 +857,11 @@ class TestSchema:
         from iris_orm import IRISModel
         from iris_orm.schema import generate_cls
 
-        class PlanAWidget(IRISModel):
-            _iris_classname = "Demo.PlanAWidget"
+        class BoundWidget(IRISModel):
+            _iris_classname = "Demo.BoundWidget"
 
-        with pytest.raises(ValueError, match="Plan A"):
-            generate_cls(PlanAWidget)
+        with pytest.raises(ValueError, match="existing IRIS class"):
+            generate_cls(BoundWidget)
 
     def test_write_cls_creates_file(self, tmp_path):
         from iris_orm.schema import write_cls
@@ -964,16 +964,16 @@ class TestStubGenerator:
 
 
 # ---------------------------------------------------------------------------
-# Plan A fallthrough & bind() — the "binding to an existing class" scenario
+# Existing-class binding fallthrough & bind()
 # ---------------------------------------------------------------------------
 
-class TestPlanAFallthrough:
-    """Tests that Plan A models work even when introspection returned no props
+class TestExistingBindingFallthrough:
+    """Tests that bound models work even when introspection returned no props
     (e.g. no IRIS connection at class-definition time).  __getattr__/__setattr__
     fall through to the underlying IRIS object."""
 
-    def _empty_plan_a_class(self, fake_iris):
-        """Return a Plan A class whose metaclass found NO properties."""
+    def _empty_existing_binding_class(self, fake_iris):
+        """Return a bound class whose metaclass found no properties."""
         fake_iris.sql.exec.return_value = iter([])  # empty → no descriptors injected
         from iris_orm import IRISModel
 
@@ -983,7 +983,7 @@ class TestPlanAFallthrough:
         return Article
 
     def test_getattr_fallthrough_reads_from_iris_obj(self, fake_iris):
-        Article = self._empty_plan_a_class(fake_iris)
+        Article = self._empty_existing_binding_class(fake_iris)
 
         iris_obj = MagicMock()
         iris_obj.Title = "Hello"
@@ -997,7 +997,7 @@ class TestPlanAFallthrough:
         assert instance.Title == "Hello"
 
     def test_setattr_fallthrough_writes_to_iris_obj(self, fake_iris):
-        Article = self._empty_plan_a_class(fake_iris)
+        Article = self._empty_existing_binding_class(fake_iris)
 
         iris_obj = MagicMock()
         iris_obj.Title = ""
@@ -1010,7 +1010,7 @@ class TestPlanAFallthrough:
         assert iris_obj.Title == "Updated"
 
     def test_getattr_raises_for_private_names(self, fake_iris):
-        Article = self._empty_plan_a_class(fake_iris)
+        Article = self._empty_existing_binding_class(fake_iris)
 
         iris_obj = MagicMock()
         iris_obj._Id.return_value = "3"
@@ -1055,8 +1055,8 @@ class TestPlanAFallthrough:
         assert "Title" in Article.__dict__
         assert isinstance(Article.__dict__["Title"], IRISDescriptor)
 
-    def test_bind_raises_for_python_first_class(self, fake_iris):
-        """bind() on a Plan C class should raise RuntimeError."""
+    def test_bind_raises_for_declared_model(self, fake_iris):
+        """bind() on a declared model should raise RuntimeError."""
         fake_iris.sql.exec.return_value = iter([])
         from iris_orm import IRISModel, field
 
@@ -1064,7 +1064,7 @@ class TestPlanAFallthrough:
             _iris_classname = "Demo.Article4"
             Title: str = field()
 
-        with pytest.raises(RuntimeError, match="Plan C"):
+        with pytest.raises(RuntimeError, match="declared in Python"):
             Article.bind()
 
     def test_descriptor_takes_priority_over_fallthrough(self, fake_iris):
@@ -1127,45 +1127,12 @@ class TestIRISConnection:
         fake_iris.cls.assert_called_with("Demo.Foo")
         assert result is fake_iris.cls.return_value
 
-    def test_remote_sql_exec_calls_engine_connect(self, fake_iris):
-        from iris_orm.connection import IRISConnection
-        mock_engine = MagicMock()
-        mock_conn = MagicMock()
-        mock_engine.connect.return_value = mock_conn
-        mock_sa = MagicMock()
-        mock_sa.text.return_value = "mock_text_clause"
-        with patch.dict(sys.modules, {"sqlalchemy": mock_sa}):
-            conn = IRISConnection(mock_engine)
-            conn.sql_exec("SELECT ?", ["val"])
-        mock_engine.connect.assert_called_once()
-        mock_conn.execute.assert_called_once()
-
-    def test_remote_iris_cls_raises_not_implemented(self, fake_iris):
-        from iris_orm.connection import IRISConnection
-        mock_engine = MagicMock()
-        conn = IRISConnection(mock_engine)
-        with pytest.raises(NotImplementedError, match="remote connection"):
-            conn.iris_cls("Demo.Foo")
-
     def test_context_manager_embedded(self, fake_iris):
         from iris_orm.connection import IRISConnection
         fake_iris.sql.exec.return_value = iter([])
         with IRISConnection() as conn:
             conn.sql_exec("SELECT 1")
         fake_iris.sql.exec.assert_called_once()
-
-    def test_context_manager_remote_opens_and_closes_conn(self, fake_iris):
-        from iris_orm.connection import IRISConnection
-        mock_engine = MagicMock()
-        mock_sa_conn = MagicMock()
-        mock_engine.connect.return_value = mock_sa_conn
-        mock_sa = MagicMock()
-        mock_sa.text.return_value = "mock_text"
-        with patch.dict(sys.modules, {"sqlalchemy": mock_sa}):
-            with IRISConnection(mock_engine) as conn:
-                conn.sql_exec("SELECT 1")
-        mock_engine.connect.assert_called_once()
-        mock_sa_conn.close.assert_called_once()
 
 
 # ===========================================================================
@@ -1439,55 +1406,10 @@ class TestSchemaManager:
 
 
 # ===========================================================================
-# TestIRISModelEngine
+# TestIRISModelClassAPI
 # ===========================================================================
 
-class TestIRISModelEngine:
-    def test_engine_stored_on_class(self, fake_iris):
-        from iris_orm.metaclass import _MODEL_REGISTRY
-        _MODEL_REGISTRY.pop("Eng.Model", None)
-        from iris_orm import IRISModel, field
-        mock_engine = MagicMock()
-
-        class EngModel(IRISModel):
-            _iris_classname = "Eng.Model"
-            _iris_engine = mock_engine
-            Name: str = field()
-
-        assert EngModel._iris_engine is mock_engine
-
-    def test_create_with_engine_raises_not_implemented(self, fake_iris):
-        from iris_orm.metaclass import _MODEL_REGISTRY
-        _MODEL_REGISTRY.pop("Eng.Model2", None)
-        from iris_orm import IRISModel, field
-        mock_engine = MagicMock()
-
-        class EngModel2(IRISModel):
-            _iris_classname = "Eng.Model2"
-            _iris_engine = mock_engine
-            Name: str = field()
-
-        with pytest.raises(NotImplementedError):
-            EngModel2.create(Name="test")
-
-    def test_delete_with_engine_raises_not_implemented(self, fake_iris):
-        from iris_orm.metaclass import _MODEL_REGISTRY
-        _MODEL_REGISTRY.pop("Eng.Model3", None)
-        from iris_orm import IRISModel, field
-        mock_engine = MagicMock()
-
-        class EngModel3(IRISModel):
-            _iris_classname = "Eng.Model3"
-            _iris_engine = mock_engine
-            Name: str = field()
-
-        # Create an instance with a fake iris_obj and id to trigger delete
-        inst = object.__new__(EngModel3)
-        object.__setattr__(inst, "_iris_obj", MagicMock())
-        object.__setattr__(inst, "_iris_id", "42")
-        with pytest.raises(NotImplementedError):
-            inst.delete()
-
+class TestIRISModelClassAPI:
     def test_schema_property_accessible_on_class(self, fake_iris):
         from iris_orm.metaclass import _MODEL_REGISTRY
         _MODEL_REGISTRY.pop("Eng.Model4", None)
@@ -1549,10 +1471,10 @@ class TestIRISSerial:
         return inst
 
     # -----------------------------------------------------------------------
-    # Plan C basics
+    # Declared serial basics
     # -----------------------------------------------------------------------
 
-    def test_plan_c_serial_descriptors_injected(self):
+    def test_declared_serial_descriptors_injected(self):
         from iris_orm.metaclass import _MODEL_REGISTRY
         _MODEL_REGISTRY.pop("Demo.Ser.Addr1", None)
         from iris_orm import IRISSerial
@@ -1565,7 +1487,7 @@ class TestIRISSerial:
         assert isinstance(Addr1.__dict__.get("City"), IRISDescriptor)
         assert isinstance(Addr1.__dict__.get("State"), IRISDescriptor)
 
-    def test_plan_c_serial_is_python_first(self):
+    def test_declared_serial_flag_is_true(self):
         from iris_orm.metaclass import _MODEL_REGISTRY
         _MODEL_REGISTRY.pop("Demo.Ser.Addr2", None)
         from iris_orm import IRISSerial
@@ -1574,9 +1496,9 @@ class TestIRISSerial:
             _iris_classname = "Demo.Ser.Addr2"
             City: str
 
-        assert Addr2._iris_python_first is True
+        assert Addr2._iris_declared_model is True
 
-    def test_plan_c_serial_registered_in_model_registry(self):
+    def test_declared_serial_registered_in_model_registry(self):
         from iris_orm.metaclass import _MODEL_REGISTRY
         _MODEL_REGISTRY.pop("Demo.Ser.Addr3", None)
         from iris_orm import IRISSerial
@@ -1728,7 +1650,7 @@ class TestIRISSerial:
         assert result is desc
 
     # -----------------------------------------------------------------------
-    # Parent model with serial property (Plan C)
+    # Parent model with serial property (declared model)
     # -----------------------------------------------------------------------
 
     def test_parent_model_serial_property_injects_serial_descriptor(self):
@@ -1963,20 +1885,20 @@ class TestEnsureIrisClass:
             # Should have created %Dictionary.ClassDefinition
             conn.iris_cls.assert_any_call("%Dictionary.ClassDefinition")
 
-    def test_ensure_iris_class_raises_for_plan_a(self, fake_iris):
+    def test_ensure_iris_class_raises_for_existing_binding(self, fake_iris):
         from iris_orm.metaclass import _MODEL_REGISTRY
-        _MODEL_REGISTRY.pop("Dict.PlanA", None)
+        _MODEL_REGISTRY.pop("Dict.Bound", None)
         from iris_orm import IRISModel
         from iris_orm.schema import _ensure_iris_class_impl
 
         rows = [("X", "%String", 0, "", "")]
         fake_iris.sql.exec.return_value = iter(rows)
 
-        class PlanAOnly(IRISModel):
-            _iris_classname = "Dict.PlanA"
+        class ExistingBindingOnly(IRISModel):
+            _iris_classname = "Dict.Bound"
 
-        with pytest.raises(ValueError, match="Plan A"):
-            _ensure_iris_class_impl(PlanAOnly)
+        with pytest.raises(ValueError, match="existing IRIS class"):
+            _ensure_iris_class_impl(ExistingBindingOnly)
 
     def test_ensure_iris_class_skips_creation_when_exists(self, fake_iris):
         from iris_orm.schema import _ensure_iris_class_impl

@@ -15,12 +15,19 @@ from typing import Any
 
 from .errors import LockfileDriftError, UnsupportedClassFeatureError
 from .introspection import IndexInfo, PropertyInfo, RelationshipInfo, UnsupportedFeatureInfo, get_class_details, list_classes
-from .lockfile import IRISLockfile, compute_hash, lockfile_path_for_class, timestamp_utc, write_lockfile
+from .lockfile import (
+    IRISLockfile,
+    compute_hash,
+    lockfile_path_for_class,
+    timestamp_utc,
+    write_lockfile,
+)
 from .types import iris_type_to_annotation
 
 GENERATED_START = "# <iris_orm:generated>"
 GENERATED_END = "# </iris_orm:generated>"
 STATE_DIR = ".iris_orm/state"
+_SCAFFOLD_STYLES = {"existing", "typed"}
 
 
 @dataclass(frozen=True)
@@ -46,12 +53,15 @@ def scaffold_from_iris(
     pattern: str,
     output_root: str | Path,
     *,
-    style: str = "plan-c",
+    style: str = "typed",
     refresh: bool = False,
     state_root: str | Path = STATE_DIR,
     conn: Any = None,
 ) -> list[Path]:
     """Scaffold models for classes matching *pattern* from a live IRIS namespace."""
+    style = str(style).strip().lower()
+    if style not in _SCAFFOLD_STYLES:
+        raise ValueError(f"Unsupported scaffold style: {style!r}")
     classnames = list_classes(pattern, conn)
     infos = [get_class_details(classname, conn) for classname in classnames]
     return _write_scaffold_batch(
@@ -68,11 +78,14 @@ def scaffold_from_cls(
     cls_root: str | Path,
     output_root: str | Path,
     *,
-    style: str = "plan-c",
+    style: str = "typed",
     refresh: bool = False,
     state_root: str | Path = STATE_DIR,
 ) -> list[Path]:
     """Scaffold models from exported .cls files."""
+    style = str(style).strip().lower()
+    if style not in _SCAFFOLD_STYLES:
+        raise ValueError(f"Unsupported scaffold style: {style!r}")
     parsed = parse_cls_tree(cls_root)
     return _write_scaffold_batch(
         parsed,
@@ -88,7 +101,7 @@ def refresh_from_iris(
     pattern: str,
     output_root: str | Path,
     *,
-    style: str = "plan-c",
+    style: str = "typed",
     state_root: str | Path = STATE_DIR,
     conn: Any = None,
 ) -> list[Path]:
@@ -319,12 +332,15 @@ def write_scaffold(
     *,
     output_root: str | Path,
     state_root: str | Path = STATE_DIR,
-    style: str = "plan-c",
+    style: str = "typed",
     refresh: bool = False,
     class_map: dict[str, Any] | None = None,
     source: SourceInfo | None = None,
 ) -> Path:
     """Write scaffolded Python + lockfile for *info*."""
+    style = str(style).strip().lower()
+    if style not in _SCAFFOLD_STYLES:
+        raise ValueError(f"Unsupported scaffold style: {style!r}")
     class_map = class_map or {info.classname: info}
     output_path = python_path_for_class(output_root, info.classname)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -383,12 +399,15 @@ def write_scaffold(
 def render_model(
     info: Any,
     *,
-    style: str = "plan-c",
+    style: str = "typed",
     class_map: dict[str, Any] | None = None,
     output_path: str | Path | None = None,
     state_root: str | Path = STATE_DIR,
 ) -> str:
     """Render the generated section for a scaffolded model."""
+    style = str(style).strip().lower()
+    if style not in _SCAFFOLD_STYLES:
+        raise ValueError(f"Unsupported scaffold style: {style!r}")
     class_map = class_map or {info.classname: info}
     lines: list[str] = [GENERATED_START]
     imports = _render_imports(info, style=style, class_map=class_map)
@@ -413,7 +432,7 @@ def render_model(
     if getattr(info, "super", "") not in {"", "%Persistent", "%SerialObject"}:
         lines.append(f'    # Preserved IRIS superclass in sidecar: {getattr(info, "super", "")}')
 
-    if style == "plan-a":
+    if style == "existing":
         lines.append(GENERATED_END)
         return "\n".join(lines)
 
@@ -441,7 +460,7 @@ def _render_imports(
 ) -> list[str]:
     base_class = "IRISSerial" if getattr(info, "super", "") == "%SerialObject" else "IRISModel"
     names = {base_class}
-    if style == "plan-c":
+    if style == "typed":
         names.add("field")
         if getattr(info, "relationships", []):
             names.add("relationship")
@@ -698,9 +717,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--style",
-        default="plan-c",
-        choices=["plan-a", "plan-c"],
-        help="Scaffold style (default: plan-c)",
+        default="typed",
+        choices=sorted(_SCAFFOLD_STYLES),
+        metavar="STYLE",
+        help="Scaffold style: typed or existing (default: typed)",
     )
     parser.add_argument(
         "--module",

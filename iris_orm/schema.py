@@ -1,5 +1,5 @@
 """
-Git-style schema sync for IRIS ORM (Plan C).
+Git-style schema sync for declared IRIS ORM models.
 
 API
 ---
@@ -13,9 +13,6 @@ Post.schema.delete_property(name) → permanently delete a property from IRIS vi
 
 Schema operations use %Dictionary exclusively — no .cls file generation or compilation is required.
 
-Connection
-----------
-Uses the model's _iris_engine (None = embedded iris module, or SQLAlchemy engine).
 """
 from __future__ import annotations
 
@@ -331,8 +328,7 @@ class SchemaManager:
         from .connection import IRISConnection  # noqa: PLC0415
         from .introspection import get_class_properties  # noqa: PLC0415
 
-        engine = getattr(self._cls, "_iris_engine", None)
-        conn = IRISConnection(engine)
+        conn = IRISConnection()
         props = get_class_properties(self._cls._iris_classname, conn)
         return {p.name: p.iris_type for p in props}
 
@@ -351,7 +347,7 @@ class SchemaManager:
         iris_props: dict[str, str] = self.fetch()
         from .connection import IRISConnection  # noqa: PLC0415
 
-        conn = IRISConnection(getattr(self._cls, "_iris_engine", None))
+        conn = IRISConnection()
         lockfile_drift, storage_conflicts = _lockfile_drift_messages(self._cls, conn)
 
         python_added   = [k for k in python_props if k not in snapshot]
@@ -428,8 +424,7 @@ class SchemaManager:
 
         from .connection import IRISConnection  # noqa: PLC0415
 
-        engine = getattr(self._cls, "_iris_engine", None)
-        conn = IRISConnection(engine)
+        conn = IRISConnection()
         _assert_no_sidecar_drift(self._cls, conn)
 
         if d.python_added or d.python_changed:
@@ -488,14 +483,14 @@ class SchemaManager:
 
         This is the recommended replacement for compile_to_iris().
         """
-        if not getattr(self._cls, "_iris_python_first", False):
+        if not getattr(self._cls, "_iris_declared_model", False):
             raise ValueError(
-                "ensure_iris_class() requires a Python-first (Plan C) model class; "
-                f"{self._cls.__name__!r} was created in Plan A (introspection) mode."
+                "ensure_iris_class() requires a declared model class; "
+                f"{self._cls.__name__!r} is bound to an existing IRIS class."
             )
         from .connection import IRISConnection  # noqa: PLC0415
 
-        conn = IRISConnection(getattr(self._cls, "_iris_engine", None))
+        conn = IRISConnection()
         _assert_no_sidecar_drift(self._cls, conn)
         _ensure_iris_class_impl(self._cls)
 
@@ -515,8 +510,7 @@ class SchemaManager:
         """
         from .connection import IRISConnection  # noqa: PLC0415
 
-        engine = getattr(self._cls, "_iris_engine", None)
-        conn = IRISConnection(engine)
+        conn = IRISConnection()
         prop_id = f"{self._cls._iris_classname}||{name}"
         try:
             conn.iris_cls("%Dictionary.PropertyDefinition")._DeleteId(prop_id)
@@ -563,8 +557,7 @@ class SchemaManager:
             from .descriptors import IRISDescriptor  # noqa: PLC0415
             from .introspection import get_class_properties  # noqa: PLC0415
 
-            engine = getattr(self._cls, "_iris_engine", None)
-            conn = IRISConnection(engine)
+            conn = IRISConnection()
             all_iris_props = get_class_properties(self._cls._iris_classname, conn)
             iris_prop_map = {p.name: p for p in all_iris_props}
 
@@ -660,10 +653,10 @@ def _ensure_iris_class_impl(model_class: type, flags: str = "ck") -> None:
     3. Upsert every relationship via %Dictionary.RelationshipDefinition.
     4. Recompile with %SYSTEM.OBJ.Compile.
     """
-    if not getattr(model_class, "_iris_python_first", False):
+    if not getattr(model_class, "_iris_declared_model", False):
         raise ValueError(
-            "ensure_iris_class() requires a Python-first (Plan C) model class; "
-            f"{model_class.__name__!r} was created in Plan A (introspection) mode."
+            "ensure_iris_class() requires a declared model class; "
+            f"{model_class.__name__!r} is bound to an existing IRIS class."
         )
 
     from .connection import IRISConnection  # noqa: PLC0415
@@ -679,8 +672,7 @@ def _ensure_iris_class_impl(model_class: type, flags: str = "ck") -> None:
     except LockfileDriftError:
         lockfile = None
 
-    engine = getattr(model_class, "_iris_engine", None)
-    conn = IRISConnection(engine)
+    conn = IRISConnection()
 
     # 1. Create the class definition if it does not already exist.
     class_def = None
@@ -727,10 +719,10 @@ def _ensure_iris_class_impl(model_class: type, flags: str = "ck") -> None:
 
 def _generate_cls_impl(model_class: type, storage: str | None = None) -> str:
     """Generate an ObjectScript .cls source string (legacy; prefer ensure_iris_class)."""
-    if not getattr(model_class, "_iris_python_first", False):
+    if not getattr(model_class, "_iris_declared_model", False):
         raise ValueError(
-            f"generate_cls() requires a Python-first (Plan C) model class; "
-            f"{model_class.__name__!r} was created in Plan A (introspection) mode."
+            f"generate_cls() requires a declared model class; "
+            f"{model_class.__name__!r} is bound to an existing IRIS class."
         )
 
     is_serial: bool = getattr(model_class, "_iris_serial", False)

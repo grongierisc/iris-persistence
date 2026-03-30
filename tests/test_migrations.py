@@ -410,21 +410,21 @@ class TestAutogenerate:
             ops = diff_models([self.Article], applied_state, conn)
         assert ops == []
 
-    def test_diff_skips_plan_a_models(self, fake_iris):
+    def test_diff_skips_existing_binding_models(self, fake_iris):
         from iris_orm.metaclass import _MODEL_REGISTRY
-        _MODEL_REGISTRY.pop("Mig.PlanA", None)
+        _MODEL_REGISTRY.pop("Mig.Bound", None)
         from iris_orm import IRISModel
         from iris_orm.migrations.autogenerate import diff_models
 
         rows = [("X", "%String", 0, "", "")]
         fake_iris.sql.exec.return_value = iter(rows)
 
-        class MigPlanA(IRISModel):
-            _iris_classname = "Mig.PlanA"
+        class MigExistingBinding(IRISModel):
+            _iris_classname = "Mig.Bound"
 
         conn = _make_conn()
         with patch("iris_orm.schema._class_exists_in_iris", return_value=False):
-            ops = diff_models([MigPlanA], {}, conn)
+            ops = diff_models([MigExistingBinding], {}, conn)
         assert ops == []
 
     def test_load_state_from_migrations_replay(self):

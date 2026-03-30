@@ -1,79 +1,45 @@
 """
-Connection abstraction for IRIS ORM.
-
-Supports embedded (iris module) and remote (SQLAlchemy engine) connections.
+Embedded IRIS connection helpers used across the ORM runtime.
 """
 from __future__ import annotations
 
-import re
 from typing import Any
 
 
 class IRISConnection:
-    """Wraps an iris connection — either embedded (iris module) or remote (SQLAlchemy engine).
+    """Thin wrapper around the embedded ``iris`` module."""
 
-    Usage:
-        conn = IRISConnection()                    # embedded
-        conn = IRISConnection(engine)              # SQLAlchemy engine
+    def __init__(self) -> None:
+        self._iris = self._import_iris()
 
-    Context manager:
-        with IRISConnection(engine) as conn:
-            conn.sql_exec(sql, params)
-            conn.iris_cls(classname)
-    """
+    @staticmethod
+    def _import_iris() -> Any:
+        import iris  # noqa: PLC0415
 
-    def __init__(self, engine: Any = None) -> None:
-        self._engine = engine
-        self._sa_conn: Any = None
+        return iris
 
-    # ------------------------------------------------------------------
     def sql_exec(self, sql: str, params: list | None = None) -> Any:
-        """Execute *sql* and return an iterable of rows.
+        """Execute SQL through the embedded IRIS runtime."""
+        return self._iris.sql.exec(sql, params) if params else self._iris.sql.exec(sql)
 
-        Embedded: delegates to ``iris.sql.exec``.
-        Remote:   delegates to ``engine.connect().execute(text(sql), params)``.
-        """
-        if self._engine is None:
-            import iris  # noqa: PLC0415
-            return iris.sql.exec(sql, params) if params else iris.sql.exec(sql)
-
-        from sqlalchemy import text  # noqa: PLC0415
-        params_list = list(params or [])
-        # Convert ? positional placeholders → :p0, :p1, … for SQLAlchemy
-        idx = [0]
-        param_dict: dict[str, Any] = {}
-
-        def _sub(m: re.Match) -> str:  # noqa: ARG001
-            k = f"p{idx[0]}"
-            if idx[0] < len(params_list):
-                param_dict[k] = params_list[idx[0]]
-            idx[0] += 1
-            return f":{k}"
-
-        sa_sql = re.sub(r"\?", _sub, sql)
-        active_conn = self._sa_conn if self._sa_conn is not None else self._engine.connect()
-        return active_conn.execute(text(sa_sql), param_dict)
-
-    # ------------------------------------------------------------------
     def iris_cls(self, classname: str) -> Any:
-        """Return the IRIS class proxy for *classname*.
+        """Return the IRIS class proxy for *classname*."""
+        return self._iris.cls(classname)
 
-        Raises NotImplementedError for remote connections — use sql_exec instead.
-        """
-        if self._engine is None:
-            import iris  # noqa: PLC0415
-            return iris.cls(classname)
-        raise NotImplementedError(
-            "Direct Object API not supported over remote connection; use sql_exec instead"
-        )
+    def new_object(self, classname: str) -> Any:
+        """Instantiate an IRIS object for *classname*."""
+        return self.iris_cls(classname)._New()
 
-    # ------------------------------------------------------------------
+    def open_object(self, classname: str, obj_id: str) -> Any:
+        """Open an IRIS object by ID."""
+        return self.iris_cls(classname)._OpenId(obj_id)
+
+    def delete_object(self, classname: str, obj_id: str) -> None:
+        """Delete an IRIS object by ID."""
+        self.iris_cls(classname)._DeleteId(obj_id)
+
     def __enter__(self) -> "IRISConnection":
-        if self._engine is not None:
-            self._sa_conn = self._engine.connect()
         return self
 
     def __exit__(self, *args: Any) -> None:
-        if self._sa_conn is not None:
-            self._sa_conn.close()
-            self._sa_conn = None
+        return None

@@ -1,6 +1,6 @@
 """
-02_plan_c.py — Plan C: Python-first model definition
-=====================================================
+02_typed_model.py — Declared model definition
+=============================================
 
 Use this when Python is the source of truth.  You define the schema in Python
 using typed annotations + field() metadata, then create the IRIS class directly
@@ -40,7 +40,7 @@ print("IRIS class created/updated via %Dictionary")
 
 
 # ---------------------------------------------------------------------------
-# 3. CRUD — identical to Plan A once the class exists
+# 3. CRUD — identical once the class exists
 # ---------------------------------------------------------------------------
 
 a = Article(Title="Hello iris_orm", Slug="hello-iris-orm", Body="...")

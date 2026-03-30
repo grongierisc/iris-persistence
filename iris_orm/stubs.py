@@ -13,7 +13,7 @@ def generate_stub(classname: str) -> str:
     """
     Generate a .pyi stub for the given IRIS classname.
 
-    Queries IRIS properties via introspection (Plan A style) and also
+    Queries IRIS properties via existing-class introspection and also
     checks the _MODEL_REGISTRY for relationship definitions.
     """
     from .introspection import get_class_properties

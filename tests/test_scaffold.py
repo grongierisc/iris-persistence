@@ -80,7 +80,7 @@ class TestScaffoldFromIris:
         assert '"storage_definition": "Storage Default { <Data name' in lock_content
         assert '"indexes"' in lock_content
 
-    def test_render_plan_a_style_is_minimal(self):
+    def test_render_existing_style_is_minimal(self):
         from iris_orm.introspection import ClassDetails
         from iris_orm.scaffold import render_model
 
@@ -95,7 +95,7 @@ class TestScaffoldFromIris:
                 storage_definition="",
                 unsupported_features=[],
             ),
-            style="plan-a",
+            style="existing",
         )
         assert "field(" not in rendered
         assert "relationship(" not in rendered
@@ -241,7 +241,7 @@ class TestSchemaSidecarDrift:
                 class_parameters={},
                 indexes=[],
                 source={"kind": "iris", "origin": "Demo.*"},
-                scaffold_style="plan-c",
+                scaffold_style="typed",
                 generated_at="2026-01-01T00:00:00Z",
             ),
         )
@@ -285,7 +285,7 @@ class TestSchemaSidecarDrift:
                 class_parameters={},
                 indexes=[],
                 source={"kind": "iris", "origin": "Demo.*"},
-                scaffold_style="plan-c",
+                scaffold_style="typed",
                 generated_at="2026-01-01T00:00:00Z",
             ),
         )

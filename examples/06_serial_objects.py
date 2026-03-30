@@ -6,17 +6,17 @@ They live inside a parent %Persistent object and are accessed as property values
 
 Contents
 --------
-1. Basic Plan C serial definition (Address inside Customer)
+1. Basic declared serial definition (Address inside Customer)
 2. Schema generation and compilation for serial + parent classes
 3. Creating/reading a Customer with a serial Address
 4. Nested serials: GeoPoint inside Address
-5. Plan A (introspection-first) usage with bind()
+5. Existing-class binding usage with bind()
 """
 from __future__ import annotations
 import sys
 sys.path.insert(0, "./src/python/")
 # ---------------------------------------------------------------------------
-# 1. Basic Plan C serial definition
+# 1. Basic declared serial definition
 # ---------------------------------------------------------------------------
 
 # Import IRISSerial alongside IRISModel.  Serial classes extend IRISSerial
@@ -162,24 +162,24 @@ def demo_nested_serial_schema() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5. Plan A usage with bind()
+# 5. Existing-class binding with bind()
 # ---------------------------------------------------------------------------
 
 class LegacyAddress(IRISSerial):
-    """Plan A serial — introspection-first (bind() populates descriptors)."""
+    """Existing-class serial binding; bind() populates descriptors."""
     _iris_classname = "Demo.LegacyAddress"
     # No typed annotations here; call bind() after connecting to IRIS.
 
 
-def demo_plan_a_serial() -> None:
+def demo_existing_binding_serial() -> None:
     """
-    Demonstrate Plan A (introspection-first) workflow for a serial class.
+    Demonstrate existing-class binding for a serial class.
 
     After connecting to a live IRIS instance that already has Demo.LegacyAddress
     compiled, call bind() to inject descriptors from %Dictionary.PropertyDefinition.
     """
     print("=" * 60)
-    print("Plan A serial bind()")
+    print("Existing-class serial bind()")
     print("=" * 60)
 
     try:
@@ -199,7 +199,7 @@ def demo_plan_a_serial() -> None:
 if __name__ == "__main__":
     demo_schema_generation()
     demo_nested_serial_schema()
-    demo_plan_a_serial()
+    demo_existing_binding_serial()
 
     # These require a live IRIS connection:
     demo_write_cls()

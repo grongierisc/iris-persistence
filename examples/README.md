@@ -1,24 +1,20 @@
 # iris_orm examples
 
-Each file in this directory is a self-contained runnable example.
-They all require a live embedded IRIS connection.
+Each file is a small explicit-runtime example. They assume embedded IRIS is available when they touch live schema or runtime CRUD.
 
 | File | What it shows |
 |------|---------------|
-| `01_existing_class.py` | Binding to an existing IRIS class, CRUD, queries |
-| `02_typed_model.py` | Declared model definition, `.cls` generation |
-| `03_relationships.py` | One-to-many and parent/child relationships |
-| `04_schema_sync.py` | Git-style schema sync: status / push / pull / commit |
-| `07_brownfield_scaffold.py` | Brownfield import: scaffold Python + sidecar state from IRIS or `.cls` |
-| `08_python_first_sync.py` | Declared-model sync with adjacent lockfile and embedded storage metadata |
+| `01_existing_class.py` | Explicit brownfield binding with `Registry.bind_existing()` |
+| `02_typed_model.py` | Declared model export, schema planning, binding, and CRUD |
+| `03_relationships.py` | Parent/children relationships with the explicit session |
+| `04_schema_sync.py` | Schema diffing and live apply with `SchemaPlanner` + `SchemaApplier` |
+| `06_migrations.py` | Snapshot-based migration generation and upgrade |
+| `06_serial_objects.py` | Declared serial objects and nested persistence |
+| `07_brownfield_scaffold.py` | Scaffolding from live IRIS or exported `.cls` files |
+| `08_python_first_sync.py` | Python-owned schema sync plus adjacent canonical lockfile |
 
-## Running
+Run from the repository root:
 
 ```bash
-# From the src/python/ directory with a live embedded IRIS connection:
-python examples/01_existing_class.py
-python examples/02_typed_model.py
-...
-python examples/07_brownfield_scaffold.py
-python examples/08_python_first_sync.py
+PYTHONPATH=. python examples/02_typed_model.py
 ```

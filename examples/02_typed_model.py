@@ -1,65 +1,41 @@
 """
-02_typed_model.py — Declared model definition
-=============================================
-
-Use this when Python is the source of truth.  You define the schema in Python
-using typed annotations + field() metadata, then create the IRIS class directly
-via %Dictionary — no .cls files required.
-
-No IRIS class needs to exist beforehand — iris_orm creates it for you.
+02_typed_model.py — Declared model, explicit schema sync, and CRUD.
 """
 from __future__ import annotations
-import sys
-sys.path.insert(0, "./src/python/")
-from iris_orm import IRISModel, field
 
-# ---------------------------------------------------------------------------
-# 1. Define the model in Python
-# ---------------------------------------------------------------------------
+from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from iris_orm import IRISModel, Registry, field
+
+from examples._common import bind_session, sync_registry
+
 
 class Article(IRISModel):
     _iris_classname = "Demo.Article"
 
-    # Typed annotations + field() metadata drive everything:
-    Title:   str = field(required=True, maxlen=500, description="Article headline")
-    Slug:    str = field(required=True, maxlen=200, description="URL-safe identifier")
-    Body:    str = field(description="Full article body text")
-    Views:   int = field(default=0, description="View counter")
-    Published: bool = field(default=False)
+    Title: str = field(required=True, maxlen=500)
+    Views: int = field(default=0)
 
 
-# ---------------------------------------------------------------------------
-# 2. Create or update the IRIS class via %Dictionary (no .cls files)
-# ---------------------------------------------------------------------------
-# This creates the class definition and all properties directly in IRIS
-# using %Dictionary.ClassDefinition and %Dictionary.PropertyDefinition.
-# Call this whenever you add, change, or remove properties in your model.
+def main() -> None:
+    registry = Registry()
+    registry.register(Article)
 
-Article.schema.ensure_iris_class()
-print("IRIS class created/updated via %Dictionary")
+    adapter = sync_registry(registry)
+    _adapter, _binder, session = bind_session(registry, adapter=adapter)
 
+    article = Article(Title="Hello explicit runtime", Views=1)
+    session.add(article)
+    session.commit()
 
-# ---------------------------------------------------------------------------
-# 3. CRUD — identical once the class exists
-# ---------------------------------------------------------------------------
-
-a = Article(Title="Hello iris_orm", Slug="hello-iris-orm", Body="...")
-a.save()
-print(f"\nSaved: pk={a.pk}  Title={a.Title!r}  Views={a.Views}")
-
-a.Views = 1
-a.save()
-
-loaded = Article.get(a.pk)
-print(f"Loaded: Views={loaded.Views}")
-
-print(f"\nAll articles ({Article.objects.count()} total):")
-for art in Article.objects.all():
-    print(f"  [{art.pk}] {art.Title!r}  published={art.Published}")
+    loaded = session.get(Article, article.pk)
+    print("Saved id:", article.pk)
+    print("Loaded:", loaded.Title, loaded.Views)
 
 
-# ---------------------------------------------------------------------------
-# 4. Stub generation for IDE auto-complete
-# ---------------------------------------------------------------------------
-# python -m iris_orm.stubs Demo.Article ./src/python/
-# → writes ./src/python/Demo/Article.pyi
+if __name__ == "__main__":
+    main()

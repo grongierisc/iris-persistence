@@ -1,1075 +1,1137 @@
 """
-Git-style schema sync for declared IRIS ORM models.
-
-API
----
-Post.schema.status()           → 3-way diff (snapshot ↔ Python, snapshot ↔ IRIS)
-Post.schema.fetch()            → read IRIS schema into cache, no changes applied
-Post.schema.pull()             → fetch + apply IRIS additions to Python snapshot; ConflictError on conflicts
-Post.schema.push()             → apply Python additions/changes to IRIS via %Dictionary; ConflictError on conflicts
-Post.schema.commit()           → snapshot current Python definition as new baseline
-Post.schema.ensure_iris_class() → create or update the IRIS class using %Dictionary (no .cls files)
-Post.schema.delete_property(name) → permanently delete a property from IRIS via %Dictionary
-
-Schema operations use %Dictionary exclusively — no .cls file generation or compilation is required.
-
+Canonical schema AST plus compiler, planner, and live applier for IRIS.
 """
 from __future__ import annotations
 
-import re
-import warnings
 import inspect
+import re
 from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any
 
-from .errors import LockfileDriftError, StorageConflictError
-from .introspection import get_class_details
-from .lockfile import (
-    IRISLockfile,
-    compute_hash,
-    load_lockfile,
-    lockfile_path_for_module,
-    timestamp_utc,
-    write_lockfile,
-)
+from .adapter import IRISAdapter
+from .fields import FieldDefinition, RelationshipDefinition
+from .types import iris_type_to_python, python_type_to_iris, unwrap_optional
 
-# Cardinality mapping from Python strings → ObjectScript keywords
-_CARD_MAP: dict[str, str] = {
-    "children": "many",
-    "parent": "one",
-    "one": "one",
-    "many": "many",
-}
-
-_STORAGE_RE = re.compile(r"(Storage\s+\w+\s*\{.*?\}\s*\n?)", re.DOTALL)
+if TYPE_CHECKING:
+    from .registry import Registry
 
 
-# ---------------------------------------------------------------------------
-# %Dictionary helpers
-# ---------------------------------------------------------------------------
-
-def _class_exists_in_iris(classname: str, conn: Any) -> bool:
-    """Return True if the IRIS class already exists in %Dictionary."""
-    try:
-        rs = conn.sql_exec(
-            "SELECT Name FROM %Dictionary.ClassDefinition WHERE Name = ?",
-            [classname],
-        )
-    except Exception:
-        rs = []
-    for _ in rs:
-        return True
-    try:
-        exists = conn.iris_cls("%Dictionary.ClassDefinition")._ExistsId(classname)
-    except Exception:
-        exists = 0
-    return bool(exists)
-
-
-def _looks_like_iris_object(value: Any) -> bool:
-    """Return True when *value* behaves like an embedded IRIS object proxy."""
-    return value is not None and hasattr(value, "_Save")
-
-
-def _status_is_success(status: Any) -> bool:
-    """Return True when an IRIS %Status value represents success."""
-    return status in (None, 1, True) or str(status).strip() == "1"
-
-
-def _save_dictionary_item(item: Any, *, kind: str, identifier: str) -> None:
-    """Persist a %Dictionary object and raise on error statuses."""
-    try:
-        status = item._Save()
-    except Exception as exc:
-        raise RuntimeError(f"Failed to save {kind} {identifier!r}: {exc}") from exc
-    if not _status_is_success(status):
-        raise RuntimeError(f"Failed to save {kind} {identifier!r}: {status}")
-
-
-def _open_or_new_dictionary_item(
-    definition_cls: Any,
-    item_id: str,
-    *,
-    name: str,
-    parent: Any,
-) -> Any:
-    """Open a %Dictionary definition item or create a new one if unavailable."""
-    try:
-        item = definition_cls._OpenId(item_id)
-    except Exception:
-        item = None
-    if not _looks_like_iris_object(item):
-        item = definition_cls._New()
-        item.Name = name
-        item.parent = parent
-    return item
-
-
-def _upsert_property_via_dict(
-    classname: str,
-    class_def: Any,
-    prop: Any,
-    field_def: Any | None,
-    conn: Any,
-) -> None:
-    """Create or update a single property in IRIS using %Dictionary.PropertyDefinition."""
-    prop_def_cls = conn.iris_cls("%Dictionary.PropertyDefinition")
-    prop_id = f"{classname}||{prop.name}"
-    prop_def = _open_or_new_dictionary_item(
-        prop_def_cls,
-        prop_id,
-        name=prop.name,
-        parent=class_def,
-    )
-
-    prop_def.Type = prop.iris_type or "%String"
-    if field_def is not None:
-        prop_def.Required = int(field_def.required)
-        if field_def.collection:
-            prop_def.Collection = field_def.collection.capitalize()
-        if field_def.description:
-            prop_def.Description = field_def.description
-        if field_def.maxlen is not None:
-            prop_def.Parameters.SetAt(str(field_def.maxlen), "MAXLEN")
-    _save_dictionary_item(prop_def, kind="property", identifier=prop_id)
-
-
-def _upsert_relationship_via_dict(
-    classname: str,
-    class_def: Any,
-    rel_name: str,
-    rel_def: Any,
-    conn: Any,
-) -> None:
-    """Create or update a single relationship in IRIS using %Dictionary.RelationshipDefinition."""
-    rel_def_cls = conn.iris_cls("%Dictionary.RelationshipDefinition")
-    rel_id = f"{classname}||{rel_name}"
-    rel_iris = _open_or_new_dictionary_item(
-        rel_def_cls,
-        rel_id,
-        name=rel_name,
-        parent=class_def,
-    )
-
-    rel_iris.Type = rel_def.related_classname
-    rel_iris.Cardinality = _CARD_MAP.get(rel_def.cardinality, rel_def.cardinality)
-    rel_iris.Inverse = rel_def.inverse
-    if rel_def.description:
-        rel_iris.Description = rel_def.description
-    _save_dictionary_item(rel_iris, kind="relationship", identifier=rel_id)
-
-
-# ---------------------------------------------------------------------------
-# Conflict types
-# ---------------------------------------------------------------------------
-
-@dataclass
-class PropertyConflict:
+@dataclass(frozen=True)
+class SchemaProperty:
     name: str
-    snapshot_type: str   # type at last commit
-    python_type: str     # current Python type
-    iris_type: str       # current IRIS type
+    iris_type: str
+    required: bool = False
+    collection: str = ""
+    default: str = ""
+    maxlen: int | None = None
+    description: str = ""
 
+    def to_dict(self) -> dict[str, Any]:
+        payload = {
+            "name": self.name,
+            "iris_type": self.iris_type,
+            "required": self.required,
+            "collection": self.collection,
+            "default": self.default,
+            "description": self.description,
+        }
+        if self.maxlen is not None:
+            payload["maxlen"] = self.maxlen
+        return payload
 
-class ConflictError(Exception):
-    def __init__(self, conflicts: list[PropertyConflict]) -> None:
-        self.conflicts = conflicts
-        super().__init__(
-            f"{len(conflicts)} conflict(s): " + ", ".join(c.name for c in conflicts)
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "SchemaProperty":
+        return cls(
+            name=str(payload["name"]),
+            iris_type=str(payload.get("iris_type", "%String")),
+            required=bool(payload.get("required", False)),
+            collection=str(payload.get("collection", "")),
+            default=str(payload.get("default", "")),
+            maxlen=_as_int(payload.get("maxlen")),
+            description=str(payload.get("description", "")),
         )
 
 
-def _load_model_lockfile(model_class: type) -> Any | None:
-    """Load a scaffold lockfile for *model_class* if configured."""
-    lockfile_path = getattr(model_class, "_iris_lockfile_path", "")
-    path, explicit = _resolve_model_lockfile_path(model_class, lockfile_path)
-    if path is None:
-        return None
-    if not path.exists():
-        if explicit:
-            raise LockfileDriftError(f"Missing scaffold lockfile: {path}")
-        return None
-    return load_lockfile(path)
+@dataclass(frozen=True)
+class SchemaRelationship:
+    name: str
+    related_classname: str
+    cardinality: str
+    inverse: str
+    description: str = ""
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "related_classname": self.related_classname,
+            "cardinality": self.cardinality,
+            "inverse": self.inverse,
+            "description": self.description,
+        }
 
-def _resolve_lockfile_path(model_class: type, lockfile_path: str | Path) -> Path:
-    """Resolve a model lockfile path relative to the model's module when needed."""
-    path = Path(lockfile_path)
-    if path.is_absolute():
-        return path
-    try:
-        module_file = Path(inspect.getfile(model_class)).resolve()
-    except (TypeError, OSError):
-        return path
-    return (module_file.parent / path).resolve()
-
-
-def _resolve_model_module_path(model_class: type) -> Path | None:
-    try:
-        module_file = Path(inspect.getfile(model_class)).resolve()
-    except (TypeError, OSError):
-        return None
-    return module_file
-
-
-def _resolve_model_lockfile_path(
-    model_class: type,
-    lockfile_path: str | Path = "",
-) -> tuple[Path | None, bool]:
-    explicit = bool(str(lockfile_path or "").strip())
-    if explicit:
-        return (_resolve_lockfile_path(model_class, lockfile_path), True)
-    module_file = _resolve_model_module_path(model_class)
-    if module_file is None:
-        return (None, False)
-    return (lockfile_path_for_module(module_file), False)
-
-
-def _ensure_model_lockfile_reference(model_class: type) -> Path:
-    path, _explicit = _resolve_model_lockfile_path(
-        model_class,
-        getattr(model_class, "_iris_lockfile_path", ""),
-    )
-    if path is None:
-        classname = str(getattr(model_class, "_iris_classname", model_class.__name__))
-        fallback = Path.cwd() / f"{classname.split('.')[-1].lower()}.iris.lock.json"
-        model_class._iris_lockfile_path = str(fallback)  # type: ignore[attr-defined]
-        return fallback
-    if not getattr(model_class, "_iris_lockfile_path", ""):
-        module_file = _resolve_model_module_path(model_class)
-        if module_file is not None and path.parent == module_file.parent:
-            model_class._iris_lockfile_path = path.name  # type: ignore[attr-defined]
-        else:
-            model_class._iris_lockfile_path = str(path)  # type: ignore[attr-defined]
-    return path
-
-
-def _build_lockfile_for_model(
-    model_class: type,
-    *,
-    details: Any,
-    generated_region_hash: str = "",
-) -> IRISLockfile:
-    module_file = _resolve_model_module_path(model_class)
-    storage = getattr(details, "storage", None)
-    storage_definition = details.storage_definition or ""
-    return IRISLockfile(
-        classname=details.classname,
-        super=details.super,
-        storage_mode=_get_storage_mode(model_class) or "preserve",
-        storage_hash=compute_hash(storage if storage is not None else storage_definition),
-        class_parameters=dict(details.class_parameters),
-        indexes=[
-            {
-                "name": idx.name,
-                "properties": idx.properties,
-                "unique": idx.unique,
-                "primary_key": idx.primary_key,
-            }
-            for idx in list(details.indexes)
-        ],
-        source={"kind": "declared", "origin": str(module_file) if module_file is not None else model_class.__name__},
-        scaffold_style="typed",
-        generated_at=timestamp_utc(),
-        generated_region_hash=generated_region_hash,
-        unsupported_features=[
-            {"kind": item.kind, "name": item.name}
-            for item in list(getattr(details, "unsupported_features", []))
-        ],
-        storage_definition=storage_definition,
-        storage=storage,
-    )
-
-
-def _write_model_lockfile(model_class: type, *, conn: Any, generated_region_hash: str = "") -> Path:
-    details = get_class_details(model_class._iris_classname, conn)  # type: ignore[attr-defined]
-    lockfile = _build_lockfile_for_model(
-        model_class,
-        details=details,
-        generated_region_hash=generated_region_hash,
-    )
-    return write_lockfile(_ensure_model_lockfile_reference(model_class), lockfile)
-
-
-def _normalized_index_payload(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return sorted(
-        [
-            {
-                "name": str(item.get("name", "")),
-                "properties": str(item.get("properties", "")),
-                "unique": bool(item.get("unique")),
-                "primary_key": bool(item.get("primary_key")),
-            }
-            for item in items
-        ],
-        key=lambda item: item["name"],
-    )
-
-
-def _get_storage_mode(model_class: type, lockfile: Any | None = None) -> str:
-    mode = getattr(model_class, "_iris_storage_mode", "")
-    if mode:
-        return str(mode)
-    if lockfile is not None:
-        return lockfile.storage_mode
-    return ""
-
-
-def _get_model_storage(model_class: type, lockfile: Any | None = None) -> str:
-    value = getattr(model_class, "_iris_storage", "") or ""
-    if value:
-        return str(value)
-    if lockfile is not None:
-        return lockfile.storage_definition
-    return ""
-
-
-def _lockfile_drift_messages(model_class: type, conn: Any) -> tuple[list[str], list[str]]:
-    """Return ``(lockfile_drift, storage_conflicts)`` for *model_class*."""
-    try:
-        lockfile = _load_model_lockfile(model_class)
-    except LockfileDriftError as exc:
-        return ([str(exc)], [])
-
-    if lockfile is None:
-        return ([], [])
-
-    if not _class_exists_in_iris(model_class._iris_classname, conn):  # type: ignore[attr-defined]
-        return ([], [])
-
-    details = get_class_details(model_class._iris_classname, conn)  # type: ignore[attr-defined]
-    drift: list[str] = []
-    storage_conflicts: list[str] = []
-
-    if lockfile.super and lockfile.super != details.super:
-        drift.append(
-            f"Superclass differs: lockfile={lockfile.super!r}, live={details.super!r}"
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "SchemaRelationship":
+        return cls(
+            name=str(payload["name"]),
+            related_classname=str(payload.get("related_classname", "")),
+            cardinality=str(payload.get("cardinality", "one")),
+            inverse=str(payload.get("inverse", "")),
+            description=str(payload.get("description", "")),
         )
 
-    if dict(lockfile.class_parameters) != dict(details.class_parameters):
-        drift.append("Class parameters differ from lockfile")
 
-    live_indexes = _normalized_index_payload(
-        [
-            {
-                "name": idx.name,
-                "properties": idx.properties,
-                "unique": idx.unique,
-                "primary_key": idx.primary_key,
-            }
-            for idx in details.indexes
-        ]
-    )
-    if _normalized_index_payload(lockfile.indexes) != live_indexes:
-        drift.append("Indexes differ from lockfile")
+@dataclass(frozen=True)
+class SchemaIndex:
+    name: str
+    properties: str
+    unique: bool = False
+    primary_key: bool = False
 
-    if lockfile.storage_mode == "preserve":
-        live_storage = getattr(details, "storage", None)
-        live_hash = compute_hash(live_storage if live_storage is not None else details.storage_definition or "")
-        if live_hash != lockfile.storage_hash:
-            storage_conflicts.append(
-                f"Storage differs: lockfile hash={lockfile.storage_hash}, live hash={live_hash}"
-            )
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "properties": self.properties,
+            "unique": self.unique,
+            "primary_key": self.primary_key,
+        }
 
-    return (drift, storage_conflicts)
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "SchemaIndex":
+        return cls(
+            name=str(payload["name"]),
+            properties=str(payload.get("properties", "")),
+            unique=bool(payload.get("unique", False)),
+            primary_key=bool(payload.get("primary_key", False)),
+        )
 
 
-def _assert_no_sidecar_drift(model_class: type, conn: Any) -> None:
-    """Raise if a scaffold lockfile is missing or stale for *model_class*."""
-    lock_drift, storage_conflicts = _lockfile_drift_messages(model_class, conn)
-    if storage_conflicts:
-        raise StorageConflictError("; ".join(storage_conflicts))
-    if lock_drift:
-        raise LockfileDriftError("; ".join(lock_drift))
+@dataclass(frozen=True)
+class SchemaStorageValue:
+    name: str
+    value: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"name": self.name, "value": self.value}
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "SchemaStorageValue":
+        return cls(name=str(payload.get("name", "")), value=str(payload.get("value", "")))
 
 
-# ---------------------------------------------------------------------------
-# Schema diff
-# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class SchemaStorageData:
+    name: str
+    structure: str = ""
+    subscript: str = ""
+    values: tuple[SchemaStorageValue, ...] = ()
 
-@dataclass
-class SchemaDiff:
-    classname: str
-    # Python-side changes (vs snapshot):
-    python_added:   list[str]
-    python_removed: list[str]
-    python_changed: list[tuple[str, str, str]]  # (name, snapshot_type, python_type)
-    # IRIS-side changes (vs snapshot):
-    iris_added:     list[str]
-    iris_removed:   list[str]
-    iris_changed:   list[tuple[str, str, str]]  # (name, snapshot_type, iris_type)
-    # Conflicts: both sides changed the same prop differently
-    conflicts:      list[PropertyConflict]
-    lockfile_drift: list[str] = dataclass_field(default_factory=list)
-    storage_conflicts: list[str] = dataclass_field(default_factory=list)
+    def to_dict(self) -> dict[str, Any]:
+        payload = {"name": self.name, "values": [item.to_dict() for item in self.values]}
+        if self.structure:
+            payload["structure"] = self.structure
+        if self.subscript:
+            payload["subscript"] = self.subscript
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "SchemaStorageData":
+        return cls(
+            name=str(payload.get("name", "")),
+            structure=str(payload.get("structure", "")),
+            subscript=str(payload.get("subscript", "")),
+            values=tuple(
+                SchemaStorageValue.from_dict(dict(item))
+                for item in list(payload.get("values", []))
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class SchemaStorage:
+    name: str = "Default"
+    storage_type: str = ""
+    data_location: str = ""
+    default_data: str = ""
+    extent_location: str = ""
+    id_location: str = ""
+    index_location: str = ""
+    stream_location: str = ""
+    id_function: str = ""
+    data: tuple[SchemaStorageData, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = {"name": self.name, "data": [item.to_dict() for item in self.data]}
+        scalar_fields = {
+            "type": self.storage_type,
+            "data_location": self.data_location,
+            "default_data": self.default_data,
+            "extent_location": self.extent_location,
+            "id_location": self.id_location,
+            "index_location": self.index_location,
+            "stream_location": self.stream_location,
+            "id_function": self.id_function,
+        }
+        for key, value in scalar_fields.items():
+            if value:
+                payload[key] = value
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "SchemaStorage":
+        return cls(
+            name=str(payload.get("name", "Default")),
+            storage_type=str(payload.get("type", "")),
+            data_location=str(payload.get("data_location", "")),
+            default_data=str(payload.get("default_data", "")),
+            extent_location=str(payload.get("extent_location", "")),
+            id_location=str(payload.get("id_location", "")),
+            index_location=str(payload.get("index_location", "")),
+            stream_location=str(payload.get("stream_location", "")),
+            id_function=str(payload.get("id_function", "")),
+            data=tuple(
+                SchemaStorageData.from_dict(dict(item))
+                for item in list(payload.get("data", []))
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class SchemaClass:
+    name: str
+    superclass: str
+    kind: str
+    properties: tuple[SchemaProperty, ...] = ()
+    relationships: tuple[SchemaRelationship, ...] = ()
+    indexes: tuple[SchemaIndex, ...] = ()
+    parameters: dict[str, str] = dataclass_field(default_factory=dict)
+    storage: SchemaStorage | None = None
+    source: dict[str, Any] = dataclass_field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = {
+            "name": self.name,
+            "superclass": self.superclass,
+            "kind": self.kind,
+            "properties": [item.to_dict() for item in sorted(self.properties, key=lambda item: item.name)],
+            "relationships": [
+                item.to_dict() for item in sorted(self.relationships, key=lambda item: item.name)
+            ],
+            "indexes": [item.to_dict() for item in sorted(self.indexes, key=lambda item: item.name)],
+            "parameters": {key: self.parameters[key] for key in sorted(self.parameters)},
+            "source": dict(sorted(self.source.items())),
+        }
+        if self.storage is not None:
+            payload["storage"] = self.storage.to_dict()
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "SchemaClass":
+        return cls(
+            name=str(payload["name"]),
+            superclass=str(payload.get("superclass", "%Persistent")),
+            kind=str(payload.get("kind", "persistent")),
+            properties=tuple(
+                SchemaProperty.from_dict(dict(item))
+                for item in list(payload.get("properties", []))
+            ),
+            relationships=tuple(
+                SchemaRelationship.from_dict(dict(item))
+                for item in list(payload.get("relationships", []))
+            ),
+            indexes=tuple(
+                SchemaIndex.from_dict(dict(item))
+                for item in list(payload.get("indexes", []))
+            ),
+            parameters={
+                str(key): str(value)
+                for key, value in dict(payload.get("parameters", {})).items()
+            },
+            storage=(
+                SchemaStorage.from_dict(dict(payload["storage"]))
+                if payload.get("storage") is not None
+                else None
+            ),
+            source={str(key): value for key, value in dict(payload.get("source", {})).items()},
+        )
 
     @property
-    def in_sync(self) -> bool:
-        return not (
-            self.python_added or self.python_removed or self.python_changed
-            or self.iris_added or self.iris_removed or self.iris_changed
-            or self.conflicts or self.lockfile_drift or self.storage_conflicts
-        )
+    def property_map(self) -> dict[str, SchemaProperty]:
+        return {item.name: item for item in self.properties}
 
-    def __str__(self) -> str:
-        lines: list[str] = [f"Schema status for {self.classname}:"]
-        if self.in_sync:
-            lines.append("  (up to date)")
-            return "\n".join(lines)
-        if self.conflicts:
-            lines.append("Conflicts (both sides modified):")
-            for c in self.conflicts:
-                lines.append(
-                    f"  ! {c.name}: snapshot={c.snapshot_type!r}, "
-                    f"python={c.python_type!r}, iris={c.iris_type!r}"
-                )
-        if self.storage_conflicts:
-            lines.append("Storage conflicts:")
-            for item in self.storage_conflicts:
-                lines.append(f"  ! {item}")
-        if self.lockfile_drift:
-            lines.append("Lockfile drift:")
-            for item in self.lockfile_drift:
-                lines.append(f"  ! {item}")
-        if self.python_added:
-            lines.append("Python added (not yet pushed to IRIS):")
-            for name in self.python_added:
-                lines.append(f"  + {name}")
-        if self.python_removed:
-            lines.append("Python removed (not deleted from IRIS):")
-            for name in self.python_removed:
-                lines.append(f"  - {name}")
-        if self.python_changed:
-            lines.append("Python changed:")
-            for name, snap, py in self.python_changed:
-                lines.append(f"  ~ {name}: {snap!r} → {py!r}")
-        if self.iris_added:
-            lines.append("IRIS added (not yet pulled to Python):")
-            for name in self.iris_added:
-                lines.append(f"  + {name}")
-        if self.iris_removed:
-            lines.append("IRIS removed (not yet reflected in Python):")
-            for name in self.iris_removed:
-                lines.append(f"  - {name}")
-        if self.iris_changed:
-            lines.append("IRIS changed:")
-            for name, snap, ir in self.iris_changed:
-                lines.append(f"  ~ {name}: {snap!r} → {ir!r}")
-        return "\n".join(lines)
+    @property
+    def relationship_map(self) -> dict[str, SchemaRelationship]:
+        return {item.name: item for item in self.relationships}
+
+    @property
+    def index_map(self) -> dict[str, SchemaIndex]:
+        return {item.name: item for item in self.indexes}
 
 
-# ---------------------------------------------------------------------------
-# SchemaManager
-# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class SchemaCatalog:
+    classes: tuple[SchemaClass, ...] = ()
 
-class SchemaManager:
-    def __init__(self, model_class: type) -> None:
-        self._cls = model_class
-
-    # ------------------------------------------------------------------
-    def fetch(self) -> dict[str, str]:
-        """Read live IRIS property types. Returns {name: iris_type}."""
-        from .connection import IRISConnection  # noqa: PLC0415
-        from .introspection import get_class_properties  # noqa: PLC0415
-
-        conn = IRISConnection()
-        props = get_class_properties(self._cls._iris_classname, conn)
-        return {p.name: p.iris_type for p in props}
-
-    # ------------------------------------------------------------------
-    def status(self) -> SchemaDiff:
-        """3-way diff: snapshot vs Python, snapshot vs IRIS."""
-        if getattr(self._cls, "_iris_serial", False):
-            raise RuntimeError(
-                "Serial classes (%SerialObject) have no independent IRIS identity — "
-                "sync the parent %Persistent class instead."
-            )
-        snapshot: dict[str, str] = dict(getattr(self._cls, "_iris_schema_snapshot", {}))
-        python_props: dict[str, str] = {
-            p.name: p.iris_type for p in self._cls._iris_properties
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "classes": [item.to_dict() for item in sorted(self.classes, key=lambda item: item.name)]
         }
-        iris_props: dict[str, str] = self.fetch()
-        from .connection import IRISConnection  # noqa: PLC0415
 
-        conn = IRISConnection()
-        lockfile_drift, storage_conflicts = _lockfile_drift_messages(self._cls, conn)
-
-        python_added   = [k for k in python_props if k not in snapshot]
-        python_removed = [k for k in snapshot if k not in python_props]
-        python_changed = [
-            (k, snapshot[k], python_props[k])
-            for k in snapshot
-            if k in python_props and snapshot[k] != python_props[k]
-        ]
-        iris_added   = [k for k in iris_props if k not in snapshot]
-        iris_removed = [k for k in snapshot if k not in iris_props]
-        iris_changed = [
-            (k, snapshot[k], iris_props[k])
-            for k in snapshot
-            if k in iris_props and snapshot[k] != iris_props[k]
-        ]
-
-        # Conflicts: both sides changed the same property to *different* values.
-        py_changed_dict = {name: py for name, _, py in python_changed}
-        ir_changed_dict = {name: ir for name, _, ir in iris_changed}
-        conflict_names: set[str] = set()
-        conflicts: list[PropertyConflict] = []
-        for name in set(py_changed_dict) & set(ir_changed_dict):
-            py_type = py_changed_dict[name]
-            ir_type = ir_changed_dict[name]
-            if py_type != ir_type:
-                snap_type = snapshot.get(name, "")
-                conflicts.append(PropertyConflict(name, snap_type, py_type, ir_type))
-                conflict_names.add(name)
-
-        # Remove conflicted entries from changed lists (they belong only to conflicts).
-        python_changed = [t for t in python_changed if t[0] not in conflict_names]
-        iris_changed   = [t for t in iris_changed   if t[0] not in conflict_names]
-
-        return SchemaDiff(
-            classname=self._cls._iris_classname,
-            python_added=python_added,
-            python_removed=python_removed,
-            python_changed=python_changed,
-            iris_added=iris_added,
-            iris_removed=iris_removed,
-            iris_changed=iris_changed,
-            conflicts=conflicts,
-            lockfile_drift=lockfile_drift,
-            storage_conflicts=storage_conflicts,
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "SchemaCatalog":
+        return cls(
+            classes=tuple(
+                SchemaClass.from_dict(dict(item))
+                for item in list(payload.get("classes", []))
+            )
         )
 
-    # ------------------------------------------------------------------
-    def commit(self) -> None:
-        """Snapshot current Python definition as new baseline."""
-        if getattr(self._cls, "_iris_serial", False):
-            raise RuntimeError(
-                "Serial classes (%SerialObject) have no independent IRIS identity — "
-                "sync the parent %Persistent class instead."
+    @property
+    def class_map(self) -> dict[str, SchemaClass]:
+        return {item.name: item for item in self.classes}
+
+    def get_class(self, classname: str) -> SchemaClass | None:
+        return self.class_map.get(classname)
+
+    def select(self, classnames: list[str]) -> "SchemaCatalog":
+        wanted = set(classnames)
+        return SchemaCatalog(classes=tuple(item for item in self.classes if item.name in wanted))
+
+
+@dataclass(frozen=True)
+class SchemaOperation:
+    kind: str
+    classname: str
+    payload: dict[str, Any] = dataclass_field(default_factory=dict)
+    manual_only: bool = False
+
+
+@dataclass(frozen=True)
+class SchemaPlan:
+    operations: tuple[SchemaOperation, ...] = ()
+
+    @property
+    def manual_operations(self) -> tuple[SchemaOperation, ...]:
+        return tuple(item for item in self.operations if item.manual_only)
+
+    @property
+    def executable_operations(self) -> tuple[SchemaOperation, ...]:
+        return tuple(item for item in self.operations if not item.manual_only)
+
+    def is_empty(self) -> bool:
+        return not self.operations
+
+
+class SchemaCompiler:
+    """Compile Python declarations, live IRIS metadata, lockfiles, and .cls input into AST."""
+
+    def __init__(self, adapter: IRISAdapter | None = None) -> None:
+        self.adapter = adapter or IRISAdapter()
+
+    def compile_model(self, model_class: type) -> SchemaClass:
+        fields = []
+        for name, field_def in sorted(
+            getattr(model_class, "_iris_declared_fields", {}).items(),
+            key=lambda item: item[0],
+        ):
+            python_type = getattr(field_def, "python_type", None)
+            iris_type = field_def.iris_type or _iris_type_for_python_field(python_type)
+            fields.append(
+                SchemaProperty(
+                    name=name,
+                    iris_type=iris_type,
+                    required=bool(field_def.required),
+                    collection=str(field_def.collection or ""),
+                    default="" if field_def.default is None else str(field_def.default),
+                    maxlen=field_def.maxlen,
+                    description=str(field_def.description or ""),
+                )
             )
-        python_props = {p.name: p.iris_type for p in self._cls._iris_properties}
-        self._cls._iris_schema_snapshot = python_props
-        print(
-            f"Committed snapshot for {self._cls._iris_classname} "
-            f"({len(python_props)} properties)"
+
+        relationships = [
+            SchemaRelationship(
+                name=name,
+                related_classname=rel.related_classname,
+                cardinality=rel.cardinality,
+                inverse=rel.inverse,
+                description=rel.description,
+            )
+            for name, rel in sorted(
+                getattr(model_class, "_iris_declared_relationships", {}).items(),
+                key=lambda item: item[0],
+            )
+        ]
+
+        kind = "serial" if getattr(model_class, "_iris_serial", False) else "persistent"
+        superclass = getattr(
+            model_class,
+            "_iris_superclass",
+            "%SerialObject" if kind == "serial" else "%Persistent",
+        )
+        source = {"kind": "declared", "origin": _model_origin(model_class)}
+        return SchemaClass(
+            name=model_class._iris_classname,  # type: ignore[attr-defined]
+            superclass=superclass,
+            kind=kind,
+            properties=tuple(fields),
+            relationships=tuple(relationships),
+            indexes=tuple(
+                SchemaIndex.from_dict(dict(item))
+                for item in list(getattr(model_class, "_iris_indexes", []))
+            ),
+            parameters={
+                str(key): str(value)
+                for key, value in dict(getattr(model_class, "_iris_class_parameters", {})).items()
+            },
+            storage=_storage_from_mapping(getattr(model_class, "_iris_storage", None)),
+            source=source,
         )
 
-    # ------------------------------------------------------------------
-    def push(self) -> SchemaDiff:
-        """Apply Python additions/changes to IRIS. Raises ConflictError on conflicts."""
-        if getattr(self._cls, "_iris_serial", False):
-            raise RuntimeError(
-                "Serial classes (%SerialObject) have no independent IRIS identity — "
-                "sync the parent %Persistent class instead."
+    def catalog_from_registry(self, registry: "Registry") -> SchemaCatalog:
+        return SchemaCatalog(classes=tuple(self.compile_model(model) for model in registry.declared_models()))
+
+    def class_from_iris(self, classname: str) -> SchemaClass:
+        class_def = self.adapter.iris_cls("%Dictionary.ClassDefinition")._OpenId(classname)
+        if not self.adapter.looks_like_iris_object(class_def):
+            raise LookupError(f"Unable to open %Dictionary.ClassDefinition for {classname!r}")
+
+        superclass = str(getattr(class_def, "Super", "") or "%Persistent")
+        kind = "serial" if superclass == "%SerialObject" else "persistent"
+        properties: list[SchemaProperty] = []
+        relationships: list[SchemaRelationship] = []
+        indexes: list[SchemaIndex] = []
+        parameters: dict[str, str] = {}
+
+        for prop_def in _iter_collection(getattr(class_def, "Properties", None)):
+            if bool(getattr(prop_def, "Private", False)) or bool(getattr(prop_def, "Internal", False)):
+                continue
+            if bool(getattr(prop_def, "Relationship", False)):
+                relationships.append(
+                    SchemaRelationship(
+                        name=str(getattr(prop_def, "Name", "") or ""),
+                        related_classname=str(getattr(prop_def, "Type", "") or ""),
+                        cardinality=_normalize_cardinality(str(getattr(prop_def, "Cardinality", "") or "")),
+                        inverse=str(getattr(prop_def, "Inverse", "") or ""),
+                        description=str(getattr(prop_def, "Description", "") or ""),
+                    )
+                )
+                continue
+            name = str(getattr(prop_def, "Name", "") or "")
+            if not name:
+                continue
+            properties.append(
+                SchemaProperty(
+                    name=name,
+                    iris_type=str(getattr(prop_def, "Type", "") or "%String"),
+                    required=bool(getattr(prop_def, "Required", False)),
+                    collection=str(getattr(prop_def, "Collection", "") or "").lower(),
+                    default=str(getattr(prop_def, "InitialExpression", "") or ""),
+                    maxlen=_property_maxlen(prop_def),
+                    description=str(getattr(prop_def, "Description", "") or ""),
+                )
             )
-        d = self.status()
-        if d.conflicts:
-            raise ConflictError(d.conflicts)
 
-        from .connection import IRISConnection  # noqa: PLC0415
-
-        conn = IRISConnection()
-        _assert_no_sidecar_drift(self._cls, conn)
-
-        if d.python_added or d.python_changed:
-            field_defs = getattr(self._cls, "_iris_field_defs", {})
-
-            # Ensure the class exists in IRIS before adding properties.
-            if not _class_exists_in_iris(self._cls._iris_classname, conn):
-                self.ensure_iris_class()
-                return d
-            class_def = conn.iris_cls("%Dictionary.ClassDefinition")._OpenId(
-                self._cls._iris_classname
+        for index_def in _iter_collection(getattr(class_def, "Indices", None)):
+            name = str(getattr(index_def, "Name", "") or "")
+            if not name:
+                continue
+            indexes.append(
+                SchemaIndex(
+                    name=name,
+                    properties=str(getattr(index_def, "Properties", "") or ""),
+                    unique=bool(getattr(index_def, "Unique", False)),
+                    primary_key=bool(getattr(index_def, "PrimaryKey", False)),
+                )
             )
-            if not _looks_like_iris_object(class_def):
-                raise RuntimeError(
-                    "Unable to open %Dictionary.ClassDefinition for "
-                    f"{self._cls._iris_classname!r}"
+
+        for param_def in _iter_collection(getattr(class_def, "Parameters", None)):
+            name = str(getattr(param_def, "Name", "") or "")
+            if not name:
+                continue
+            parameters[name] = str(getattr(param_def, "Default", "") or "")
+
+        storage = None
+        storages = _iter_collection(getattr(class_def, "Storages", None))
+        if storages:
+            storage = _storage_from_dictionary_object(storages[0])
+
+        return SchemaClass(
+            name=classname,
+            superclass=superclass,
+            kind=kind,
+            properties=tuple(sorted(properties, key=lambda item: item.name)),
+            relationships=tuple(sorted(relationships, key=lambda item: item.name)),
+            indexes=tuple(sorted(indexes, key=lambda item: item.name)),
+            parameters={key: parameters[key] for key in sorted(parameters)},
+            storage=storage,
+            source={"kind": "iris", "origin": classname},
+        )
+
+    def catalog_from_iris(self, classnames: list[str]) -> SchemaCatalog:
+        classes = []
+        for classname in sorted(set(classnames)):
+            if not self.adapter.class_exists(classname):
+                continue
+            classes.append(self.class_from_iris(classname))
+        return SchemaCatalog(classes=tuple(classes))
+
+    def catalog_from_cls_path(self, path: str | Path) -> SchemaCatalog:
+        root = Path(path)
+        if root.is_dir():
+            classes = [
+                self.class_from_cls_source(item.read_text(encoding="utf-8"), source_path=item)
+                for item in sorted(root.rglob("*.cls"))
+            ]
+            return SchemaCatalog(classes=tuple(classes))
+        return SchemaCatalog(classes=(self.class_from_cls_source(root.read_text(encoding="utf-8"), source_path=root),))
+
+    def class_from_cls_source(self, source: str, *, source_path: str | Path = "") -> SchemaClass:
+        class_match = re.search(
+            r"Class\s+([A-Za-z0-9_.]+)\s+Extends\s+([A-Za-z0-9_,%.]+)",
+            source,
+        )
+        if class_match is None:
+            raise ValueError(f"Unable to discover class header in {source_path or '<memory>'}")
+        classname = class_match.group(1)
+        superclass = class_match.group(2).split(",")[0].strip()
+        kind = "serial" if superclass == "%SerialObject" else "persistent"
+        properties = tuple(_parse_properties_from_cls(source))
+        relationships = tuple(_parse_relationships_from_cls(source))
+        indexes = tuple(_parse_indexes_from_cls(source))
+        parameters = _parse_parameters_from_cls(source)
+        storage = _parse_storage_from_cls(source)
+        return SchemaClass(
+            name=classname,
+            superclass=superclass,
+            kind=kind,
+            properties=properties,
+            relationships=relationships,
+            indexes=indexes,
+            parameters=parameters,
+            storage=storage,
+            source={"kind": "cls", "origin": str(source_path)},
+        )
+
+
+class SchemaPlanner:
+    """Diff two schema snapshots and emit ordered schema operations."""
+
+    def diff(self, before: SchemaCatalog, after: SchemaCatalog) -> SchemaPlan:
+        ops: list[SchemaOperation] = []
+        before_map = before.class_map
+        after_map = after.class_map
+
+        for classname in sorted(set(before_map) | set(after_map)):
+            old_class = before_map.get(classname)
+            new_class = after_map.get(classname)
+            if old_class is None and new_class is not None:
+                ops.append(
+                    SchemaOperation(
+                        kind="create_class",
+                        classname=classname,
+                        payload={"class": new_class.to_dict()},
+                    )
+                )
+                ops.extend(self._class_delta(None, new_class))
+                continue
+            if old_class is not None and new_class is None:
+                ops.append(
+                    SchemaOperation(
+                        kind="drop_class",
+                        classname=classname,
+                        manual_only=True,
+                    )
+                )
+                continue
+            if old_class is None or new_class is None:
+                continue
+            if old_class.superclass != new_class.superclass:
+                ops.append(
+                    SchemaOperation(
+                        kind="set_superclass",
+                        classname=classname,
+                        payload={"superclass": new_class.superclass},
+                    )
+                )
+            ops.extend(self._class_delta(old_class, new_class))
+        return SchemaPlan(operations=tuple(ops))
+
+    def _class_delta(
+        self,
+        before_class: SchemaClass | None,
+        after_class: SchemaClass,
+    ) -> list[SchemaOperation]:
+        ops: list[SchemaOperation] = []
+
+        before_props = before_class.property_map if before_class is not None else {}
+        after_props = after_class.property_map
+        for name in sorted(set(before_props) | set(after_props)):
+            old_prop = before_props.get(name)
+            new_prop = after_props.get(name)
+            if old_prop is None and new_prop is not None:
+                ops.append(
+                    SchemaOperation(
+                        kind="add_property",
+                        classname=after_class.name,
+                        payload={"property": new_prop.to_dict()},
+                    )
+                )
+            elif old_prop is not None and new_prop is None:
+                ops.append(
+                    SchemaOperation(
+                        kind="drop_property",
+                        classname=after_class.name,
+                        payload={"name": name},
+                        manual_only=True,
+                    )
+                )
+            elif old_prop is not None and new_prop is not None and old_prop != new_prop:
+                ops.append(
+                    SchemaOperation(
+                        kind="alter_property",
+                        classname=after_class.name,
+                        payload={"property": new_prop.to_dict()},
+                    )
                 )
 
-            prop_map = {p.name: p for p in self._cls._iris_properties}
-
-            for name in d.python_added:
-                prop = prop_map.get(name)
-                if prop is None:
-                    continue
-                _upsert_property_via_dict(
-                    self._cls._iris_classname,
-                    class_def,
-                    prop,
-                    field_defs.get(name),
-                    conn,
+        before_rels = before_class.relationship_map if before_class is not None else {}
+        after_rels = after_class.relationship_map
+        for name in sorted(set(before_rels) | set(after_rels)):
+            old_rel = before_rels.get(name)
+            new_rel = after_rels.get(name)
+            if old_rel is None and new_rel is not None:
+                ops.append(
+                    SchemaOperation(
+                        kind="add_relationship",
+                        classname=after_class.name,
+                        payload={"relationship": new_rel.to_dict()},
+                    )
+                )
+            elif old_rel is not None and new_rel is None:
+                ops.append(
+                    SchemaOperation(
+                        kind="drop_relationship",
+                        classname=after_class.name,
+                        payload={"name": name},
+                        manual_only=True,
+                    )
+                )
+            elif old_rel is not None and new_rel is not None and old_rel != new_rel:
+                ops.append(
+                    SchemaOperation(
+                        kind="alter_relationship",
+                        classname=after_class.name,
+                        payload={"relationship": new_rel.to_dict()},
+                    )
                 )
 
-            for name, _snap_type, _new_type in d.python_changed:
-                prop = prop_map.get(name)
-                if prop is None:
-                    continue
-                _upsert_property_via_dict(
-                    self._cls._iris_classname,
-                    class_def,
-                    prop,
-                    field_defs.get(name),
-                    conn,
+        before_indexes = before_class.index_map if before_class is not None else {}
+        after_indexes = after_class.index_map
+        for name in sorted(set(before_indexes) | set(after_indexes)):
+            old_index = before_indexes.get(name)
+            new_index = after_indexes.get(name)
+            if old_index is None and new_index is not None:
+                ops.append(
+                    SchemaOperation(
+                        kind="add_index",
+                        classname=after_class.name,
+                        payload={"index": new_index.to_dict()},
+                    )
+                )
+            elif old_index is not None and new_index is None:
+                ops.append(
+                    SchemaOperation(
+                        kind="drop_index",
+                        classname=after_class.name,
+                        payload={"name": name},
+                        manual_only=True,
+                    )
+                )
+            elif old_index is not None and new_index is not None and old_index != new_index:
+                ops.append(
+                    SchemaOperation(
+                        kind="alter_index",
+                        classname=after_class.name,
+                        payload={"index": new_index.to_dict()},
+                    )
                 )
 
-            # Recompile the class in IRIS.
-            try:
-                conn.iris_cls("%SYSTEM.OBJ").Compile(self._cls._iris_classname, "ck")
-            except Exception as exc:
-                warnings.warn(f"Recompile failed: {exc}", stacklevel=2)
+        before_params = dict(before_class.parameters) if before_class is not None else {}
+        after_params = dict(after_class.parameters)
+        for name in sorted(set(before_params) | set(after_params)):
+            old_value = before_params.get(name)
+            new_value = after_params.get(name)
+            if old_value == new_value:
+                continue
+            if new_value is None:
+                ops.append(
+                    SchemaOperation(
+                        kind="drop_parameter",
+                        classname=after_class.name,
+                        payload={"name": name},
+                        manual_only=True,
+                    )
+                )
+            else:
+                ops.append(
+                    SchemaOperation(
+                        kind="set_parameter",
+                        classname=after_class.name,
+                        payload={"name": name, "value": new_value},
+                    )
+                )
 
-        for name in d.python_removed:
-            warnings.warn(
-                f"Property {name!r} removed from Python model but NOT deleted from "
-                f"IRIS class {self._cls._iris_classname!r} "
-                "(use Model.schema.delete_property(name) to delete explicitly).",
-                UserWarning,
-                stacklevel=2,
+        if after_class.storage is not None and (before_class is None or before_class.storage != after_class.storage):
+            ops.append(
+                SchemaOperation(
+                    kind="set_storage",
+                    classname=after_class.name,
+                    payload={"storage": after_class.storage.to_dict()},
+                )
             )
 
-        return d
+        return ops
 
-    # ------------------------------------------------------------------
-    def ensure_iris_class(self) -> None:
-        """
-        Create or update the IRIS class using %Dictionary — no .cls files.
 
-        If the class does not yet exist in IRIS it is created with the correct
-        superclass (%Persistent or %SerialObject).  All properties and
-        relationships defined on the Python model are then created or updated
-        via %Dictionary.PropertyDefinition / %Dictionary.RelationshipDefinition,
-        and the class is recompiled with %SYSTEM.OBJ.Compile.
+class SchemaApplier:
+    """Apply schema operations to a live IRIS namespace via %Dictionary."""
 
-        This is the recommended replacement for compile_to_iris().
-        """
-        if not getattr(self._cls, "_iris_declared_model", False):
-            raise ValueError(
-                "ensure_iris_class() requires a declared model class; "
-                f"{self._cls.__name__!r} is bound to an existing IRIS class."
-            )
-        from .connection import IRISConnection  # noqa: PLC0415
+    def __init__(self, adapter: IRISAdapter | None = None) -> None:
+        self.adapter = adapter or IRISAdapter()
 
-        conn = IRISConnection()
-        _assert_no_sidecar_drift(self._cls, conn)
-        _ensure_iris_class_impl(self._cls)
+    def apply(self, plan: SchemaPlan, *, allow_manual: bool = False) -> None:
+        changed_classes: set[str] = set()
+        manual = [item for item in plan.operations if item.manual_only]
+        if manual and not allow_manual:
+            names = ", ".join(f"{item.kind}:{item.classname}" for item in manual)
+            raise RuntimeError(f"Manual operations required before apply: {names}")
 
-    # ------------------------------------------------------------------
-    def delete_property(self, name: str) -> None:
-        """
-        Permanently delete a property from the IRIS class via %Dictionary.
+        for op in plan.operations:
+            if op.manual_only and not allow_manual:
+                continue
+            if op.kind == "create_class":
+                self._create_class(SchemaClass.from_dict(dict(op.payload["class"])))
+                changed_classes.add(op.classname)
+            elif op.kind == "drop_class":
+                self.adapter.iris_cls("%Dictionary.ClassDefinition")._DeleteId(op.classname)
+            elif op.kind == "set_superclass":
+                class_def = self._open_class_definition(op.classname)
+                class_def.Super = op.payload["superclass"]
+                self.adapter.save(class_def, kind="class", identifier=op.classname)
+                changed_classes.add(op.classname)
+            elif op.kind in {"add_property", "alter_property"}:
+                self._upsert_property(op.classname, SchemaProperty.from_dict(dict(op.payload["property"])))
+                changed_classes.add(op.classname)
+            elif op.kind == "drop_property":
+                self.adapter.iris_cls("%Dictionary.PropertyDefinition")._DeleteId(
+                    f"{op.classname}||{op.payload['name']}"
+                )
+                changed_classes.add(op.classname)
+            elif op.kind in {"add_relationship", "alter_relationship"}:
+                self._upsert_relationship(
+                    op.classname,
+                    SchemaRelationship.from_dict(dict(op.payload["relationship"])),
+                )
+                changed_classes.add(op.classname)
+            elif op.kind == "drop_relationship":
+                deleted = False
+                for dictionary_class in ("%Dictionary.RelationshipDefinition", "%Dictionary.PropertyDefinition"):
+                    try:
+                        self.adapter.iris_cls(dictionary_class)._DeleteId(
+                            f"{op.classname}||{op.payload['name']}"
+                        )
+                        deleted = True
+                        break
+                    except Exception:
+                        continue
+                if not deleted:
+                    raise RuntimeError(
+                        f"Unable to delete relationship {op.payload['name']!r} on {op.classname!r}"
+                    )
+                changed_classes.add(op.classname)
+            elif op.kind in {"add_index", "alter_index"}:
+                self._upsert_index(op.classname, SchemaIndex.from_dict(dict(op.payload["index"])))
+                changed_classes.add(op.classname)
+            elif op.kind == "drop_index":
+                self.adapter.iris_cls("%Dictionary.IndexDefinition")._DeleteId(
+                    f"{op.classname}||{op.payload['name']}"
+                )
+                changed_classes.add(op.classname)
+            elif op.kind == "set_parameter":
+                self._set_parameter(op.classname, str(op.payload["name"]), str(op.payload["value"]))
+                changed_classes.add(op.classname)
+            elif op.kind == "drop_parameter":
+                self.adapter.iris_cls("%Dictionary.ParameterDefinition")._DeleteId(
+                    f"{op.classname}||{op.payload['name']}"
+                )
+                changed_classes.add(op.classname)
+            elif op.kind == "set_storage":
+                self._set_storage(op.classname, SchemaStorage.from_dict(dict(op.payload["storage"])))
+                changed_classes.add(op.classname)
+            elif op.kind == "clear_storage":
+                class_def = self._open_class_definition(op.classname)
+                class_def.Storage = ""
+                class_def.StorageDefinition = ""
+                self.adapter.save(class_def, kind="class", identifier=op.classname)
+                changed_classes.add(op.classname)
 
-        The property is removed from %Dictionary.PropertyDefinition, the class
-        is recompiled, and the descriptor + metadata are removed from the Python
-        model so the two sides stay in sync.
+        for classname in sorted(changed_classes):
+            self.adapter.compile_class(classname)
 
-        .. warning::
-            This operation is destructive and cannot be undone.  All data
-            stored in this property will be lost once the class is recompiled
-            and the storage is rebuilt.
-        """
-        from .connection import IRISConnection  # noqa: PLC0415
+    def _create_class(self, schema_class: SchemaClass) -> None:
+        if self.adapter.class_exists(schema_class.name):
+            return
+        class_def = self.adapter.iris_cls("%Dictionary.ClassDefinition")._New()
+        class_def.Name = schema_class.name
+        class_def.Super = schema_class.superclass
+        self.adapter.save(class_def, kind="class", identifier=schema_class.name)
 
-        conn = IRISConnection()
-        prop_id = f"{self._cls._iris_classname}||{name}"
+    def _open_class_definition(self, classname: str) -> Any:
+        class_def = self.adapter.iris_cls("%Dictionary.ClassDefinition")._OpenId(classname)
+        if not self.adapter.looks_like_iris_object(class_def):
+            raise RuntimeError(f"Unable to open %Dictionary.ClassDefinition for {classname!r}")
+        return class_def
+
+    def _open_or_new(self, definition_cls: Any, item_id: str, *, name: str, parent: Any) -> Any:
         try:
-            conn.iris_cls("%Dictionary.PropertyDefinition")._DeleteId(prop_id)
-        except Exception as exc:
-            raise RuntimeError(
-                f"Failed to delete property {name!r} from "
-                f"{self._cls._iris_classname!r}: {exc}"
-            ) from exc
-
-        try:
-            conn.iris_cls("%SYSTEM.OBJ").Compile(self._cls._iris_classname, "ck")
-        except Exception as exc:
-            warnings.warn(f"Recompile after delete failed: {exc}", stacklevel=2)
-
-        # Keep Python model in sync.
-        self._cls._iris_properties = [
-            p for p in self._cls._iris_properties if p.name != name
-        ]
-        field_defs = getattr(self._cls, "_iris_field_defs", {})
-        field_defs.pop(name, None)
-        snapshot = dict(getattr(self._cls, "_iris_schema_snapshot", {}))
-        snapshot.pop(name, None)
-        self._cls._iris_schema_snapshot = snapshot
-        if hasattr(self._cls, name):
-            try:
-                delattr(self._cls, name)
-            except AttributeError:
-                pass
-
-    # ------------------------------------------------------------------
-    def pull(self, output_root: str = ".") -> SchemaDiff:
-        """Apply IRIS additions to Python model snapshot. Raises ConflictError on conflicts."""
-        if getattr(self._cls, "_iris_serial", False):
-            raise RuntimeError(
-                "Serial classes (%SerialObject) have no independent IRIS identity — "
-                "sync the parent %Persistent class instead."
-            )
-        d = self.status()
-        if d.conflicts:
-            raise ConflictError(d.conflicts)
-
-        if d.iris_added:
-            from .connection import IRISConnection  # noqa: PLC0415
-            from .descriptors import IRISDescriptor  # noqa: PLC0415
-            from .introspection import get_class_properties  # noqa: PLC0415
-
-            conn = IRISConnection()
-            all_iris_props = get_class_properties(self._cls._iris_classname, conn)
-            iris_prop_map = {p.name: p for p in all_iris_props}
-
-            new_snapshot = dict(getattr(self._cls, "_iris_schema_snapshot", {}))
-            for name in d.iris_added:
-                prop = iris_prop_map.get(name)
-                if prop is None:
-                    continue
-                new_snapshot[name] = prop.iris_type
-                # Inject a typed descriptor if not already present on the class.
-                if name not in self._cls.__dict__:
-                    descriptor = IRISDescriptor(name, prop.python_type, prop.required)
-                    descriptor.attr_name = name
-                    setattr(self._cls, name, descriptor)
-                    if not hasattr(self._cls, "__annotations__"):
-                        self._cls.__annotations__ = {}
-                    self._cls.__annotations__[name] = Optional[prop.python_type]  # type: ignore[valid-type]
-                    # Append to _iris_properties so future status() calls see it.
-                    self._cls._iris_properties = list(self._cls._iris_properties) + [prop]
-
-            self._cls._iris_schema_snapshot = new_snapshot
-
-        return d
-
-    # ------------------------------------------------------------------
-    # .cls file generation (kept for backward compatibility; deprecated)
-    # ------------------------------------------------------------------
-
-    def generate_cls(self, storage: str | None = None) -> str:
-        """
-        Generate an ObjectScript .cls source string.
-
-        .. deprecated::
-            Use :meth:`ensure_iris_class` to create or update the IRIS class
-            directly via %Dictionary without generating intermediate files.
-        """
-        warnings.warn(
-            "generate_cls() is deprecated. Use ensure_iris_class() to manage the "
-            "IRIS class directly via %Dictionary without .cls files.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return _generate_cls_impl(self._cls, storage=storage)
-
-    def write_cls(self, output_root: str) -> Path:
-        """
-        Write the generated .cls source to disk and return the path.
-
-        .. deprecated::
-            Use :meth:`ensure_iris_class` to create or update the IRIS class
-            directly via %Dictionary without generating intermediate files.
-        """
-        warnings.warn(
-            "write_cls() is deprecated. Use ensure_iris_class() to manage the "
-            "IRIS class directly via %Dictionary without .cls files.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return _write_cls_impl(self._cls, output_root)
-
-    def compile_to_iris(self, flags: str = "ck") -> None:
-        """
-        Create or update the IRIS class using %Dictionary — no .cls files.
-
-        .. deprecated::
-            Renamed to :meth:`ensure_iris_class`.  This alias calls
-            ``ensure_iris_class()`` and will be removed in a future release.
-        """
-        warnings.warn(
-            "compile_to_iris() is deprecated and will be removed in a future release. "
-            "Use ensure_iris_class() instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        _ensure_iris_class_impl(self._cls, flags=flags)
-
-
-# ---------------------------------------------------------------------------
-# Internal generation helpers
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Internal implementation helpers
-# ---------------------------------------------------------------------------
-
-def _ensure_iris_class_impl(model_class: type, flags: str = "ck") -> None:
-    """
-    Create or update an IRIS class using %Dictionary — no .cls files needed.
-
-    Steps:
-    1. Create the %Dictionary.ClassDefinition if the class does not yet exist.
-    2. Upsert every property via %Dictionary.PropertyDefinition.
-    3. Upsert every relationship via %Dictionary.RelationshipDefinition.
-    4. Recompile with %SYSTEM.OBJ.Compile.
-    """
-    if not getattr(model_class, "_iris_declared_model", False):
-        raise ValueError(
-            "ensure_iris_class() requires a declared model class; "
-            f"{model_class.__name__!r} is bound to an existing IRIS class."
-        )
-
-    from .connection import IRISConnection  # noqa: PLC0415
-
-    is_serial: bool = getattr(model_class, "_iris_serial", False)
-    classname: str = model_class._iris_classname  # type: ignore[attr-defined]
-    field_defs = getattr(model_class, "_iris_field_defs", {})
-    rel_defs = getattr(model_class, "_iris_rel_defs", {})
-    iris_properties = getattr(model_class, "_iris_properties", [])
-    lockfile = None
-    try:
-        lockfile = _load_model_lockfile(model_class)
-    except LockfileDriftError:
-        lockfile = None
-
-    conn = IRISConnection()
-
-    # 1. Create the class definition if it does not already exist.
-    class_def = None
-    if not _class_exists_in_iris(classname, conn):
-        class_def = conn.iris_cls("%Dictionary.ClassDefinition")._New()
-        class_def.Name = classname
-        class_def.Super = "%SerialObject" if is_serial else "%Persistent"
-        _save_dictionary_item(class_def, kind="class", identifier=classname)
-    else:
-        try:
-            class_def = conn.iris_cls("%Dictionary.ClassDefinition")._OpenId(classname)
+            item = definition_cls._OpenId(item_id)
         except Exception:
-            class_def = None
-        if not _looks_like_iris_object(class_def):
-            class_def = None
-    if class_def is None:
-        raise RuntimeError(f"Unable to open %Dictionary.ClassDefinition for {classname!r}")
+            item = None
+        if not self.adapter.looks_like_iris_object(item):
+            item = definition_cls._New()
+            item.Name = name
+            item.parent = parent
+        return item
 
-    storage_mode = _get_storage_mode(model_class, lockfile)
-    storage_text = _get_model_storage(model_class, lockfile)
-    if storage_mode == "managed" and storage_text and class_def is not None:
+    def _upsert_property(self, classname: str, prop: SchemaProperty) -> None:
+        class_def = self._open_class_definition(classname)
+        prop_def_cls = self.adapter.iris_cls("%Dictionary.PropertyDefinition")
+        prop_id = f"{classname}||{prop.name}"
+        prop_def = self._open_or_new(prop_def_cls, prop_id, name=prop.name, parent=class_def)
+        prop_def.Type = prop.iris_type
+        prop_def.Required = int(prop.required)
+        prop_def.Collection = prop.collection.capitalize() if prop.collection else ""
+        prop_def.InitialExpression = prop.default
+        prop_def.Description = prop.description
+        if prop.maxlen is not None:
+            prop_def.Parameters.SetAt(str(prop.maxlen), "MAXLEN")
+        self.adapter.save(prop_def, kind="property", identifier=prop_id)
+
+    def _upsert_relationship(self, classname: str, rel: SchemaRelationship) -> None:
+        class_def = self._open_class_definition(classname)
+        use_property_definition = False
         try:
-            setattr(class_def, "Storage", storage_text)
-            setattr(class_def, "StorageDefinition", storage_text)
-            _save_dictionary_item(class_def, kind="class", identifier=classname)
-        except Exception as exc:
-            warnings.warn(f"Managed storage apply failed: {exc}", stacklevel=2)
+            rel_def_cls = self.adapter.iris_cls("%Dictionary.RelationshipDefinition")
+        except Exception:
+            rel_def_cls = self.adapter.iris_cls("%Dictionary.PropertyDefinition")
+            use_property_definition = True
+        rel_id = f"{classname}||{rel.name}"
+        rel_def = self._open_or_new(rel_def_cls, rel_id, name=rel.name, parent=class_def)
+        rel_def.Type = rel.related_classname
+        rel_def.Cardinality = _relationship_cardinality_keyword(rel.cardinality)
+        rel_def.Inverse = rel.inverse
+        rel_def.Description = rel.description
+        if use_property_definition:
+            rel_def.Relationship = 1
+        self.adapter.save(rel_def, kind="relationship", identifier=rel_id)
 
-    # 2. Upsert all properties.
-    for prop in iris_properties:
-        _upsert_property_via_dict(classname, class_def, prop, field_defs.get(prop.name), conn)
+    def _upsert_index(self, classname: str, index: SchemaIndex) -> None:
+        class_def = self._open_class_definition(classname)
+        index_def_cls = self.adapter.iris_cls("%Dictionary.IndexDefinition")
+        index_id = f"{classname}||{index.name}"
+        index_def = self._open_or_new(index_def_cls, index_id, name=index.name, parent=class_def)
+        index_def.Properties = index.properties
+        index_def.Unique = int(index.unique)
+        index_def.PrimaryKey = int(index.primary_key)
+        self.adapter.save(index_def, kind="index", identifier=index_id)
 
-    # 3. Upsert all relationships (not applicable to serial objects).
-    if not is_serial:
-        for rel_name, rd in rel_defs.items():
-            _upsert_relationship_via_dict(classname, class_def, rel_name, rd, conn)
+    def _set_parameter(self, classname: str, name: str, value: str) -> None:
+        class_def = self._open_class_definition(classname)
+        param_def_cls = self.adapter.iris_cls("%Dictionary.ParameterDefinition")
+        param_id = f"{classname}||{name}"
+        param_def = self._open_or_new(param_def_cls, param_id, name=name, parent=class_def)
+        param_def.Default = value
+        self.adapter.save(param_def, kind="parameter", identifier=param_id)
 
-    # 4. Recompile.
-    try:
-        conn.iris_cls("%SYSTEM.OBJ").Compile(classname, flags)
-    except Exception as exc:
-        warnings.warn(f"Recompile failed: {exc}", stacklevel=2)
+    def _set_storage(self, classname: str, storage: SchemaStorage) -> None:
+        class_def = self._open_class_definition(classname)
+        rendered = render_storage(storage)
+        class_def.Storage = rendered
+        class_def.StorageDefinition = rendered
+        self.adapter.save(class_def, kind="class", identifier=classname)
 
-    _write_model_lockfile(model_class, conn=conn)
 
-
-# ---------------------------------------------------------------------------
-# Legacy .cls generation helpers (kept for backward compatibility)
-# ---------------------------------------------------------------------------
-
-def _generate_cls_impl(model_class: type, storage: str | None = None) -> str:
-    """Generate an ObjectScript .cls source string (legacy; prefer ensure_iris_class)."""
-    if not getattr(model_class, "_iris_declared_model", False):
-        raise ValueError(
-            f"generate_cls() requires a declared model class; "
-            f"{model_class.__name__!r} is bound to an existing IRIS class."
-        )
-
-    is_serial: bool = getattr(model_class, "_iris_serial", False)
-    classname: str = model_class._iris_classname  # type: ignore[attr-defined]
-    field_defs = getattr(model_class, "_iris_field_defs", {})
-    rel_defs = getattr(model_class, "_iris_rel_defs", {})
-    iris_properties = getattr(model_class, "_iris_properties", [])
-
-    lines: list[str] = []
-    extends = "%SerialObject" if is_serial else "%Persistent"
-    lines.append(f"Class {classname} Extends {extends}")
-    lines.append("{")
-    lines.append("")
-
-    for prop in iris_properties:
-        fd = field_defs.get(prop.name)
-        description = (fd.description if fd else "") or ""
-        if description:
-            lines.append(f"/// {description}")
-
-        iris_type = prop.iris_type or "%String"
-        constraints: list[str] = []
-        if fd:
-            if fd.required:
-                constraints.append("Required")
-            if fd.collection:
-                constraints.append(f"Collection = {fd.collection.capitalize()}")
-
-        params: list[str] = []
-        if fd and fd.maxlen is not None:
-            params.append(f"MAXLEN = {fd.maxlen}")
-
-        prop_line = f"Property {prop.name} As {iris_type}"
-        if params:
-            prop_line += f" (  {', '.join(params)} )"
-        if constraints:
-            prop_line += " [ " + ", ".join(constraints) + " ]"
-        prop_line += ";"
-        lines.append(prop_line)
-        lines.append("")
-
-    for rel_name, rd in rel_defs.items():
-        description = rd.description or ""
-        if description:
-            lines.append(f"/// {description}")
-        card_keyword = _CARD_MAP.get(rd.cardinality, rd.cardinality)
-        lines.append(
-            f"Relationship {rel_name} As {rd.related_classname} "
-            f"[ Cardinality = {card_keyword}, Inverse = {rd.inverse} ];"
-        )
-        lines.append("")
-
+def render_storage(storage: SchemaStorage | None) -> str:
+    if storage is None:
+        return ""
+    lines = [f"Storage {storage.name}", "{"]
+    scalar_fields = [
+        ("Type", storage.storage_type),
+        ("DataLocation", storage.data_location),
+        ("DefaultData", storage.default_data),
+        ("ExtentLocation", storage.extent_location),
+        ("IdLocation", storage.id_location),
+        ("IndexLocation", storage.index_location),
+        ("StreamLocation", storage.stream_location),
+        ("IdFunction", storage.id_function),
+    ]
+    for tag, value in scalar_fields:
+        if value:
+            lines.append(f"<{tag}>{value}</{tag}>")
+    for data_item in storage.data:
+        if data_item.name:
+            lines.append(f'<Data name="{data_item.name}">')
+        else:
+            lines.append("<Data>")
+        if data_item.structure:
+            lines.append(f"<Structure>{data_item.structure}</Structure>")
+        if data_item.subscript:
+            lines.append(f"<Subscript>{data_item.subscript}</Subscript>")
+        for value in data_item.values:
+            if value.name:
+                lines.append(f'<Value name="{value.name}">{value.value}</Value>')
+            else:
+                lines.append(f"<Value>{value.value}</Value>")
+        lines.append("</Data>")
     lines.append("}")
-    source = "\n".join(lines) + "\n"
+    return "\n".join(lines)
 
-    # Storage block: class attr → explicit arg → omit. Skip entirely for serials.
-    if not is_serial:
-        lockfile = None
+
+def _model_origin(model_class: type) -> str:
+    try:
+        return str(Path(inspect.getfile(model_class)).resolve())
+    except (OSError, TypeError):
+        return model_class.__name__
+
+
+def _iter_collection(collection: Any) -> list[Any]:
+    if collection is None:
+        return []
+    try:
+        count = int(collection.Count())
+    except Exception:
+        return []
+    items: list[Any] = []
+    for index in range(1, count + 1):
         try:
-            lockfile = _load_model_lockfile(model_class)
-        except LockfileDriftError:
-            lockfile = None
-        storage_text = storage or _get_model_storage(model_class, lockfile) or ""
-        if storage_text:
-            source = _STORAGE_RE.sub("", source)
-            source = source.rstrip()
-            if source.endswith("}"):
-                source = source[:-1].rstrip() + "\n\n" + storage_text.strip() + "\n}\n"
-
-    return source
+            items.append(collection.GetAt(index))
+        except Exception:
+            continue
+    return items
 
 
-def _write_cls_impl(model_class: type, output_root: str) -> Path:
-    """Write .cls source to disk (legacy; prefer ensure_iris_class)."""
-    source = _generate_cls_impl(model_class)
-    classname: str = model_class._iris_classname  # type: ignore[attr-defined]
-    parts = classname.split(".")
-    rel_path = (
-        Path(*parts[:-1], parts[-1] + ".cls") if len(parts) > 1 else Path(parts[0] + ".cls")
+def _property_maxlen(prop_def: Any) -> int | None:
+    try:
+        value = prop_def.Parameters.GetAt("MAXLEN")
+    except Exception:
+        return None
+    return _as_int(value)
+
+
+def _storage_from_dictionary_object(storage_def: Any) -> SchemaStorage:
+    return SchemaStorage(
+        name=str(getattr(storage_def, "Name", "") or "Default"),
+        storage_type=str(getattr(storage_def, "Type", "") or ""),
+        data_location=str(getattr(storage_def, "DataLocation", "") or ""),
+        default_data=str(getattr(storage_def, "DefaultData", "") or ""),
+        extent_location=str(getattr(storage_def, "ExtentLocation", "") or ""),
+        id_location=str(getattr(storage_def, "IdLocation", "") or ""),
+        index_location=str(getattr(storage_def, "IndexLocation", "") or ""),
+        stream_location=str(getattr(storage_def, "StreamLocation", "") or ""),
+        id_function=str(getattr(storage_def, "IdFunction", "") or ""),
+        data=tuple(
+            SchemaStorageData(
+                name=str(getattr(data_def, "Name", "") or ""),
+                structure=str(getattr(data_def, "Structure", "") or ""),
+                subscript=str(getattr(data_def, "Subscript", "") or ""),
+                values=tuple(
+                    SchemaStorageValue(
+                        name=str(getattr(value_def, "Name", "") or ""),
+                        value=str(getattr(value_def, "Value", "") or ""),
+                    )
+                    for value_def in _iter_collection(getattr(data_def, "Values", None))
+                ),
+            )
+            for data_def in _iter_collection(getattr(storage_def, "Data", None))
+        ),
     )
-    output_path = Path(output_root) / rel_path
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(source, encoding="utf-8")
-    return output_path
 
 
-# ---------------------------------------------------------------------------
-# Backward-compatible module-level functions (deprecated)
-# ---------------------------------------------------------------------------
+def _storage_from_mapping(value: Any) -> SchemaStorage | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, SchemaStorage):
+        return value
+    if isinstance(value, dict):
+        return SchemaStorage.from_dict(dict(value))
+    raise TypeError(f"Unsupported storage payload: {type(value)!r}")
 
-def generate_cls(model_class: type) -> str:
-    """
-    Generate an ObjectScript .cls source string.
 
-    .. deprecated::
-        Use ``Model.schema.ensure_iris_class()`` to manage the IRIS class
-        directly via %Dictionary without .cls files.
-    """
-    warnings.warn(
-        "generate_cls() is deprecated. Use Model.schema.ensure_iris_class() "
-        "to manage the IRIS class directly via %Dictionary without .cls files.",
-        DeprecationWarning,
-        stacklevel=2,
+def _iris_type_for_python_field(python_type: Any) -> str:
+    if isinstance(python_type, type) and getattr(python_type, "_iris_serial", False):
+        return python_type._iris_classname  # type: ignore[attr-defined]
+    return python_type_to_iris(python_type)
+
+
+def _normalize_cardinality(value: str) -> str:
+    lowered = str(value or "").lower()
+    if lowered == "child":
+        return "children"
+    if lowered == "one":
+        return "parent"
+    if lowered == "many":
+        return "children"
+    if lowered in {"parent", "children"}:
+        return lowered
+    return lowered or "parent"
+
+
+def _relationship_cardinality_keyword(value: str) -> str:
+    mapping = {"children": "many", "many": "many", "parent": "one", "one": "one"}
+    return mapping.get(value, value)
+
+
+def _as_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_assignment_list(value: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    if not value.strip():
+        return result
+    for part in [piece.strip() for piece in value.split(",") if piece.strip()]:
+        if "=" in part:
+            key, raw_value = part.split("=", 1)
+            result[key.strip().lower()] = raw_value.strip().strip('"')
+        else:
+            result[part.strip().lower()] = "1"
+    return result
+
+
+def _parse_flag_list(value: str) -> set[str]:
+    return {piece.strip().lower() for piece in value.split(",") if piece.strip()}
+
+
+def _parse_properties_from_cls(source: str) -> list[SchemaProperty]:
+    props: list[SchemaProperty] = []
+    pattern = re.compile(
+        r"Property\s+([A-Za-z][A-Za-z0-9_]*)\s+As\s+([A-Za-z0-9_.%]+)"
+        r"(?:\s*\(\s*([^)]+)\s*\))?"
+        r"(?:\s*\[\s*([^\]]+)\s*\])?;"
     )
-    return _generate_cls_impl(model_class)
-
-
-def write_cls(model_class: type, output_root: str) -> Path:
-    """
-    Write the generated .cls source to disk.
-
-    .. deprecated::
-        Use ``Model.schema.ensure_iris_class()`` to manage the IRIS class
-        directly via %Dictionary without .cls files.
-    """
-    warnings.warn(
-        "write_cls() is deprecated. Use Model.schema.ensure_iris_class() "
-        "to manage the IRIS class directly via %Dictionary without .cls files.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return _write_cls_impl(model_class, output_root)
-
-
-def compile_to_iris(model_class: type) -> None:
-    """
-    Create or update the IRIS class using %Dictionary (no .cls files).
-
-    .. deprecated::
-        Renamed to ``Model.schema.ensure_iris_class()``.  This module-level
-        alias will be removed in a future release.
-    """
-    warnings.warn(
-        "compile_to_iris() is deprecated. Use Model.schema.ensure_iris_class() instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    _ensure_iris_class_impl(model_class)
-
-
-# ---------------------------------------------------------------------------
-# CLI entry point
-# ---------------------------------------------------------------------------
-
-def main() -> None:
-    import argparse
-    import importlib
-    import sys
-
-    parser = argparse.ArgumentParser(
-        description="Create or update an IRIS class via %Dictionary from an iris_orm model.",
-    )
-    parser.add_argument(
-        "iris_classname",
-        help="IRIS class name of the registered Python-first model, e.g. Demo.Post",
-    )
-    parser.add_argument(
-        "--module",
-        default=None,
-        help="Python module to import before looking up the model (ensures registration).",
-    )
-    args = parser.parse_args()
-
-    if args.module:
-        importlib.import_module(args.module)
-
-    from .metaclass import _MODEL_REGISTRY  # noqa: PLC0415
-
-    model_class = _MODEL_REGISTRY.get(args.iris_classname)
-    if model_class is None:
-        print(
-            f"Error: No model registered for IRIS class '{args.iris_classname}'. "
-            "Did you import the module that defines it? Use --module.",
-            file=sys.stderr,
+    for match in pattern.finditer(source):
+        params = _parse_assignment_list(match.group(3) or "")
+        qualifiers = _parse_flag_list(match.group(4) or "")
+        props.append(
+            SchemaProperty(
+                name=match.group(1),
+                iris_type=match.group(2),
+                required="required" in qualifiers,
+                collection=str(params.get("collection", "")).lower(),
+                default=str(params.get("initialexpression", "")),
+                maxlen=_as_int(params.get("maxlen")),
+            )
         )
-        sys.exit(1)
-
-    _ensure_iris_class_impl(model_class)
-    print(f"ensure_iris_class: {args.iris_classname} created/updated via %Dictionary.")
+    return props
 
 
-if __name__ == "__main__":
-    main()
+def _parse_relationships_from_cls(source: str) -> list[SchemaRelationship]:
+    rels: list[SchemaRelationship] = []
+    pattern = re.compile(
+        r"Relationship\s+([A-Za-z][A-Za-z0-9_]*)\s+As\s+([A-Za-z0-9_.%]+)"
+        r"\s*\[\s*([^\]]+)\s*\]\s*;"
+    )
+    for match in pattern.finditer(source):
+        attrs = _parse_assignment_list(match.group(3))
+        rels.append(
+            SchemaRelationship(
+                name=match.group(1),
+                related_classname=match.group(2),
+                cardinality=_normalize_cardinality(str(attrs.get("cardinality", "one"))),
+                inverse=str(attrs.get("inverse", "")),
+            )
+        )
+    return rels
+
+
+def _parse_parameters_from_cls(source: str) -> dict[str, str]:
+    params: dict[str, str] = {}
+    pattern = re.compile(r"Parameter\s+([A-Za-z][A-Za-z0-9_]*)\s*=\s*(.+?);")
+    for match in pattern.finditer(source):
+        params[match.group(1)] = match.group(2).strip()
+    return params
+
+
+def _parse_indexes_from_cls(source: str) -> list[SchemaIndex]:
+    indexes: list[SchemaIndex] = []
+    pattern = re.compile(
+        r"Index\s+([A-Za-z][A-Za-z0-9_]*)\s+On\s+\(([^)]*)\)"
+        r"(?:\s*\[\s*([^\]]+)\s*\])?;"
+    )
+    for match in pattern.finditer(source):
+        attrs = _parse_assignment_list(match.group(3) or "")
+        indexes.append(
+            SchemaIndex(
+                name=match.group(1),
+                properties=match.group(2).strip(),
+                unique=str(attrs.get("unique", "")).lower() in {"1", "true", "yes"},
+                primary_key=str(attrs.get("primarykey", "")).lower() in {"1", "true", "yes"},
+            )
+        )
+    return indexes
+
+
+def _parse_storage_from_cls(source: str) -> SchemaStorage | None:
+    match = re.search(r"Storage\s+([A-Za-z0-9_]+)\s*\{(.*)\}\s*$", source, re.DOTALL | re.MULTILINE)
+    if match is None:
+        return None
+    body = match.group(2)
+    scalar_tags = {
+        "Type": "type",
+        "DataLocation": "data_location",
+        "DefaultData": "default_data",
+        "ExtentLocation": "extent_location",
+        "IdLocation": "id_location",
+        "IndexLocation": "index_location",
+        "StreamLocation": "stream_location",
+        "IdFunction": "id_function",
+    }
+    payload: dict[str, Any] = {"name": match.group(1), "data": []}
+    for tag, key in scalar_tags.items():
+        value_match = re.search(fr"<{tag}>(.*?)</{tag}>", body, re.DOTALL)
+        if value_match is not None:
+            payload[key] = value_match.group(1).strip()
+
+    for data_match in re.finditer(r"<Data(?:\s+name=\"([^\"]*)\")?\s*>(.*?)</Data>", body, re.DOTALL):
+        data_payload: dict[str, Any] = {"name": data_match.group(1) or "", "values": []}
+        inner = data_match.group(2)
+        structure_match = re.search(r"<Structure>(.*?)</Structure>", inner, re.DOTALL)
+        if structure_match is not None:
+            data_payload["structure"] = structure_match.group(1).strip()
+        subscript_match = re.search(r"<Subscript>(.*?)</Subscript>", inner, re.DOTALL)
+        if subscript_match is not None:
+            data_payload["subscript"] = subscript_match.group(1).strip()
+        for value_match in re.finditer(r"<Value(?:\s+name=\"([^\"]*)\")?>(.*?)</Value>", inner, re.DOTALL):
+            data_payload["values"].append(
+                {"name": value_match.group(1) or "", "value": value_match.group(2).strip()}
+            )
+        payload["data"].append(data_payload)
+    return SchemaStorage.from_dict(payload)
+
+
+def python_annotation_for_property(prop: SchemaProperty) -> str:
+    python_type = iris_type_to_python(prop.iris_type)
+    if python_type is Any:
+        return "Any"
+    if python_type.__module__ == "datetime":
+        return f"datetime.{python_type.__name__}"
+    return python_type.__name__
+
+
+def compile_declared_model_schema(model_class: type) -> SchemaClass:
+    return SchemaCompiler().compile_model(model_class)

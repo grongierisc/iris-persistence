@@ -1,169 +1,43 @@
 """
-04_schema_sync.py — Git-style schema sync
-==========================================
-
-The schema manager on every declared model provides a git-flavoured workflow
-for keeping Python model definitions and live IRIS class definitions in sync.
-
-Commands
---------
-  Model.schema.ensure_iris_class()  → create or update the IRIS class via %Dictionary (no .cls files)
-  Model.schema.status()             → 3-way diff: snapshot ↔ Python  AND  snapshot ↔ IRIS
-  Model.schema.fetch()              → read live IRIS schema (no changes applied)
-  Model.schema.push()               → Python additions/changes → IRIS   (raises ConflictError on conflict)
-  Model.schema.pull()               → IRIS additions → Python   (raises ConflictError on conflict)
-  Model.schema.commit()             → mark current Python state as the new baseline snapshot
-  Model.schema.delete_property(name) → permanently delete a property from IRIS via %Dictionary
-
-Conflict detection
-------------------
-A _iris_schema_snapshot dict records the agreed state after the last commit().
-If BOTH Python and IRIS changed the same property since then → ConflictError.
-Resolve by editing one side to match, then re-run push/pull.
+04_schema_sync.py — Explicit schema diffing and live apply.
 """
 from __future__ import annotations
 
-from iris_orm import IRISModel, field
-from iris_orm.schema import ConflictError
+from pathlib import Path
+import sys
 
-# ---------------------------------------------------------------------------
-# 1. Start: Python-first model with an empty snapshot
-# ---------------------------------------------------------------------------
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
 
-class Product(IRISModel):
-    _iris_classname = "Demo.Product"
-
-    Name:  str = field(required=True, maxlen=200)
-    Price: float = field(default=0.0)
-    Stock: int = field(default=0)
-
-    # Snapshot of agreed state (empty = never committed)
-    _iris_schema_snapshot: dict = {}
+from iris_orm import IRISAdapter, IRISModel, Registry, SchemaApplier, SchemaCompiler, SchemaPlanner, field
 
 
-# Create the class in IRIS directly via %Dictionary — no .cls files
-Product.schema.ensure_iris_class()
+class Post(IRISModel):
+    _iris_classname = "Demo.Post"
 
-# Commit current Python state as baseline
-Product.schema.commit()
-print("After initial commit:")
-print(f"  snapshot = {Product._iris_schema_snapshot}")
+    Title: str = field(required=True, maxlen=500)
+    Views: int = field(default=0)
 
 
-# ---------------------------------------------------------------------------
-# 2. Python adds a new field → push() writes it to IRIS via %Dictionary
-# ---------------------------------------------------------------------------
-# Simulate: developer adds Description to the Python class.
-# In practice you edit the class body; here we patch _iris_properties
-# for demonstration purposes.
+def main() -> None:
+    registry = Registry()
+    registry.register(Post)
 
-from iris_orm.introspection import PropertyInfo
+    adapter = IRISAdapter()
+    compiler = SchemaCompiler(adapter)
+    desired = registry.export_schema()
+    before = compiler.catalog_from_iris(registry.classnames())
+    plan = SchemaPlanner().diff(before, desired)
 
-new_prop = PropertyInfo(
-    name="Description",
-    iris_type="%String",
-    python_type=str,
-    required=False,
-    collection="",
-    default="",
-)
-Product._iris_properties.append(new_prop)
+    print("Planned operations:")
+    for op in plan.operations:
+        print(" ", op.kind, op.classname, op.payload)
 
-# status() shows the Python addition
-d = Product.schema.status()
-print(f"\nAfter adding Description in Python:\n{d}")
-
-# push() writes it to IRIS via %Dictionary.PropertyDefinition and recompiles
-try:
-    Product.schema.push()
-    print("push() succeeded — Description added to IRIS via %Dictionary")
-except ConflictError as e:
-    print(f"Conflict: {e}")
-
-Product.schema.commit()
-print(f"New snapshot: {Product._iris_schema_snapshot}")
+    if not plan.is_empty():
+        SchemaApplier(adapter).apply(plan, allow_manual=True)
+        after = compiler.catalog_from_iris(registry.classnames())
+        print("Live classes after apply:", [item.name for item in after.classes])
 
 
-# ---------------------------------------------------------------------------
-# 3. IRIS adds a new property (e.g. a DBA ran ALTER TABLE)
-# ---------------------------------------------------------------------------
-# Simulate by temporarily patching fetch() — in reality iris.sql.exec
-# would return the new property from %Dictionary.PropertyDefinition.
-
-_original_fetch = Product.schema.fetch
-
-def _patched_fetch():
-    result = _original_fetch()
-    result["UpdatedAt"] = "%TimeStamp"
-    return result
-
-Product.schema.fetch = _patched_fetch
-
-d = Product.schema.status()
-print(f"\nAfter IRIS adds UpdatedAt:\n{d}")
-
-# pull() updates the snapshot and injects the descriptor
-Product.schema.pull()
-print(f"After pull, snapshot: {Product._iris_schema_snapshot}")
-
-# Restore
-Product.schema.fetch = _original_fetch
-
-
-# ---------------------------------------------------------------------------
-# 4. Conflict scenario: both sides changed the same property
-# ---------------------------------------------------------------------------
-
-# Set snapshot: Price is %Float
-Product._iris_schema_snapshot = {
-    "Name":  "%String",
-    "Price": "%Float",
-    "Stock": "%Integer",
-}
-
-# Python has changed Price to %String (type mismatch in model)
-for p in Product._iris_properties:
-    if p.name == "Price":
-        object.__setattr__(p, "iris_type", "%String")
-
-# IRIS has changed Price to %Numeric
-def _conflict_fetch():
-    return {"Name": "%String", "Price": "%Numeric", "Stock": "%Integer"}
-
-Product.schema.fetch = _conflict_fetch
-
-d = Product.schema.status()
-print(f"\nConflict scenario:\n{d}")
-
-try:
-    Product.schema.push()
-except ConflictError as e:
-    print(f"\nConflictError raised as expected: {e}")
-    for conflict in e.conflicts:
-        print(
-            f"  Property {conflict.name!r}: "
-            f"snapshot={conflict.snapshot_type!r}  "
-            f"python={conflict.python_type!r}  "
-            f"iris={conflict.iris_type!r}"
-        )
-    print("\nResolution: align Python or IRIS definition, then re-run push/pull.")
-
-
-# ---------------------------------------------------------------------------
-# 5. Explicitly delete a property from IRIS via %Dictionary
-# ---------------------------------------------------------------------------
-# Unlike push() (which only warns on removals), delete_property() is
-# explicit and permanent.  Use it when you intentionally drop a field.
-
-# Product.schema.delete_property("Stock")
-# print("Stock property deleted from IRIS via %Dictionary")
-
-
-# ---------------------------------------------------------------------------
-# 6. Removed properties — warnings only from push(), never auto-deleted
-# ---------------------------------------------------------------------------
-# The ORM never drops an IRIS property automatically from push() (data loss risk).
-# Use delete_property() explicitly when intentional.
-
-print("\nNote: removing a property from Python triggers a warning in push(), not deletion.")
-print("Use Model.schema.delete_property(name) to delete explicitly via %Dictionary.")
+if __name__ == "__main__":
+    main()

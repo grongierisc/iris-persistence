@@ -1,46 +1,68 @@
 """
-iris_orm — Python ORM for InterSystems IRIS.
-
-Supports two workflows:
-  Existing-class binding: set _iris_classname and introspect IRIS metadata.
-  Declared models: write typed annotations + field()/relationship() metadata.
+iris_orm — explicit IRIS mapper and schema toolkit.
 """
 from __future__ import annotations
 
-from .connection import IRISConnection
-from .metaclass import IRISModel, IRISSerial, IRISMeta, _MODEL_REGISTRY
-from .query import IRISQuerySet
-from .fields import field, relationship, FieldDefinition, RelationshipDefinition
-from .errors import StorageConflictError, LockfileDriftError, UnsupportedClassFeatureError
+from .adapter import IRISAdapter
+from .binder import Binder
+from .fields import FieldDefinition, RelationshipDefinition, field, relationship
+from .metaclass import IRISMeta, IRISModel, IRISSerial, _MODEL_REGISTRY
+from .registry import Registry
+from .schema import (
+    SchemaApplier,
+    SchemaCatalog,
+    SchemaClass,
+    SchemaCompiler,
+    SchemaIndex,
+    SchemaPlan,
+    SchemaPlanner,
+    SchemaProperty,
+    SchemaRelationship,
+    SchemaStorage,
+    SchemaStorageData,
+    SchemaStorageValue,
+    compile_declared_model_schema,
+)
+from .session import Session
 from .types import (
-    iris_type_to_python,
-    python_type_to_iris,
-    iris_type_to_annotation,
     IRIS_TO_PYTHON,
     PYTHON_TO_IRIS,
+    iris_type_to_annotation,
+    iris_type_to_python,
+    python_type_to_iris,
 )
-from . import schema
 
 __all__ = [
-    "IRISConnection",
+    "IRISAdapter",
+    "IRISMeta",
     "IRISModel",
     "IRISSerial",
-    "IRISMeta",
+    "Session",
+    "Registry",
+    "Binder",
+    "SchemaApplier",
+    "SchemaCatalog",
+    "SchemaClass",
+    "SchemaCompiler",
+    "SchemaIndex",
+    "SchemaPlan",
+    "SchemaPlanner",
+    "SchemaProperty",
+    "SchemaRelationship",
+    "SchemaStorage",
+    "SchemaStorageData",
+    "SchemaStorageValue",
     "_MODEL_REGISTRY",
-    "IRISQuerySet",
-    "StorageConflictError",
-    "LockfileDriftError",
-    "UnsupportedClassFeatureError",
-    "field",
-    "relationship",
     "FieldDefinition",
     "RelationshipDefinition",
-    "iris_type_to_python",
-    "python_type_to_iris",
-    "iris_type_to_annotation",
+    "field",
+    "relationship",
+    "compile_declared_model_schema",
     "IRIS_TO_PYTHON",
     "PYTHON_TO_IRIS",
-    "schema",
+    "iris_type_to_annotation",
+    "iris_type_to_python",
+    "python_type_to_iris",
 ]
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"

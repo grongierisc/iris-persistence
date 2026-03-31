@@ -36,6 +36,15 @@ def _make_conn(sql_rows=None):
     return conn
 
 
+def _prime_save_mocks(conn):
+    opened = conn.iris_cls.return_value._OpenId.return_value
+    created = conn.iris_cls.return_value._New.return_value
+    opened._Save.return_value = 1
+    created._Save.return_value = 1
+    opened.Parameters = MagicMock()
+    created.Parameters = MagicMock()
+
+
 # ===========================================================================
 # TestOperations
 # ===========================================================================
@@ -44,6 +53,7 @@ class TestCreateClass:
     def test_creates_when_not_exists(self):
         from iris_orm.migrations.migration import CreateClass
         conn = _make_conn()
+        _prime_save_mocks(conn)
         with patch("iris_orm.schema._class_exists_in_iris", return_value=False):
             CreateClass("Demo.Foo").apply(conn)
         conn.iris_cls.assert_any_call("%Dictionary.ClassDefinition")
@@ -79,16 +89,83 @@ class TestAddProperty:
     def test_apply_creates_property(self):
         from iris_orm.migrations.migration import AddProperty
         conn = _make_conn()
-        conn.iris_cls.return_value._OpenId.side_effect = Exception("not found")
+
+        class_def = MagicMock()
+        class_def._Save.return_value = 1
+        prop_def = MagicMock()
+        prop_def._Save.return_value = 1
+        prop_def.Parameters = MagicMock()
+        prop_cls = MagicMock()
+        prop_cls._OpenId.side_effect = Exception("not found")
+        prop_cls._New.return_value = prop_def
+
+        def iris_cls_side_effect(name):
+            if name == "%Dictionary.ClassDefinition":
+                cls = MagicMock()
+                cls._OpenId.return_value = class_def
+                return cls
+            if name == "%Dictionary.PropertyDefinition":
+                return prop_cls
+            return MagicMock()
+
+        conn.iris_cls.side_effect = iris_cls_side_effect
         AddProperty("Demo.Foo", "Title", "%String", required=True).apply(conn)
         conn.iris_cls.assert_any_call("%Dictionary.PropertyDefinition")
 
     def test_apply_recompiles(self):
         from iris_orm.migrations.migration import AddProperty
         conn = _make_conn()
-        conn.iris_cls.return_value._OpenId.side_effect = Exception("not found")
+
+        class_def = MagicMock()
+        class_def._Save.return_value = 1
+        prop_def = MagicMock()
+        prop_def._Save.return_value = 1
+        prop_def.Parameters = MagicMock()
+        prop_cls = MagicMock()
+        prop_cls._OpenId.side_effect = Exception("not found")
+        prop_cls._New.return_value = prop_def
+        system_obj = MagicMock()
+
+        def iris_cls_side_effect(name):
+            if name == "%Dictionary.ClassDefinition":
+                cls = MagicMock()
+                cls._OpenId.return_value = class_def
+                return cls
+            if name == "%Dictionary.PropertyDefinition":
+                return prop_cls
+            if name == "%SYSTEM.OBJ":
+                return system_obj
+            return MagicMock()
+
+        conn.iris_cls.side_effect = iris_cls_side_effect
         AddProperty("Demo.Foo", "Title", "%String").apply(conn)
         conn.iris_cls.assert_any_call("%SYSTEM.OBJ")
+
+    def test_apply_falls_back_to_new_when_openid_returns_string(self):
+        from iris_orm.migrations.migration import AddProperty
+        conn = _make_conn()
+
+        class_def = MagicMock()
+        class_def._Save.return_value = 1
+        prop_def = MagicMock()
+        prop_def._Save.return_value = 1
+        prop_def.Parameters = MagicMock()
+        prop_cls = MagicMock()
+        prop_cls._OpenId.return_value = ""
+        prop_cls._New.return_value = prop_def
+
+        def iris_cls_side_effect(name):
+            if name == "%Dictionary.ClassDefinition":
+                cls = MagicMock()
+                cls._OpenId.return_value = class_def
+                return cls
+            if name == "%Dictionary.PropertyDefinition":
+                return prop_cls
+            return MagicMock()
+
+        conn.iris_cls.side_effect = iris_cls_side_effect
+        AddProperty("Demo.Foo", "Title", "%String").apply(conn)
+        assert prop_cls._New.called
 
     def test_revert_calls_drop(self):
         from iris_orm.migrations.migration import AddProperty
@@ -117,6 +194,7 @@ class TestAlterProperty:
     def test_apply_updates_type(self):
         from iris_orm.migrations.migration import AlterProperty
         conn = _make_conn()
+        _prime_save_mocks(conn)
         AlterProperty("Demo.Foo", "Score", "%Integer", old_type="%String").apply(conn)
         prop_obj = conn.iris_cls.return_value._OpenId.return_value
         assert prop_obj.Type == "%Integer"
@@ -124,6 +202,7 @@ class TestAlterProperty:
     def test_revert_applies_old_type(self):
         from iris_orm.migrations.migration import AlterProperty
         conn = _make_conn()
+        _prime_save_mocks(conn)
         AlterProperty("Demo.Foo", "Score", "%Integer", old_type="%String").revert(conn)
         prop_obj = conn.iris_cls.return_value._OpenId.return_value
         assert prop_obj.Type == "%String"
@@ -167,7 +246,25 @@ class TestAddRelationship:
     def test_apply_creates_relationship(self):
         from iris_orm.migrations.migration import AddRelationship
         conn = _make_conn()
-        conn.iris_cls.return_value._OpenId.side_effect = Exception("not found")
+
+        class_def = MagicMock()
+        class_def._Save.return_value = 1
+        rel_def = MagicMock()
+        rel_def._Save.return_value = 1
+        rel_cls = MagicMock()
+        rel_cls._OpenId.side_effect = Exception("not found")
+        rel_cls._New.return_value = rel_def
+
+        def iris_cls_side_effect(name):
+            if name == "%Dictionary.ClassDefinition":
+                cls = MagicMock()
+                cls._OpenId.return_value = class_def
+                return cls
+            if name == "%Dictionary.RelationshipDefinition":
+                return rel_cls
+            return MagicMock()
+
+        conn.iris_cls.side_effect = iris_cls_side_effect
         AddRelationship(
             "Demo.Post", "Author", "Demo.Author",
             cardinality="parent", inverse="Posts"
@@ -183,6 +280,34 @@ class TestAddRelationship:
                 "Demo.Post", "Author", "Demo.Author",
                 cardinality="parent", inverse="Posts"
             ).revert(conn)
+
+    def test_apply_falls_back_to_new_when_openid_returns_string(self):
+        from iris_orm.migrations.migration import AddRelationship
+        conn = _make_conn()
+
+        class_def = MagicMock()
+        class_def._Save.return_value = 1
+        rel_def = MagicMock()
+        rel_def._Save.return_value = 1
+        rel_cls = MagicMock()
+        rel_cls._OpenId.return_value = ""
+        rel_cls._New.return_value = rel_def
+
+        def iris_cls_side_effect(name):
+            if name == "%Dictionary.ClassDefinition":
+                cls = MagicMock()
+                cls._OpenId.return_value = class_def
+                return cls
+            if name == "%Dictionary.RelationshipDefinition":
+                return rel_cls
+            return MagicMock()
+
+        conn.iris_cls.side_effect = iris_cls_side_effect
+        AddRelationship(
+            "Demo.Post", "Author", "Demo.Author",
+            cardinality="parent", inverse="Posts"
+        ).apply(conn)
+        assert rel_cls._New.called
 
     def test_as_code(self):
         from iris_orm.migrations.migration import AddRelationship
@@ -216,6 +341,7 @@ class TestMigrationConnection:
     def test_create_class_delegates(self):
         from iris_orm.migrations.migration import MigrationConnection
         conn = _make_conn()
+        _prime_save_mocks(conn)
         with patch("iris_orm.schema._class_exists_in_iris", return_value=False):
             mc = MigrationConnection(conn)
             mc.create_class("Demo.X")
@@ -224,7 +350,26 @@ class TestMigrationConnection:
     def test_add_property_delegates(self):
         from iris_orm.migrations.migration import MigrationConnection
         conn = _make_conn()
-        conn.iris_cls.return_value._OpenId.side_effect = Exception("not found")
+
+        class_def = MagicMock()
+        class_def._Save.return_value = 1
+        prop_def = MagicMock()
+        prop_def._Save.return_value = 1
+        prop_def.Parameters = MagicMock()
+        prop_cls = MagicMock()
+        prop_cls._OpenId.side_effect = Exception("not found")
+        prop_cls._New.return_value = prop_def
+
+        def iris_cls_side_effect(name):
+            if name == "%Dictionary.ClassDefinition":
+                cls = MagicMock()
+                cls._OpenId.return_value = class_def
+                return cls
+            if name == "%Dictionary.PropertyDefinition":
+                return prop_cls
+            return MagicMock()
+
+        conn.iris_cls.side_effect = iris_cls_side_effect
         mc = MigrationConnection(conn)
         mc.add_property("Demo.X", "Name", "%String")
         conn.iris_cls.assert_any_call("%Dictionary.PropertyDefinition")
@@ -249,6 +394,7 @@ class TestTracker:
     def test_init_creates_class_when_missing(self):
         from iris_orm.migrations import tracker
         conn = _make_conn()
+        _prime_save_mocks(conn)
         with patch("iris_orm.schema._class_exists_in_iris", return_value=False):
             tracker.init(conn)
         conn.iris_cls.assert_any_call("%Dictionary.ClassDefinition")

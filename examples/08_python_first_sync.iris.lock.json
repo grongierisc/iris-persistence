@@ -1,0 +1,52 @@
+{
+  "class_parameters": {},
+  "classname": "Demo.Product",
+  "generated_at": "2026-03-31T08:50:45.229834Z",
+  "generated_region_hash": "",
+  "indexes": [],
+  "scaffold_style": "typed",
+  "source": {
+    "kind": "declared",
+    "origin": "/Users/grongier/git/iris-persistence/examples/08_python_first_sync.py"
+  },
+  "storage": {
+    "data": [
+      {
+        "name": "ProductDefaultData",
+        "structure": "listnode",
+        "subscript": "",
+        "values": [
+          {
+            "name": "1",
+            "value": "%%CLASSNAME"
+          },
+          {
+            "name": "2",
+            "value": "InStock"
+          },
+          {
+            "name": "3",
+            "value": "Name"
+          },
+          {
+            "name": "4",
+            "value": "Price"
+          }
+        ]
+      }
+    ],
+    "data_location": "^Demo.ProductD",
+    "default_data": "ProductDefaultData",
+    "extent_location": "",
+    "id_function": "",
+    "id_location": "^Demo.ProductD",
+    "index_location": "^Demo.ProductI",
+    "name": "Default",
+    "stream_location": "^Demo.ProductS",
+    "type": "%Storage.Persistent"
+  },
+  "storage_hash": "a9dc087427e65fd706d448da7d89435f672e8de6fb95780a8d30beeb58b62317",
+  "storage_mode": "preserve",
+  "super": "%Persistent",
+  "unsupported_features": []
+}

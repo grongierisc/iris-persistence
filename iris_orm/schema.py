@@ -25,7 +25,14 @@ from typing import Any, Optional
 
 from .errors import LockfileDriftError, StorageConflictError
 from .introspection import get_class_details
-from .lockfile import compute_hash, load_lockfile
+from .lockfile import (
+    IRISLockfile,
+    compute_hash,
+    load_lockfile,
+    lockfile_path_for_module,
+    timestamp_utc,
+    write_lockfile,
+)
 
 # Cardinality mapping from Python strings → ObjectScript keywords
 _CARD_MAP: dict[str, str] = {
@@ -44,17 +51,64 @@ _STORAGE_RE = re.compile(r"(Storage\s+\w+\s*\{.*?\}\s*\n?)", re.DOTALL)
 
 def _class_exists_in_iris(classname: str, conn: Any) -> bool:
     """Return True if the IRIS class already exists in %Dictionary."""
-    rs = conn.sql_exec(
-        "SELECT Name FROM %Dictionary.ClassDefinition WHERE Name = ?",
-        [classname],
-    )
+    try:
+        rs = conn.sql_exec(
+            "SELECT Name FROM %Dictionary.ClassDefinition WHERE Name = ?",
+            [classname],
+        )
+    except Exception:
+        rs = []
     for _ in rs:
         return True
-    return False
+    try:
+        exists = conn.iris_cls("%Dictionary.ClassDefinition")._ExistsId(classname)
+    except Exception:
+        exists = 0
+    return bool(exists)
+
+
+def _looks_like_iris_object(value: Any) -> bool:
+    """Return True when *value* behaves like an embedded IRIS object proxy."""
+    return value is not None and hasattr(value, "_Save")
+
+
+def _status_is_success(status: Any) -> bool:
+    """Return True when an IRIS %Status value represents success."""
+    return status in (None, 1, True) or str(status).strip() == "1"
+
+
+def _save_dictionary_item(item: Any, *, kind: str, identifier: str) -> None:
+    """Persist a %Dictionary object and raise on error statuses."""
+    try:
+        status = item._Save()
+    except Exception as exc:
+        raise RuntimeError(f"Failed to save {kind} {identifier!r}: {exc}") from exc
+    if not _status_is_success(status):
+        raise RuntimeError(f"Failed to save {kind} {identifier!r}: {status}")
+
+
+def _open_or_new_dictionary_item(
+    definition_cls: Any,
+    item_id: str,
+    *,
+    name: str,
+    parent: Any,
+) -> Any:
+    """Open a %Dictionary definition item or create a new one if unavailable."""
+    try:
+        item = definition_cls._OpenId(item_id)
+    except Exception:
+        item = None
+    if not _looks_like_iris_object(item):
+        item = definition_cls._New()
+        item.Name = name
+        item.parent = parent
+    return item
 
 
 def _upsert_property_via_dict(
     classname: str,
+    class_def: Any,
     prop: Any,
     field_def: Any | None,
     conn: Any,
@@ -62,12 +116,12 @@ def _upsert_property_via_dict(
     """Create or update a single property in IRIS using %Dictionary.PropertyDefinition."""
     prop_def_cls = conn.iris_cls("%Dictionary.PropertyDefinition")
     prop_id = f"{classname}||{prop.name}"
-    try:
-        prop_def = prop_def_cls._OpenId(prop_id)
-    except Exception:
-        prop_def = prop_def_cls._New()
-        prop_def.Name = prop.name
-        prop_def.parent = classname
+    prop_def = _open_or_new_dictionary_item(
+        prop_def_cls,
+        prop_id,
+        name=prop.name,
+        parent=class_def,
+    )
 
     prop_def.Type = prop.iris_type or "%String"
     if field_def is not None:
@@ -78,11 +132,12 @@ def _upsert_property_via_dict(
             prop_def.Description = field_def.description
         if field_def.maxlen is not None:
             prop_def.Parameters.SetAt(str(field_def.maxlen), "MAXLEN")
-    prop_def._Save()
+    _save_dictionary_item(prop_def, kind="property", identifier=prop_id)
 
 
 def _upsert_relationship_via_dict(
     classname: str,
+    class_def: Any,
     rel_name: str,
     rel_def: Any,
     conn: Any,
@@ -90,19 +145,19 @@ def _upsert_relationship_via_dict(
     """Create or update a single relationship in IRIS using %Dictionary.RelationshipDefinition."""
     rel_def_cls = conn.iris_cls("%Dictionary.RelationshipDefinition")
     rel_id = f"{classname}||{rel_name}"
-    try:
-        rel_iris = rel_def_cls._OpenId(rel_id)
-    except Exception:
-        rel_iris = rel_def_cls._New()
-        rel_iris.Name = rel_name
-        rel_iris.parent = classname
+    rel_iris = _open_or_new_dictionary_item(
+        rel_def_cls,
+        rel_id,
+        name=rel_name,
+        parent=class_def,
+    )
 
     rel_iris.Type = rel_def.related_classname
     rel_iris.Cardinality = _CARD_MAP.get(rel_def.cardinality, rel_def.cardinality)
     rel_iris.Inverse = rel_def.inverse
     if rel_def.description:
         rel_iris.Description = rel_def.description
-    rel_iris._Save()
+    _save_dictionary_item(rel_iris, kind="relationship", identifier=rel_id)
 
 
 # ---------------------------------------------------------------------------
@@ -128,11 +183,13 @@ class ConflictError(Exception):
 def _load_model_lockfile(model_class: type) -> Any | None:
     """Load a scaffold lockfile for *model_class* if configured."""
     lockfile_path = getattr(model_class, "_iris_lockfile_path", "")
-    if not lockfile_path:
+    path, explicit = _resolve_model_lockfile_path(model_class, lockfile_path)
+    if path is None:
         return None
-    path = _resolve_lockfile_path(model_class, lockfile_path)
     if not path.exists():
-        raise LockfileDriftError(f"Missing scaffold lockfile: {path}")
+        if explicit:
+            raise LockfileDriftError(f"Missing scaffold lockfile: {path}")
+        return None
     return load_lockfile(path)
 
 
@@ -146,6 +203,93 @@ def _resolve_lockfile_path(model_class: type, lockfile_path: str | Path) -> Path
     except (TypeError, OSError):
         return path
     return (module_file.parent / path).resolve()
+
+
+def _resolve_model_module_path(model_class: type) -> Path | None:
+    try:
+        module_file = Path(inspect.getfile(model_class)).resolve()
+    except (TypeError, OSError):
+        return None
+    return module_file
+
+
+def _resolve_model_lockfile_path(
+    model_class: type,
+    lockfile_path: str | Path = "",
+) -> tuple[Path | None, bool]:
+    explicit = bool(str(lockfile_path or "").strip())
+    if explicit:
+        return (_resolve_lockfile_path(model_class, lockfile_path), True)
+    module_file = _resolve_model_module_path(model_class)
+    if module_file is None:
+        return (None, False)
+    return (lockfile_path_for_module(module_file), False)
+
+
+def _ensure_model_lockfile_reference(model_class: type) -> Path:
+    path, _explicit = _resolve_model_lockfile_path(
+        model_class,
+        getattr(model_class, "_iris_lockfile_path", ""),
+    )
+    if path is None:
+        classname = str(getattr(model_class, "_iris_classname", model_class.__name__))
+        fallback = Path.cwd() / f"{classname.split('.')[-1].lower()}.iris.lock.json"
+        model_class._iris_lockfile_path = str(fallback)  # type: ignore[attr-defined]
+        return fallback
+    if not getattr(model_class, "_iris_lockfile_path", ""):
+        module_file = _resolve_model_module_path(model_class)
+        if module_file is not None and path.parent == module_file.parent:
+            model_class._iris_lockfile_path = path.name  # type: ignore[attr-defined]
+        else:
+            model_class._iris_lockfile_path = str(path)  # type: ignore[attr-defined]
+    return path
+
+
+def _build_lockfile_for_model(
+    model_class: type,
+    *,
+    details: Any,
+    generated_region_hash: str = "",
+) -> IRISLockfile:
+    module_file = _resolve_model_module_path(model_class)
+    storage = getattr(details, "storage", None)
+    storage_definition = details.storage_definition or ""
+    return IRISLockfile(
+        classname=details.classname,
+        super=details.super,
+        storage_mode=_get_storage_mode(model_class) or "preserve",
+        storage_hash=compute_hash(storage if storage is not None else storage_definition),
+        class_parameters=dict(details.class_parameters),
+        indexes=[
+            {
+                "name": idx.name,
+                "properties": idx.properties,
+                "unique": idx.unique,
+                "primary_key": idx.primary_key,
+            }
+            for idx in list(details.indexes)
+        ],
+        source={"kind": "declared", "origin": str(module_file) if module_file is not None else model_class.__name__},
+        scaffold_style="typed",
+        generated_at=timestamp_utc(),
+        generated_region_hash=generated_region_hash,
+        unsupported_features=[
+            {"kind": item.kind, "name": item.name}
+            for item in list(getattr(details, "unsupported_features", []))
+        ],
+        storage_definition=storage_definition,
+        storage=storage,
+    )
+
+
+def _write_model_lockfile(model_class: type, *, conn: Any, generated_region_hash: str = "") -> Path:
+    details = get_class_details(model_class._iris_classname, conn)  # type: ignore[attr-defined]
+    lockfile = _build_lockfile_for_model(
+        model_class,
+        details=details,
+        generated_region_hash=generated_region_hash,
+    )
+    return write_lockfile(_ensure_model_lockfile_reference(model_class), lockfile)
 
 
 def _normalized_index_payload(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -221,7 +365,8 @@ def _lockfile_drift_messages(model_class: type, conn: Any) -> tuple[list[str], l
         drift.append("Indexes differ from lockfile")
 
     if lockfile.storage_mode == "preserve":
-        live_hash = compute_hash(details.storage_definition or "")
+        live_storage = getattr(details, "storage", None)
+        live_hash = compute_hash(live_storage if live_storage is not None else details.storage_definition or "")
         if live_hash != lockfile.storage_hash:
             storage_conflicts.append(
                 f"Storage differs: lockfile hash={lockfile.storage_hash}, live hash={live_hash}"
@@ -434,6 +579,14 @@ class SchemaManager:
             if not _class_exists_in_iris(self._cls._iris_classname, conn):
                 self.ensure_iris_class()
                 return d
+            class_def = conn.iris_cls("%Dictionary.ClassDefinition")._OpenId(
+                self._cls._iris_classname
+            )
+            if not _looks_like_iris_object(class_def):
+                raise RuntimeError(
+                    "Unable to open %Dictionary.ClassDefinition for "
+                    f"{self._cls._iris_classname!r}"
+                )
 
             prop_map = {p.name: p for p in self._cls._iris_properties}
 
@@ -442,7 +595,11 @@ class SchemaManager:
                 if prop is None:
                     continue
                 _upsert_property_via_dict(
-                    self._cls._iris_classname, prop, field_defs.get(name), conn
+                    self._cls._iris_classname,
+                    class_def,
+                    prop,
+                    field_defs.get(name),
+                    conn,
                 )
 
             for name, _snap_type, _new_type in d.python_changed:
@@ -450,7 +607,11 @@ class SchemaManager:
                 if prop is None:
                     continue
                 _upsert_property_via_dict(
-                    self._cls._iris_classname, prop, field_defs.get(name), conn
+                    self._cls._iris_classname,
+                    class_def,
+                    prop,
+                    field_defs.get(name),
+                    conn,
                 )
 
             # Recompile the class in IRIS.
@@ -680,12 +841,16 @@ def _ensure_iris_class_impl(model_class: type, flags: str = "ck") -> None:
         class_def = conn.iris_cls("%Dictionary.ClassDefinition")._New()
         class_def.Name = classname
         class_def.Super = "%SerialObject" if is_serial else "%Persistent"
-        class_def._Save()
+        _save_dictionary_item(class_def, kind="class", identifier=classname)
     else:
         try:
             class_def = conn.iris_cls("%Dictionary.ClassDefinition")._OpenId(classname)
         except Exception:
             class_def = None
+        if not _looks_like_iris_object(class_def):
+            class_def = None
+    if class_def is None:
+        raise RuntimeError(f"Unable to open %Dictionary.ClassDefinition for {classname!r}")
 
     storage_mode = _get_storage_mode(model_class, lockfile)
     storage_text = _get_model_storage(model_class, lockfile)
@@ -693,24 +858,26 @@ def _ensure_iris_class_impl(model_class: type, flags: str = "ck") -> None:
         try:
             setattr(class_def, "Storage", storage_text)
             setattr(class_def, "StorageDefinition", storage_text)
-            class_def._Save()
+            _save_dictionary_item(class_def, kind="class", identifier=classname)
         except Exception as exc:
             warnings.warn(f"Managed storage apply failed: {exc}", stacklevel=2)
 
     # 2. Upsert all properties.
     for prop in iris_properties:
-        _upsert_property_via_dict(classname, prop, field_defs.get(prop.name), conn)
+        _upsert_property_via_dict(classname, class_def, prop, field_defs.get(prop.name), conn)
 
     # 3. Upsert all relationships (not applicable to serial objects).
     if not is_serial:
         for rel_name, rd in rel_defs.items():
-            _upsert_relationship_via_dict(classname, rel_name, rd, conn)
+            _upsert_relationship_via_dict(classname, class_def, rel_name, rd, conn)
 
     # 4. Recompile.
     try:
         conn.iris_cls("%SYSTEM.OBJ").Compile(classname, flags)
     except Exception as exc:
         warnings.warn(f"Recompile failed: {exc}", stacklevel=2)
+
+    _write_model_lockfile(model_class, conn=conn)
 
 
 # ---------------------------------------------------------------------------

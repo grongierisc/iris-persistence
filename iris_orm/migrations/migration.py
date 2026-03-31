@@ -135,6 +135,45 @@ class Operation:
         raise NotImplementedError
 
 
+def _looks_like_iris_object(value: Any) -> bool:
+    """Return True when *value* behaves like an embedded IRIS object proxy."""
+    return value is not None and hasattr(value, "_Save")
+
+
+def _status_is_success(status: Any) -> bool:
+    """Return True when an IRIS %Status value represents success."""
+    return status in (None, 1, True) or str(status).strip() == "1"
+
+
+def _save_dictionary_item(item: Any, *, kind: str, identifier: str) -> None:
+    """Persist a %Dictionary object and raise on error statuses."""
+    try:
+        status = item._Save()
+    except Exception as exc:
+        raise RuntimeError(f"Failed to save {kind} {identifier!r}: {exc}") from exc
+    if not _status_is_success(status):
+        raise RuntimeError(f"Failed to save {kind} {identifier!r}: {status}")
+
+
+def _open_or_new_dictionary_item(
+    definition_cls: Any,
+    item_id: str,
+    *,
+    name: str,
+    parent: Any,
+) -> Any:
+    """Open a %Dictionary definition item or create a new one if unavailable."""
+    try:
+        item = definition_cls._OpenId(item_id)
+    except Exception:
+        item = None
+    if not _looks_like_iris_object(item):
+        item = definition_cls._New()
+        item.Name = name
+        item.parent = parent
+    return item
+
+
 # ---------------------------------------------------------------------------
 # Class-level operations
 # ---------------------------------------------------------------------------
@@ -151,7 +190,7 @@ class CreateClass(Operation):
         cls_def = conn.iris_cls("%Dictionary.ClassDefinition")._New()
         cls_def.Name = self.classname
         cls_def.Super = self.extends
-        cls_def._Save()
+        _save_dictionary_item(cls_def, kind="class", identifier=self.classname)
 
     def revert(self, conn: Any) -> None:
         DropClass(classname=self.classname).apply(conn)
@@ -202,14 +241,19 @@ class AddProperty(Operation):
     description: str = ""
 
     def apply(self, conn: Any) -> None:
+        class_def = conn.iris_cls("%Dictionary.ClassDefinition")._OpenId(self.classname)
+        if not _looks_like_iris_object(class_def):
+            raise RuntimeError(
+                f"Unable to open %Dictionary.ClassDefinition for {self.classname!r}"
+            )
         prop_def_cls = conn.iris_cls("%Dictionary.PropertyDefinition")
         prop_id = f"{self.classname}||{self.name}"
-        try:
-            prop_def = prop_def_cls._OpenId(prop_id)
-        except Exception:
-            prop_def = prop_def_cls._New()
-            prop_def.Name = self.name
-            prop_def.parent = self.classname
+        prop_def = _open_or_new_dictionary_item(
+            prop_def_cls,
+            prop_id,
+            name=self.name,
+            parent=class_def,
+        )
 
         prop_def.Type = self.iris_type
         prop_def.Required = int(self.required)
@@ -219,7 +263,7 @@ class AddProperty(Operation):
             prop_def.Description = self.description
         if self.maxlen is not None:
             prop_def.Parameters.SetAt(str(self.maxlen), "MAXLEN")
-        prop_def._Save()
+        _save_dictionary_item(prop_def, kind="property", identifier=prop_id)
         _recompile(conn, self.classname)
 
     def revert(self, conn: Any) -> None:
@@ -259,7 +303,7 @@ class AlterProperty(Operation):
             prop_def.Required = int(self.required)
         if self.maxlen is not None:
             prop_def.Parameters.SetAt(str(self.maxlen), "MAXLEN")
-        prop_def._Save()
+        _save_dictionary_item(prop_def, kind="property", identifier=prop_id)
         _recompile(conn, self.classname)
 
     def revert(self, conn: Any) -> None:
@@ -338,21 +382,26 @@ class AddRelationship(Operation):
     description: str = ""
 
     def apply(self, conn: Any) -> None:
+        class_def = conn.iris_cls("%Dictionary.ClassDefinition")._OpenId(self.classname)
+        if not _looks_like_iris_object(class_def):
+            raise RuntimeError(
+                f"Unable to open %Dictionary.ClassDefinition for {self.classname!r}"
+            )
         rel_def_cls = conn.iris_cls("%Dictionary.RelationshipDefinition")
         rel_id = f"{self.classname}||{self.name}"
-        try:
-            rel_iris = rel_def_cls._OpenId(rel_id)
-        except Exception:
-            rel_iris = rel_def_cls._New()
-            rel_iris.Name = self.name
-            rel_iris.parent = self.classname
+        rel_iris = _open_or_new_dictionary_item(
+            rel_def_cls,
+            rel_id,
+            name=self.name,
+            parent=class_def,
+        )
 
         rel_iris.Type = self.related_classname
         rel_iris.Cardinality = _CARD_MAP.get(self.cardinality, self.cardinality)
         rel_iris.Inverse = self.inverse
         if self.description:
             rel_iris.Description = self.description
-        rel_iris._Save()
+        _save_dictionary_item(rel_iris, kind="relationship", identifier=rel_id)
         _recompile(conn, self.classname)
 
     def revert(self, conn: Any) -> None:

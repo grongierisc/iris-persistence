@@ -14,11 +14,20 @@ from pathlib import Path
 from typing import Any
 
 from .errors import LockfileDriftError, UnsupportedClassFeatureError
-from .introspection import IndexInfo, PropertyInfo, RelationshipInfo, UnsupportedFeatureInfo, get_class_details, list_classes
+from .introspection import (
+    IndexInfo,
+    PropertyInfo,
+    RelationshipInfo,
+    UnsupportedFeatureInfo,
+    get_class_details,
+    list_classes,
+    parse_storage_definition,
+)
 from .lockfile import (
     IRISLockfile,
     compute_hash,
     lockfile_path_for_class,
+    lockfile_path_for_module,
     timestamp_utc,
     write_lockfile,
 )
@@ -28,6 +37,17 @@ GENERATED_START = "# <iris_orm:generated>"
 GENERATED_END = "# </iris_orm:generated>"
 STATE_DIR = ".iris_orm/state"
 _SCAFFOLD_STYLES = {"existing", "typed"}
+
+
+def _resolve_scaffold_lockfile_path(
+    *,
+    output_path: str | Path,
+    classname: str,
+    state_root: str | Path | None,
+) -> Path:
+    if state_root is None:
+        return lockfile_path_for_module(output_path)
+    return lockfile_path_for_class(state_root, classname)
 
 
 @dataclass(frozen=True)
@@ -47,6 +67,7 @@ class ParsedClassSource:
     storage_definition: str
     unsupported_features: list[UnsupportedFeatureInfo]
     source_path: str
+    storage: dict[str, Any] | None = None
 
 
 def scaffold_from_iris(
@@ -55,7 +76,7 @@ def scaffold_from_iris(
     *,
     style: str = "typed",
     refresh: bool = False,
-    state_root: str | Path = STATE_DIR,
+    state_root: str | Path | None = None,
     conn: Any = None,
 ) -> list[Path]:
     """Scaffold models for classes matching *pattern* from a live IRIS namespace."""
@@ -80,7 +101,7 @@ def scaffold_from_cls(
     *,
     style: str = "typed",
     refresh: bool = False,
-    state_root: str | Path = STATE_DIR,
+    state_root: str | Path | None = None,
 ) -> list[Path]:
     """Scaffold models from exported .cls files."""
     style = str(style).strip().lower()
@@ -102,7 +123,7 @@ def refresh_from_iris(
     output_root: str | Path,
     *,
     style: str = "typed",
-    state_root: str | Path = STATE_DIR,
+    state_root: str | Path | None = None,
     conn: Any = None,
 ) -> list[Path]:
     """Refresh scaffolded models from a live IRIS namespace."""
@@ -164,6 +185,7 @@ def parse_cls_file(path: str | Path, *, classname: str | None = None) -> ParsedC
         storage_definition=storage,
         unsupported_features=unsupported,
         source_path=str(source_path),
+        storage=parse_storage_definition(storage),
     )
 
 
@@ -300,7 +322,7 @@ def _write_scaffold_batch(
     infos: list[Any],
     *,
     output_root: str | Path,
-    state_root: str | Path,
+    state_root: str | Path | None,
     style: str,
     refresh: bool,
     source_builder: Any,
@@ -331,7 +353,7 @@ def write_scaffold(
     info: Any,
     *,
     output_root: str | Path,
-    state_root: str | Path = STATE_DIR,
+    state_root: str | Path | None = None,
     style: str = "typed",
     refresh: bool = False,
     class_map: dict[str, Any] | None = None,
@@ -361,12 +383,20 @@ def write_scaffold(
     file_source = _assemble_scaffold_file(generated_block, existing_manual)
     output_path.write_text(file_source, encoding="utf-8")
 
+    lockfile_path = _resolve_scaffold_lockfile_path(
+        output_path=output_path,
+        classname=info.classname,
+        state_root=state_root,
+    )
     lockfile = IRISLockfile(
         classname=info.classname,
         super=getattr(info, "super", "%Persistent"),
         storage_mode="preserve",
-        storage_definition=getattr(info, "storage_definition", ""),
-        storage_hash=compute_hash(getattr(info, "storage_definition", "")),
+        storage_hash=compute_hash(
+            getattr(info, "storage", None)
+            if getattr(info, "storage", None) is not None
+            else getattr(info, "storage_definition", "")
+        ),
         class_parameters=dict(getattr(info, "class_parameters", {})),
         indexes=[
             {
@@ -388,11 +418,10 @@ def write_scaffold(
             {"kind": item.kind, "name": item.name}
             for item in list(getattr(info, "unsupported_features", []))
         ],
+        storage_definition=getattr(info, "storage_definition", ""),
+        storage=getattr(info, "storage", None),
     )
-    write_lockfile(
-        lockfile_path_for_class(state_root, info.classname),
-        lockfile,
-    )
+    write_lockfile(lockfile_path, lockfile)
     return output_path
 
 
@@ -402,7 +431,7 @@ def render_model(
     style: str = "typed",
     class_map: dict[str, Any] | None = None,
     output_path: str | Path | None = None,
-    state_root: str | Path = STATE_DIR,
+    state_root: str | Path | None = None,
 ) -> str:
     """Render the generated section for a scaffolded model."""
     style = str(style).strip().lower()
@@ -516,12 +545,18 @@ def _render_lockfile_reference(
     classname: str,
     *,
     output_path: str | Path | None,
-    state_root: str | Path,
+    state_root: str | Path | None,
 ) -> str:
     if output_path is None:
+        if state_root is None:
+            return f"{python_module_name(classname)}.iris.lock.json"
         return lockfile_path_for_class(state_root, classname).as_posix()
     output_dir = Path(output_path).parent
-    target = lockfile_path_for_class(state_root, classname)
+    target = _resolve_scaffold_lockfile_path(
+        output_path=output_path,
+        classname=classname,
+        state_root=state_root,
+    )
     rel = Path(os.path.relpath(target, output_dir))
     return rel.as_posix()
 
@@ -639,11 +674,15 @@ def _read_manual_content(path: str | Path) -> str:
 
 def _assert_refresh_safe(
     output_path: str | Path,
-    state_root: str | Path,
+    state_root: str | Path | None,
     classname: str,
     generated_hash: str | None,
 ) -> None:
-    lock_path = lockfile_path_for_class(state_root, classname)
+    lock_path = _resolve_scaffold_lockfile_path(
+        output_path=output_path,
+        classname=classname,
+        state_root=state_root,
+    )
     if not lock_path.exists():
         raise LockfileDriftError(f"Missing scaffold lockfile: {lock_path}")
     from .lockfile import load_lockfile  # noqa: PLC0415
@@ -711,9 +750,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out", required=True, metavar="PATH", help="Output root for generated Python modules.")
     parser.add_argument(
         "--state-dir",
-        default=STATE_DIR,
+        default=None,
         metavar="PATH",
-        help=f"Directory for scaffold lockfiles (default: {STATE_DIR})",
+        help="Optional directory for lockfiles; defaults to the generated module directory.",
     )
     parser.add_argument(
         "--style",

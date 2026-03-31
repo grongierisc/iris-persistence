@@ -10,7 +10,7 @@ They all require a live embedded IRIS connection.
 | `03_relationships.py` | One-to-many and parent/child relationships |
 | `04_schema_sync.py` | Git-style schema sync: status / push / pull / commit |
 | `07_brownfield_scaffold.py` | Brownfield import: scaffold Python + sidecar state from IRIS or `.cls` |
-| `08_python_first_sync.py` | Python-first sync with lockfile-based storage preservation |
+| `08_python_first_sync.py` | Declared-model sync with adjacent lockfile and embedded storage metadata |
 
 ## Running
 

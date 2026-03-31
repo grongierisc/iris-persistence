@@ -13,7 +13,7 @@ class Article(IRISModel):
     Title: str = field(required=True, maxlen=500)
     Views: int = field(default=0)
 
-# Create class in IRIS via %Dictionary (no .cls files)
+# Create class in IRIS via %Dictionary and write adjacent sidecar files
 Article.schema.ensure_iris_class()
 
 # CRUD
@@ -44,6 +44,9 @@ Article.schema.pull()          # IRIS additions → Python
 Article.schema.status()        # 3-way diff
 Article.schema.delete_property("OldField")  # explicit destructive op
 ```
+
+For declared models, `ensure_iris_class()` also writes an adjacent
+`*.iris.lock.json` metadata file with embedded canonical storage metadata.
 
 ## 1.4. Migrations
 

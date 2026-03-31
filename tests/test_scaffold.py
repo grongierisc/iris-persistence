@@ -61,12 +61,11 @@ class TestScaffoldFromIris:
             paths = scaffold_from_iris(
                 "Demo.*",
                 tmp_path / "models",
-                state_root=tmp_path / ".iris_orm" / "state",
             )
 
         assert len(paths) == 2
         article_path = tmp_path / "models" / "demo" / "article.py"
-        lock_path = tmp_path / ".iris_orm" / "state" / "Demo.Article.json"
+        lock_path = tmp_path / "models" / "demo" / "article.iris.lock.json"
         assert article_path.exists()
         assert lock_path.exists()
         content = article_path.read_text()
@@ -77,8 +76,9 @@ class TestScaffoldFromIris:
         assert 'from .address import Address' in content
         assert 'Author = relationship("Demo.Author", inverse="Articles", cardinality="parent")' in content
         lock_content = lock_path.read_text()
-        assert '"storage_definition": "Storage Default { <Data name' in lock_content
+        assert '"storage"' in lock_content
         assert '"indexes"' in lock_content
+        assert not (tmp_path / "models" / "demo" / "article.storage.xml").exists()
 
     def test_render_existing_style_is_minimal(self):
         from iris_orm.introspection import ClassDetails
@@ -127,15 +127,14 @@ Storage Default
         )
 
         output_root = tmp_path / "models"
-        state_root = tmp_path / ".iris_orm" / "state"
-        scaffold_from_cls(cls_root, output_root, state_root=state_root)
+        scaffold_from_cls(cls_root, output_root)
         generated_path = output_root / "demo" / "sample.py"
         generated_path.write_text(
             generated_path.read_text(encoding="utf-8") + "\n\ndef helper() -> str:\n    return 'ok'\n",
             encoding="utf-8",
         )
 
-        scaffold_from_cls(cls_root, output_root, state_root=state_root, refresh=True)
+        scaffold_from_cls(cls_root, output_root, refresh=True)
         content = generated_path.read_text(encoding="utf-8")
         assert "def helper() -> str:" in content
         assert 'Title: str = field(required=True, maxlen=120)' in content
@@ -152,8 +151,7 @@ Storage Default
             encoding="utf-8",
         )
         output_root = tmp_path / "models"
-        state_root = tmp_path / ".iris_orm" / "state"
-        scaffold_from_cls(cls_root, output_root, state_root=state_root)
+        scaffold_from_cls(cls_root, output_root)
 
         generated_path = output_root / "demo" / "sample.py"
         content = generated_path.read_text(encoding="utf-8").replace(
@@ -163,7 +161,7 @@ Storage Default
         generated_path.write_text(content, encoding="utf-8")
 
         with pytest.raises(LockfileDriftError, match="modified"):
-            scaffold_from_cls(cls_root, output_root, state_root=state_root, refresh=True)
+            scaffold_from_cls(cls_root, output_root, refresh=True)
 
 
 class TestSchemaSidecarDrift:
@@ -181,8 +179,7 @@ class TestSchemaSidecarDrift:
         )
 
         output_root = tmp_path / "models"
-        state_root = tmp_path / ".iris_orm" / "state"
-        scaffold_from_cls(cls_root, output_root, state_root=state_root)
+        scaffold_from_cls(cls_root, output_root)
 
         sys.path.insert(0, str(output_root.parent))
         try:
@@ -226,7 +223,7 @@ class TestSchemaSidecarDrift:
 
         class Product(IRISModel):
             _iris_classname = "Demo.Product"
-            _iris_lockfile_path = str(tmp_path / "Demo.Product.json")
+            _iris_lockfile_path = str(tmp_path / "product.iris.lock.json")
             _iris_storage_mode = "preserve"
             Name: str = field()
 
@@ -236,13 +233,14 @@ class TestSchemaSidecarDrift:
                 classname="Demo.Product",
                 super="%Persistent",
                 storage_mode="preserve",
-                storage_definition="Storage Default { one }",
+                storage_path="",
                 storage_hash=compute_hash("Storage Default { one }"),
                 class_parameters={},
                 indexes=[],
                 source={"kind": "iris", "origin": "Demo.*"},
                 scaffold_style="typed",
                 generated_at="2026-01-01T00:00:00Z",
+                storage_definition="Storage Default { one }",
             ),
         )
 
@@ -270,7 +268,7 @@ class TestSchemaSidecarDrift:
 
         class Product(IRISModel):
             _iris_classname = "Demo.ProductPush"
-            _iris_lockfile_path = str(tmp_path / "Demo.ProductPush.json")
+            _iris_lockfile_path = str(tmp_path / "product_push.iris.lock.json")
             _iris_storage_mode = "preserve"
             Name: str = field()
 
@@ -280,13 +278,14 @@ class TestSchemaSidecarDrift:
                 classname="Demo.ProductPush",
                 super="%Persistent",
                 storage_mode="preserve",
-                storage_definition="Storage Default { one }",
+                storage_path="",
                 storage_hash=compute_hash("Storage Default { one }"),
                 class_parameters={},
                 indexes=[],
                 source={"kind": "iris", "origin": "Demo.*"},
                 scaffold_style="typed",
                 generated_at="2026-01-01T00:00:00Z",
+                storage_definition="Storage Default { one }",
             ),
         )
 

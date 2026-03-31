@@ -20,6 +20,21 @@ _FIELDS = [
 ]
 
 
+def _status_is_success(status: object) -> bool:
+    """Return True when an IRIS %Status value represents success."""
+    return status in (None, 1, True) or str(status).strip() == "1"
+
+
+def _save_dictionary_item(item: object, *, kind: str, identifier: str) -> None:
+    """Persist a %Dictionary object and raise on error statuses."""
+    try:
+        status = item._Save()
+    except Exception as exc:
+        raise RuntimeError(f"Failed to save {kind} {identifier!r}: {exc}") from exc
+    if not _status_is_success(status):
+        raise RuntimeError(f"Failed to save {kind} {identifier!r}: {status}")
+
+
 def init(conn: "IRISConnection") -> None:
     """
     Ensure the MigrationHistory %Persistent class exists in IRIS.
@@ -33,18 +48,22 @@ def init(conn: "IRISConnection") -> None:
     cls_def = conn.iris_cls("%Dictionary.ClassDefinition")._New()
     cls_def.Name = _TRACKER_CLASS
     cls_def.Super = "%Persistent"
-    cls_def._Save()
+    _save_dictionary_item(cls_def, kind="class", identifier=_TRACKER_CLASS)
 
     prop_cls = conn.iris_cls("%Dictionary.PropertyDefinition")
     for name, iris_type, required, maxlen in _FIELDS:
         prop_def = prop_cls._New()
         prop_def.Name = name
-        prop_def.parent = _TRACKER_CLASS
+        prop_def.parent = cls_def
         prop_def.Type = iris_type
         prop_def.Required = int(required)
         if maxlen is not None:
             prop_def.Parameters.SetAt(str(maxlen), "MAXLEN")
-        prop_def._Save()
+        _save_dictionary_item(
+            prop_def,
+            kind="property",
+            identifier=f"{_TRACKER_CLASS}||{name}",
+        )
 
     try:
         conn.iris_cls("%SYSTEM.OBJ").Compile(_TRACKER_CLASS, "ck")

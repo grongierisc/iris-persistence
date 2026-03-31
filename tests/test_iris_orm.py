@@ -257,6 +257,108 @@ class TestIntrospection:
         props = get_class_properties("Demo.Test")
         assert props[0].collection == "list"
 
+    def test_properties_fall_back_to_object_api_when_sql_table_missing(self, fake_iris):
+        fake_iris.sql.exec.side_effect = Exception("table not found")
+        prop_def = MagicMock()
+        prop_def.Name = "Name"
+        prop_def.Type = "%String"
+        prop_def.Required = 1
+        prop_def.Collection = ""
+        prop_def.InitialExpression = ""
+        prop_def.Description = "Name field"
+        prop_def.Relationship = 0
+        prop_def.Private = 0
+        prop_def.Internal = 0
+        prop_def.Parameters.GetAt.return_value = "200"
+
+        props_collection = MagicMock()
+        props_collection.Count.return_value = 1
+        props_collection.GetAt.return_value = prop_def
+
+        class_def = MagicMock()
+        class_def.Properties = props_collection
+        fake_iris.cls.return_value._OpenId.return_value = class_def
+
+        props = get_class_properties("Demo.Test")
+        assert [prop.name for prop in props] == ["Name"]
+        assert props[0].maxlen == 200
+
+    def test_relationships_return_empty_when_dictionary_table_missing(self, fake_iris):
+        from iris_orm.introspection import get_class_relationships
+
+        fake_iris.sql.exec.side_effect = Exception("table not found")
+        rels = get_class_relationships("Demo.Test")
+        assert rels == []
+
+    def test_class_details_degrades_when_optional_dictionary_tables_missing(self, fake_iris):
+        from iris_orm.introspection import get_class_details
+
+        def _sql_exec(sql, params=None):
+            if "%Dictionary.PropertyDefinition" in sql:
+                return iter([("Name", "%String", 1, "", "", "")])
+            raise Exception("table not found")
+
+        fake_iris.sql.exec.side_effect = _sql_exec
+        details = get_class_details("Demo.Test")
+        assert details.super == "%Persistent"
+        assert [prop.name for prop in details.properties] == ["Name"]
+        assert details.relationships == []
+        assert details.class_parameters == {}
+        assert details.indexes == []
+        assert details.unsupported_features == []
+
+    def test_storage_definition_falls_back_to_storage_objects(self, fake_iris):
+        from iris_orm.introspection import get_storage_definition
+
+        fake_iris.sql.exec.side_effect = Exception("table not found")
+
+        value_def = MagicMock()
+        value_def.Name = "1"
+        value_def.Value = "Title"
+
+        value_collection = MagicMock()
+        value_collection.Count.return_value = 1
+        value_collection.GetAt.return_value = value_def
+
+        data_def = MagicMock()
+        data_def.Name = "ArticleData"
+        data_def.Structure = "listnode"
+        data_def.Subscript = ""
+        data_def.Values = value_collection
+
+        data_collection = MagicMock()
+        data_collection.Count.return_value = 1
+        data_collection.GetAt.return_value = data_def
+
+        storage_def = MagicMock()
+        storage_def.Name = "Default"
+        storage_def.Type = "%Storage.Persistent"
+        storage_def.DataLocation = "^Demo.ArticleD"
+        storage_def.DefaultData = "ArticleData"
+        storage_def.ExtentLocation = ""
+        storage_def.IdLocation = "^Demo.ArticleD"
+        storage_def.IndexLocation = "^Demo.ArticleI"
+        storage_def.StreamLocation = "^Demo.ArticleS"
+        storage_def.IdFunction = ""
+        storage_def.Data = data_collection
+
+        storage_collection = MagicMock()
+        storage_collection.Count.return_value = 1
+        storage_collection.GetAt.return_value = storage_def
+
+        class_def = MagicMock()
+        class_def.Storage = ""
+        class_def.StorageDefinition = ""
+        class_def.StorageXML = ""
+        class_def.Storages = storage_collection
+        fake_iris.cls.return_value._OpenId.return_value = class_def
+
+        storage = get_storage_definition("Demo.Article")
+        assert "Storage Default" in storage
+        assert "<DataLocation>^Demo.ArticleD</DataLocation>" in storage
+        assert '<Data name="ArticleData">' in storage
+        assert '<Value name="1">Title</Value>' in storage
+
 
 # ===========================================================================
 # TestIRISDescriptor
@@ -1338,7 +1440,12 @@ class TestSchemaManager:
     def test_push_creates_property_def_for_new_props(self, fake_iris):
         # snapshot empty → Title and Body are python_added; IRIS is empty
         fake_iris.sql.exec.return_value = iter([])
-        self.Post.schema.push()
+        fake_iris.cls.return_value._OpenId.return_value._Save.return_value = 1
+        fake_iris.cls.return_value._OpenId.return_value.Parameters = MagicMock()
+        fake_iris.cls.return_value._New.return_value._Save.return_value = 1
+        fake_iris.cls.return_value._New.return_value.Parameters = MagicMock()
+        with patch("iris_orm.schema._write_model_lockfile"):
+            self.Post.schema.push()
         # Should have called iris.cls("%Dictionary.PropertyDefinition")
         calls = [str(c) for c in fake_iris.cls.call_args_list]
         assert any("%Dictionary.PropertyDefinition" in c for c in calls)
@@ -1346,9 +1453,15 @@ class TestSchemaManager:
     def test_push_property_def_save_called(self, fake_iris):
         fake_iris.sql.exec.return_value = iter([])
         prop_def_instance = MagicMock()
+        prop_def_instance._Save.return_value = 1
+        prop_def_instance.Parameters = MagicMock()
+        opened_prop_def = fake_iris.cls.return_value._OpenId.return_value
+        opened_prop_def._Save.return_value = 1
+        opened_prop_def.Parameters = MagicMock()
         fake_iris.cls.return_value._New.return_value = prop_def_instance
-        self.Post.schema.push()
-        assert prop_def_instance._Save.called
+        with patch("iris_orm.schema._write_model_lockfile"):
+            self.Post.schema.push()
+        assert prop_def_instance._Save.called or opened_prop_def._Save.called
 
     def test_push_warns_on_python_removed(self, fake_iris):
         # snapshot has OldField but python doesn't
@@ -1873,12 +1986,22 @@ class TestEnsureIrisClass:
         conn.sql_exec.return_value = iter([("Dict.Widget",)] if class_exists else [])
         return conn
 
+    def _prime_dictionary_mocks(self, conn):
+        opened = conn.iris_cls.return_value._OpenId.return_value
+        created = conn.iris_cls.return_value._New.return_value
+        opened._Save.return_value = 1
+        created._Save.return_value = 1
+        opened.Parameters = MagicMock()
+        created.Parameters = MagicMock()
+
     def test_ensure_iris_class_creates_class_when_missing(self, fake_iris):
         from iris_orm.schema import _ensure_iris_class_impl
 
-        with patch("iris_orm.connection.IRISConnection") as MockConn:
+        with patch("iris_orm.connection.IRISConnection") as MockConn, \
+             patch("iris_orm.schema._write_model_lockfile"):
             conn = MockConn.return_value
             conn.sql_exec.return_value = iter([])  # class does not exist
+            self._prime_dictionary_mocks(conn)
 
             _ensure_iris_class_impl(self.Widget)
 
@@ -1903,10 +2026,12 @@ class TestEnsureIrisClass:
     def test_ensure_iris_class_skips_creation_when_exists(self, fake_iris):
         from iris_orm.schema import _ensure_iris_class_impl
 
-        with patch("iris_orm.connection.IRISConnection") as MockConn:
+        with patch("iris_orm.connection.IRISConnection") as MockConn, \
+             patch("iris_orm.schema._write_model_lockfile"):
             conn = MockConn.return_value
             # Class exists → sql_exec returns a row
             conn.sql_exec.return_value = iter([("Dict.Widget",)])
+            self._prime_dictionary_mocks(conn)
 
             _ensure_iris_class_impl(self.Widget)
 
@@ -1919,9 +2044,11 @@ class TestEnsureIrisClass:
     def test_ensure_iris_class_upserts_all_properties(self, fake_iris):
         from iris_orm.schema import _ensure_iris_class_impl
 
-        with patch("iris_orm.connection.IRISConnection") as MockConn:
+        with patch("iris_orm.connection.IRISConnection") as MockConn, \
+             patch("iris_orm.schema._write_model_lockfile"):
             conn = MockConn.return_value
             conn.sql_exec.return_value = iter([("Dict.Widget",)])  # class exists
+            self._prime_dictionary_mocks(conn)
 
             _ensure_iris_class_impl(self.Widget)
 
@@ -1935,13 +2062,146 @@ class TestEnsureIrisClass:
     def test_ensure_iris_class_compiles_after_changes(self, fake_iris):
         from iris_orm.schema import _ensure_iris_class_impl
 
-        with patch("iris_orm.connection.IRISConnection") as MockConn:
+        with patch("iris_orm.connection.IRISConnection") as MockConn, \
+             patch("iris_orm.schema._write_model_lockfile"):
             conn = MockConn.return_value
             conn.sql_exec.return_value = iter([("Dict.Widget",)])
+            self._prime_dictionary_mocks(conn)
 
             _ensure_iris_class_impl(self.Widget)
 
             conn.iris_cls.assert_any_call("%SYSTEM.OBJ")
+
+    def test_ensure_iris_class_falls_back_to_new_when_openid_returns_string(self, fake_iris):
+        from iris_orm.schema import _ensure_iris_class_impl
+
+        with patch("iris_orm.connection.IRISConnection") as MockConn, \
+             patch("iris_orm.schema._write_model_lockfile"):
+            conn = MockConn.return_value
+            conn.sql_exec.return_value = iter([("Dict.Widget",)])
+            conn.iris_cls.return_value._OpenId.return_value = ""
+            conn.iris_cls.return_value._New.return_value._Save.return_value = 1
+            conn.iris_cls.return_value._New.return_value.Parameters = MagicMock()
+
+            with pytest.raises(RuntimeError, match="Unable to open %Dictionary.ClassDefinition"):
+                _ensure_iris_class_impl(self.Widget)
+
+    def test_ensure_iris_class_uses_class_definition_as_property_parent(self, fake_iris):
+        from iris_orm.schema import _ensure_iris_class_impl
+
+        with patch("iris_orm.connection.IRISConnection") as MockConn, \
+             patch("iris_orm.schema._write_model_lockfile"):
+            conn = MockConn.return_value
+            conn.sql_exec.return_value = iter([("Dict.Widget",)])
+
+            class_def = MagicMock()
+            class_def._Save.return_value = 1
+            class_def.Name = "Dict.Widget"
+
+            prop_defs: list[MagicMock] = []
+
+            def make_prop_def():
+                prop = MagicMock()
+                prop._Save.return_value = 1
+                prop.Parameters = MagicMock()
+                prop_defs.append(prop)
+                return prop
+
+            prop_def_cls = MagicMock()
+            prop_def_cls._OpenId.return_value = ""
+            prop_def_cls._New.side_effect = make_prop_def
+
+            system_obj = MagicMock()
+
+            def iris_cls_side_effect(name: str):
+                if name == "%Dictionary.ClassDefinition":
+                    cls = MagicMock()
+                    cls._OpenId.return_value = class_def
+                    cls._New.return_value = class_def
+                    return cls
+                if name == "%Dictionary.PropertyDefinition":
+                    return prop_def_cls
+                if name == "%SYSTEM.OBJ":
+                    return system_obj
+                return MagicMock()
+
+            conn.iris_cls.side_effect = iris_cls_side_effect
+
+            _ensure_iris_class_impl(self.Widget)
+
+            assert len(prop_defs) == len(self.Widget._iris_properties)
+            assert all(prop.parent is class_def for prop in prop_defs)
+
+    def test_ensure_iris_class_raises_on_property_save_failure(self, fake_iris):
+        from iris_orm.schema import _ensure_iris_class_impl
+
+        with patch("iris_orm.connection.IRISConnection") as MockConn, \
+             patch("iris_orm.schema._write_model_lockfile"):
+            conn = MockConn.return_value
+            conn.sql_exec.return_value = iter([("Dict.Widget",)])
+
+            class_def = MagicMock()
+            class_def._Save.return_value = 1
+            class_def.Name = "Dict.Widget"
+
+            failing_prop = MagicMock()
+            failing_prop._Save.return_value = 0
+            failing_prop.Parameters = MagicMock()
+
+            prop_def_cls = MagicMock()
+            prop_def_cls._OpenId.return_value = ""
+            prop_def_cls._New.return_value = failing_prop
+
+            def iris_cls_side_effect(name: str):
+                if name == "%Dictionary.ClassDefinition":
+                    cls = MagicMock()
+                    cls._OpenId.return_value = class_def
+                    cls._New.return_value = class_def
+                    return cls
+                if name == "%Dictionary.PropertyDefinition":
+                    return prop_def_cls
+                return MagicMock()
+
+            conn.iris_cls.side_effect = iris_cls_side_effect
+
+            with pytest.raises(RuntimeError, match="Failed to save property"):
+                _ensure_iris_class_impl(self.Widget)
+
+    def test_ensure_iris_class_writes_adjacent_lockfile_by_default(self, fake_iris, tmp_path):
+        from iris_orm import IRISModel, field
+        from iris_orm.introspection import ClassDetails
+        from iris_orm.schema import _ensure_iris_class_impl
+
+        module_path = tmp_path / "product.py"
+        module_path.write_text("# test module\n", encoding="utf-8")
+
+        class Product(IRISModel):
+            _iris_classname = "Demo.ProductEnsure"
+            Name: str = field()
+
+        with patch("inspect.getfile", return_value=str(module_path)), \
+             patch("iris_orm.connection.IRISConnection") as MockConn, \
+             patch("iris_orm.schema.get_class_details", return_value=ClassDetails(
+                 classname="Demo.ProductEnsure",
+                 super="%Persistent",
+                 properties=[],
+                 relationships=[],
+                 class_parameters={},
+                 indexes=[],
+                 storage_definition="Storage Default { ensure }",
+                 unsupported_features=[],
+             )):
+            conn = MockConn.return_value
+            conn.sql_exec.return_value = iter([("Demo.ProductEnsure",)])
+            self._prime_dictionary_mocks(conn)
+            _ensure_iris_class_impl(Product)
+
+        assert Product._iris_lockfile_path == "product.iris.lock.json"
+        assert (tmp_path / "product.iris.lock.json").exists()
+        lock_content = (tmp_path / "product.iris.lock.json").read_text(encoding="utf-8")
+        assert '"storage"' in lock_content
+        assert "Storage Default { ensure }" not in lock_content
+        assert not (tmp_path / "product.storage.xml").exists()
 
     def test_ensure_iris_class_via_schema_manager(self, fake_iris):
         from iris_orm.schema import SchemaManager
@@ -2151,5 +2411,5 @@ class TestPushEnhancements:
             mgr.fetch = mock_fetch
 
             mgr.push()
-            upserted_names = {call[0][1].name for call in mock_upsert.call_args_list}
+            upserted_names = {call[0][2].name for call in mock_upsert.call_args_list}
             assert "Name" in upserted_names

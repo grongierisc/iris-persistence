@@ -1,149 +1,152 @@
-# 1. iris_orm — Python ORM for InterSystems IRIS
+# iris_orm — Explicit IRIS Mapper + Schema Toolkit
 
-`iris_orm` is a Python-first ORM for IRIS that uses `%Dictionary` exclusively
-— no `.cls` file generation or injection required.
+`iris_orm` is a Python-first mapper for InterSystems IRIS built around three explicit layers:
 
-## 1.1. Quick start
+- `Registry` collects declared models and existing-class bindings
+- `SchemaCompiler` / `SchemaPlanner` / `SchemaApplier` manage schema state through a canonical AST
+- `Binder` + `Session` provide runtime CRUD and validated querying
+
+The package no longer binds to live IRIS at import time. Declaring models is offline-safe and deterministic.
+
+## Quick Start
 
 ```python
-from iris_orm import IRISModel, field
+from iris_orm import (
+    Binder,
+    IRISAdapter,
+    IRISModel,
+    Registry,
+    SchemaApplier,
+    SchemaCompiler,
+    SchemaPlanner,
+    Session,
+    field,
+)
+
 
 class Article(IRISModel):
     _iris_classname = "Demo.Article"
+
     Title: str = field(required=True, maxlen=500)
     Views: int = field(default=0)
 
-# Create class in IRIS via %Dictionary and write adjacent sidecar files
-Article.schema.ensure_iris_class()
 
-# CRUD
-a = Article(Title="Hello", Views=0)
-a.save()
-print(a.pk)
+registry = Registry()
+registry.register(Article)
 
-loaded = Article.get(a.pk)
-loaded.Views += 1
-loaded.save()
+adapter = IRISAdapter()
+desired = registry.export_schema()
+live = SchemaCompiler(adapter).catalog_from_iris(registry.classnames())
+plan = SchemaPlanner().diff(live, desired)
+SchemaApplier(adapter).apply(plan)
 
-for art in Article.objects.filter(Views=1):
-    print(art.Title)
+binder = Binder(registry, adapter)
+binder.bind_all()
+session = Session(binder, adapter)
+
+article = Article(Title="Hello", Views=1)
+session.add(article)
+session.commit()
+
+loaded = session.get(Article, article.pk)
+assert loaded is article
+
+for row in session.query(Article).filter_eq(Views=1).order_by("Title"):
+    print(row.Title)
 ```
 
-## 1.2. Two workflows
+## Core API
 
-| Mode | When to use | How |
-|---|---|---|
-| **Existing-class binding** | IRIS class already exists | `_iris_classname = "Demo.X"` — descriptors auto-injected |
-| **Declared model** | Greenfield, Python is source of truth | Add typed annotations + `field()` metadata |
+### Model Declaration
 
-## 1.3. Schema sync
+Use `IRISModel` and `IRISSerial` only for declaration. They do not attach to IRIS at import time.
+
+### Registry
 
 ```python
-Article.schema.push()          # Python additions/changes → IRIS via %Dictionary
-Article.schema.pull()          # IRIS additions → Python
-Article.schema.status()        # 3-way diff
-Article.schema.delete_property("OldField")  # explicit destructive op
+registry = Registry()
+registry.register(Article)
+LegacyCustomer = registry.bind_existing("Demo.Customer")
+catalog = registry.export_schema()
 ```
 
-For declared models, `ensure_iris_class()` also writes an adjacent
-`*.iris.lock.json` metadata file with embedded canonical storage metadata.
-
-## 1.4. Migrations
-
-`iris_orm.migrations` provides Alembic-style versioned migrations stored as
-plain Python files that live in git.
-
-### 1.4.1. Setup (once per project)
+### Schema Toolkit
 
 ```python
+compiler = SchemaCompiler(adapter)
+live = compiler.catalog_from_iris(registry.classnames())
+desired = registry.export_schema()
+plan = SchemaPlanner().diff(live, desired)
+SchemaApplier(adapter).apply(plan, allow_manual=True)
+```
+
+Lockfiles are canonical schema snapshots:
+
+```python
+from iris_orm.lockfile import build_lockfile, write_lockfile
+
+lockfile = build_lockfile(desired, source={"kind": "declared", "origin": "models.py"})
+write_lockfile("./article.iris.lock.json", lockfile)
+```
+
+### Runtime
+
+```python
+binder = Binder(registry, adapter)
+binder.bind_all()
+session = Session(binder, adapter)
+
+session.add(Article(Title="Hello"))
+session.commit()
+
+row = session.query(Article).filter_eq(Title="Hello").first()
+```
+
+Supported query operators are intentionally small:
+
+- `filter_eq`
+- `filter_in`
+- `order_by`
+- `limit`
+- `offset`
+- `count`
+- `first`
+- `all`
+
+Every queried field is validated against the bound schema before SQL is emitted.
+
+## Migrations
+
+`iris_orm.migrations` stores canonical `schema_before` / `schema_after` snapshots in each migration file.
+
+```python
+from iris_orm import Registry
 from iris_orm.migrations import MigrationRunner
 
-runner = MigrationRunner("./migrations")
-runner.init()   # creates iris_orm.MigrationHistory in IRIS
+runner = MigrationRunner("./migrations", registry=registry, adapter=adapter)
+runner.init()
+runner.generate("create article")
+runner.upgrade()
 ```
 
-Or via CLI:
+Generated migrations rebuild upgrade/downgrade plans from the stored snapshots rather than replaying ad hoc state.
 
-```bash
-python -m iris_orm.migrations --dir ./migrations init
-```
+## Scaffolding
 
-### 1.4.2. Autogenerate a migration
+Scaffold from live IRIS:
 
 ```python
-runner.generate("create article table", models=[Article])
-# → ./migrations/0001_create_article_table.py
+from iris_orm.scaffold import scaffold_from_iris
+
+scaffold_from_iris("Demo.*", "./generated_models")
 ```
 
-Generated file:
+Scaffold from exported `.cls` files:
 
 ```python
-revision = "0001"
-down_revision = None
-description = "create article table"
+from iris_orm.scaffold import scaffold_from_cls
 
-def upgrade(conn):
-    conn.create_class("Demo.Article", extends="%Persistent")
-    conn.add_property("Demo.Article", "Title", "%String", required=True, maxlen=500)
-    conn.add_property("Demo.Article", "Views", "%Integer")
-
-def downgrade(conn):
-    conn.drop_class("Demo.Article")
+scaffold_from_cls("./cls", "./generated_models")
 ```
 
-### 1.4.3. Apply / roll back
-
-```python
-runner.upgrade()            # apply all pending
-runner.upgrade("0003")      # apply up to 0003
-runner.downgrade("0001")    # roll back to 0001
-runner.history()            # show applied / pending table
-runner.current()            # show current revision
-```
-
-CLI equivalents:
-
-```bash
-python -m iris_orm.migrations upgrade
-python -m iris_orm.migrations downgrade 0001
-python -m iris_orm.migrations history
-python -m iris_orm.migrations current
-```
-
-### 1.4.4. Available operations in migration files
-
-| Operation | Direction | Auto-generated? |
-|---|---|---|
-| `conn.create_class(classname, extends)` | upgrade | ✅ yes |
-| `conn.add_property(classname, name, type, ...)` | upgrade | ✅ yes |
-| `conn.alter_property(classname, name, new_type)` | upgrade | ✅ yes |
-| `conn.add_relationship(classname, name, ...)` | upgrade | ✅ yes |
-| `conn.drop_class(classname)` | downgrade | ❌ manual only |
-| `conn.drop_property(classname, name)` | downgrade | ❌ manual only |
-| `conn.drop_relationship(classname, name)` | downgrade | ❌ manual only |
-| `conn.compile(classname)` | either | n/a |
-
-> **Destructive operations are never auto-generated** to prevent accidental
-> data loss.  Add them manually when intentional.
-
-## 1.5. Module layout
-
-```
-iris_orm/
-  connection.py        IRISConnection (embedded IRIS runtime helper)
-  metaclass.py         IRISMeta, IRISModel, IRISSerial
-  descriptors.py       IRISDescriptor, IRISRelationshipDescriptor, …
-  fields.py            field(), relationship() helpers
-  introspection.py     get_class_properties() via %Dictionary
-  query.py             IRISQuerySet (filter/count/iterate)
-  schema.py            SchemaManager (push/pull/status/ensure_iris_class/delete_property)
-  types.py             IRIS ↔ Python type mapping
-  stubs.py             .pyi stub generation for IDE autocomplete
-  migrations/
-    __init__.py        MigrationRunner
-    migration.py       Operation dataclasses + MigrationConnection
-    autogenerate.py    Diff models → Operations
-    writer.py          Render Operations → .py migration file
-    tracker.py         MigrationHistory %Persistent class in IRIS
-    cli.py             python -m iris_orm.migrations
-```
+Both workflows write adjacent `.iris.lock.json` files containing canonical schema snapshots.

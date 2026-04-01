@@ -2,332 +2,125 @@ from __future__ import annotations
 
 import pytest
 
-from iris_orm import Binder, IRISModel, IRISSerial, Registry, SchemaApplier, SchemaCatalog, SchemaCompiler, SchemaPlanner, Session, bind_existing, configure_default_runtime, field, index, parameter, relationship, reset_default_runtime, session_scope, trigger
+from iris_orm import (
+    IRISModel,
+    SchemaCompiler,
+    bind_existing,
+    configure_default_runtime,
+    field,
+    index,
+    parameter,
+    reset_default_runtime,
+)
+from iris_orm.schema import parse_cls, schema_equals
 
 from .fake_runtime import FakeAdapter, preload_schema
 
 
-def _without_source(payload):
-    payload = dict(payload)
-    payload.pop("source", None)
-    return payload
-
-
 @pytest.fixture(autouse=True)
-def reset_runtime():
+def reset_runtime() -> None:
     reset_default_runtime()
     yield
     reset_default_runtime()
 
 
-def test_declared_models_export_canonical_schema_without_live_attach():
-    class Address(IRISSerial):
-        _iris_classname = "Demo.Address"
-
-        City: str = field(required=True, maxlen=100)
-
-    class Product(IRISModel):
-        _iris_classname = "Demo.Product"
-
-        Name: str = field(required=True, maxlen=200)
-        Address: Address
-
-    registry = Registry()
-    registry.register(Address)
-    registry.register(Product)
-
-    catalog = registry.export_schema()
-    assert [item.name for item in catalog.classes] == ["Demo.Address", "Demo.Product"]
-    product = catalog.get_class("Demo.Product")
-    assert product is not None
-    assert product.property_map["Name"].maxlen == 200
-    assert product.property_map["Address"].iris_type == "Demo.Address"
-
-
-def test_declared_boolean_default_is_normalized_for_iris():
-    class Product(IRISModel):
-        _iris_classname = "Demo.Product"
-
-        InStock: bool = field(default=True)
-
-    schema_class = SchemaCompiler().compile_model(Product)
-    assert schema_class.property_map["InStock"].default == "1"
-
-
-def test_declared_string_default_is_quoted_for_iris():
-    class Product(IRISModel):
-        _iris_classname = "Demo.Product"
-
-        Foo: str = field(default="bar")
-
-    schema_class = SchemaCompiler().compile_model(Product)
-    assert schema_class.property_map["Foo"].default == '"bar"'
-
-
-def test_declared_stringified_boolean_default_is_normalized_for_iris():
-    class Product(IRISModel):
-        _iris_classname = "Demo.Product"
-
-        InStock: bool = field(default="True", iris_type="%Boolean")
-
-    schema_class = SchemaCompiler().compile_model(Product)
-    assert schema_class.property_map["InStock"].default == "1"
-
-
-def test_declared_empty_defaults_do_not_emit_initial_expression():
-    class Product(IRISModel):
-        _iris_classname = "Demo.Product"
-
-        EmptyText: str = field(default="")
-        OptionalText: str = field(default=None)
-        EmptyList: list = field(default=[], iris_type="%List")
-
-    schema_class = SchemaCompiler().compile_model(Product)
-    assert schema_class.property_map["EmptyText"].default == ""
-    assert schema_class.property_map["OptionalText"].default == ""
-    assert schema_class.property_map["EmptyList"].default == ""
-
-
-def test_existing_binding_requires_explicit_binder():
-    adapter = FakeAdapter()
-    preload_schema(
-        adapter,
-        {
-            "name": "Demo.Article",
-            "superclass": "%Persistent",
-            "properties": {
-                "Title": {"iris_type": "%String", "required": True, "collection": "", "default": "", "maxlen": 500, "description": ""},
-            },
-            "relationships": {},
-            "indexes": {},
-            "parameters": {},
-            "storage": None,
-        },
-    )
-
-    registry = Registry()
-    Article = registry.bind_existing("Demo.Article")
-    assert "Title" not in Article.__dict__
-
-    binder = Binder(registry, adapter)
-    binder.bind_all()
-
-    assert "Title" in Article.__dict__
-    assert Article._iris_bound is True
-
-
-def test_python_index_helper_exports_canonical_schema():
-    class Product(IRISModel):
-        _iris_classname = "Demo.Product"
-        _iris_indexes = [
-            index("NameIdx", properties="Name", unique=True),
-        ]
-
-        Name: str = field(required=True, maxlen=200)
-
-    schema_class = SchemaCompiler().compile_model(Product)
-    assert schema_class.index_map["NameIdx"].properties == "Name"
-    assert schema_class.index_map["NameIdx"].unique is True
-
-
-def test_python_trigger_helper_exports_canonical_schema():
-    class Product(IRISModel):
-        _iris_classname = "Demo.Product"
-        _iris_triggers = [
-            trigger("AuditInsert", event="INSERT", time="AFTER", code="set x=1"),
-        ]
-
-        Name: str = field(required=True, maxlen=200)
-
-    schema_class = SchemaCompiler().compile_model(Product)
-    assert schema_class.trigger_map["AuditInsert"].event == "INSERT"
-    assert schema_class.trigger_map["AuditInsert"].time == "AFTER"
-    assert schema_class.trigger_map["AuditInsert"].code == "set x=1"
-
-
-def test_python_parameter_helper_exports_canonical_schema():
-    class Product(IRISModel):
-        _iris_classname = "Demo.Product"
-        _iris_class_parameters = [
-            parameter("DEFAULTGLOBAL", "^Demo.ProductD"),
-        ]
-
-        Name: str = field(required=True, maxlen=200)
-
-    schema_class = SchemaCompiler().compile_model(Product)
-    assert schema_class.parameters["DEFAULTGLOBAL"] == "^Demo.ProductD"
-
-
-def test_python_schema_decorators_export_canonical_schema():
+def test_python_first_compiles_decorators_and_storage() -> None:
     @parameter("DEFAULTGLOBAL", "^Demo.ProductD")
-    @trigger("AuditInsert", event="INSERT", time="AFTER", code="set x=1")
     @index("NameIdx", properties="Name", unique=True)
     class Product(IRISModel):
         _iris_classname = "Demo.Product"
-
-        Name: str = field(required=True, maxlen=200)
-
-    schema_class = SchemaCompiler().compile_model(Product)
-    assert schema_class.parameters["DEFAULTGLOBAL"] == "^Demo.ProductD"
-    assert schema_class.index_map["NameIdx"].properties == "Name"
-    assert schema_class.index_map["NameIdx"].unique is True
-    assert schema_class.trigger_map["AuditInsert"].event == "INSERT"
-    assert schema_class.trigger_map["AuditInsert"].time == "AFTER"
-    assert schema_class.trigger_map["AuditInsert"].code == "set x=1"
-
-
-def test_schema_applier_and_compiler_roundtrip_live_schema():
-    adapter = FakeAdapter()
-
-    class Category(IRISModel):
-        _iris_classname = "Demo.Category"
-
-        Name: str = field(required=True, maxlen=80)
-
-    class Product(IRISModel):
-        _iris_classname = "Demo.Product"
-        _iris_class_parameters = [parameter("DEFAULTGLOBAL", "^Demo.ProductD")]
-        _iris_indexes = [index("NameIdx", properties="Name", unique=True)]
-        _iris_triggers = [trigger("AuditInsert", event="INSERT", time="AFTER", code="set x=1")]
+        _iris_superclasses = ["%Persistent", "Demo.Auditable"]
         _iris_storage = {
             "name": "Default",
             "type": "%Storage.Persistent",
             "data_location": "^Demo.ProductD",
             "default_data": "ProductDefaultData",
-            "data": [{"name": "ProductDefaultData", "structure": "listnode", "values": [{"name": "1", "value": "Name"}]}],
         }
 
         Name: str = field(required=True, maxlen=200)
-        Category = relationship("Demo.Category", inverse="Products", cardinality="parent")
+        Price: float = field(default=0.0)
+        InStock: bool = field(default=True)
 
-    registry = Registry()
-    registry.register(Category)
-    registry.register(Product)
-    desired = registry.export_schema()
-
-    plan = SchemaPlanner().diff(SchemaCompiler(adapter).catalog_from_iris(registry.classnames()), desired)
-    SchemaApplier(adapter).apply(plan, allow_manual=True)
-
-    live = SchemaCompiler(adapter).catalog_from_iris(registry.classnames())
-    assert [_without_source(item.to_dict()) for item in live.classes] == [
-        _without_source(item.to_dict()) for item in desired.classes
-    ]
+    schema = SchemaCompiler().compile_model(Product)
+    assert schema.superclasses == ("%Persistent", "Demo.Auditable")
+    assert schema.parameters["DEFAULTGLOBAL"] == "^Demo.ProductD"
+    assert schema.index_map["NameIdx"].unique is True
+    assert schema.property_map["Price"].default == "0.0"
+    assert schema.property_map["InStock"].default == "1"
+    assert schema.storage["data_location"] == "^Demo.ProductD"
 
 
-def test_introspection_normalizes_empty_string_initial_expression():
+def test_python_first_auto_overwrites_live_schema() -> None:
     adapter = FakeAdapter()
     preload_schema(
         adapter,
         {
             "name": "Demo.Product",
-            "superclass": "%Persistent",
             "properties": {
-                "Name": {"iris_type": "%String", "required": True, "collection": "", "default": '""', "maxlen": 200, "description": ""},
+                "OldField": {"iris_type": "%String"},
+                "Name": {"iris_type": "%String"},
             },
-            "relationships": {},
-            "indexes": {},
-            "parameters": {},
-            "storage": None,
+            "indexes": {
+                "OldIdx": {"properties": "OldField"},
+            },
+            "parameters": {"OLD": "1"},
+            "storage": {"name": "Default", "data_location": "^Old.Global"},
         },
     )
+    configure_default_runtime(adapter=adapter)
 
-    live = SchemaCompiler(adapter).class_from_iris("Demo.Product")
-    assert live.property_map["Name"].default == ""
-
-
-def test_python_mode_plan_clears_existing_storage_when_not_declared():
-    adapter = FakeAdapter()
-    preload_schema(
-        adapter,
-        {
-            "name": "Demo.Product",
-            "superclass": "%Persistent",
-            "properties": {
-                "Name": {"iris_type": "%String", "required": True, "collection": "", "default": "", "maxlen": 200, "description": ""},
-            },
-            "relationships": {},
-            "indexes": {},
-            "parameters": {},
-            "storage": {
-                "name": "Default",
-                "type": "%Storage.Persistent",
-                "default_data": "ProductDefaultData",
-                "data": [{"name": "ProductDefaultData", "structure": "listnode", "values": [{"name": "1", "value": "Name"}]}],
-            },
-        },
-    )
-
+    @parameter("DEFAULTGLOBAL", "^Demo.ProductD")
+    @index("NameIdx", properties="Name", unique=True)
     class Product(IRISModel):
         _iris_classname = "Demo.Product"
+        _iris_storage = {"name": "Default", "data_location": "^Demo.ProductD"}
 
         Name: str = field(required=True, maxlen=200)
+        Price: float = field(default=0.0)
+
+    product = Product(Name="Widget", Price=12.5)
+    product.save()
 
     desired = SchemaCompiler().compile_model(Product)
     live = SchemaCompiler(adapter).class_from_iris("Demo.Product")
-    plan = SchemaPlanner().diff(SchemaCatalog(classes=(live,)), SchemaCatalog(classes=(desired,)))
-    assert any(item.kind == "clear_storage" for item in plan.operations)
+    assert schema_equals(live, desired)
+    assert "OldField" not in live.property_map
+    assert "OldIdx" not in live.index_map
+    assert live.parameters == {"DEFAULTGLOBAL": "^Demo.ProductD"}
+    assert adapter.rows["Demo.Product"][1]["Name"] == "Widget"
 
-    SchemaApplier(adapter).apply(plan, allow_manual=True)
-    refreshed = SchemaCompiler(adapter).class_from_iris("Demo.Product")
-    assert refreshed.storage is None
 
-
-def test_session_crud_query_and_identity_map():
+def test_proxy_bind_existing_uses_live_schema_without_overwrite() -> None:
     adapter = FakeAdapter()
+    preload_schema(
+        adapter,
+        {
+            "name": "Demo.Article",
+            "properties": {
+                "Title": {"iris_type": "%String", "required": True, "maxlen": 500},
+                "Views": {"iris_type": "%Integer", "default": "0"},
+            },
+            "indexes": {"TitleIdx": {"properties": "Title", "unique": True}},
+            "parameters": {"DEFAULTGLOBAL": "^Demo.ArticleD"},
+            "storage": {"name": "Default", "data_location": "^Demo.ArticleD"},
+        },
+    )
+    configure_default_runtime(adapter=adapter)
 
-    class Product(IRISModel):
-        _iris_classname = "Demo.Product"
+    Article = bind_existing("Demo.Article")
+    Article.bind()
 
-        Name: str = field(required=True, maxlen=200)
-        Price: float = field(default=0.0)
-
-    registry = Registry()
-    registry.register(Product)
-    desired = registry.export_schema()
-    SchemaApplier(adapter).apply(SchemaPlanner().diff(SchemaCompiler(adapter).catalog_from_iris(["Demo.Product"]), desired))
-
-    binder = Binder(registry, adapter)
-    binder.bind_all()
-    session = Session(binder, adapter)
-
-    product = Product(Name="Widget", Price=9.5)
-    session.add(product)
-    session.commit()
-
-    loaded = session.get(Product, product.pk)
-    assert loaded is product
-
-    second = Product(Name="Bolt", Price=1.5)
-    session.add(second)
-    session.commit()
-
-    query = session.query(Product).filter_in(Name=["Widget", "Bolt"]).order_by("Price")
-    names = [item.Name for item in query]
-    assert names == ["Bolt", "Widget"]
-    assert query.count() == 2
-    assert session.query(Product).filter_eq(Name="Widget").first() is product
+    assert Article._iris_mode == "proxy"
+    assert "Title" in Article._iris_declared_fields
+    assert Article._iris_storage["data_location"] == "^Demo.ArticleD"
+    before = adapter.load_schema("Demo.Article")
+    row = Article(Title="Hello", Views=1).save()
+    after = adapter.load_schema("Demo.Article")
+    assert before == after
+    assert row.pk == 1
 
 
-def test_query_rejects_unknown_fields():
-    adapter = FakeAdapter()
-
-    class Product(IRISModel):
-        _iris_classname = "Demo.Product"
-
-        Name: str = field(required=True)
-
-    registry = Registry()
-    registry.register(Product)
-    SchemaApplier(adapter).apply(SchemaPlanner().diff(SchemaCatalog(), registry.export_schema()))
-    binder = Binder(registry, adapter)
-    binder.bind_all()
-    session = Session(binder, adapter)
-
-    with pytest.raises(ValueError, match="Unknown field"):
-        session.query(Product).filter_eq(Missing="x").all()
-
-
-def test_default_runtime_sugar_hides_adapter_and_session():
+def test_query_and_get_work_with_fake_runtime() -> None:
     adapter = FakeAdapter()
     configure_default_runtime(adapter=adapter)
 
@@ -337,15 +130,18 @@ def test_default_runtime_sugar_hides_adapter_and_session():
         Name: str = field(required=True, maxlen=200)
         Price: float = field(default=0.0)
 
-    item = Product(Name="Widget", Price=9.5)
-    item.save()
-    fetched = Product.get(item.pk)
-    assert fetched is not None
-    assert fetched.Name == "Widget"
-    assert Product.where(Name="Widget").count() == 1
+    Product(Name="A", Price=1.0).save()
+    Product(Name="B", Price=2.0).save()
+
+    loaded = Product.get(1)
+    assert loaded is not None
+    assert loaded.Name == "A"
+
+    rows = Product.where(Price=2.0).order_by("Name").all()
+    assert [row.Name for row in rows] == ["B"]
 
 
-def test_default_runtime_session_scope_batches_operations():
+def test_query_rejects_unknown_field() -> None:
     adapter = FakeAdapter()
     configure_default_runtime(adapter=adapter)
 
@@ -354,68 +150,60 @@ def test_default_runtime_session_scope_batches_operations():
 
         Name: str = field(required=True)
 
-    with session_scope() as _session:
-        first = Product(Name="One")
-        second = Product(Name="Two")
-        first.save()
-        second.save()
-
-    assert Product.query().count() == 2
+    with pytest.raises(ValueError):
+        Product.where(Unknown="x").all()
 
 
-def test_auto_sync_raises_on_manual_drift_until_forced():
-    adapter = FakeAdapter()
-    configure_default_runtime(adapter=adapter)
-    preload_schema(
-        adapter,
-        {
-            "name": "Demo.Product",
-            "superclass": "%Persistent",
-            "properties": {
-                "Name": {"iris_type": "%String", "required": True, "collection": "", "default": "", "maxlen": 200, "description": ""},
-                "LegacyOnly": {"iris_type": "%String", "required": False, "collection": "", "default": "", "maxlen": None, "description": ""},
-            },
-            "relationships": {},
-            "indexes": {},
-            "parameters": {},
-            "storage": None,
-        },
+def test_python_superclasses_accept_string_or_list() -> None:
+    class OneBase(IRISModel):
+        _iris_classname = "Demo.OneBase"
+        _iris_superclasses = "Ens.Request"
+
+        Name: str = field(required=True)
+
+    class ManyBases(IRISModel):
+        _iris_classname = "Demo.ManyBases"
+        _iris_superclasses = ["%Persistent", "Demo.Auditable"]
+
+        Name: str = field(required=True)
+
+    assert SchemaCompiler().compile_model(OneBase).superclasses == ("Ens.Request",)
+    assert SchemaCompiler().compile_model(ManyBases).superclasses == ("%Persistent", "Demo.Auditable")
+
+
+def test_parse_storage_preserves_extended_sections() -> None:
+    schema = parse_cls(
+        """
+Class Demo.Product Extends %Persistent, Demo.Auditable
+{
+Property Name As %String [ Required ];
+
+Storage Default
+{
+<Data name="ProductDefaultData">
+<Structure>listnode</Structure>
+<Value name="1">
+<Value>%%CLASSNAME</Value>
+</Value>
+</Data>
+<DataLocation>^Demo.ProductD</DataLocation>
+<DefaultData>ProductDefaultData</DefaultData>
+<ExtentSize>2</ExtentSize>
+<Property name="Name">
+<AverageFieldSize>8</AverageFieldSize>
+<Selectivity>0.0001%</Selectivity>
+</Property>
+<SQLMap name="IDKEY">
+<BlockCount>-4</BlockCount>
+</SQLMap>
+<Type>%Storage.Persistent</Type>
+}
+}
+""".strip()
     )
-
-    class Product(IRISModel):
-        _iris_classname = "Demo.Product"
-
-        Name: str = field(required=True, maxlen=200)
-
-    with pytest.raises(RuntimeError, match="sync\\(force=True\\)"):
-        Product.where(Name="x").count()
-
-    Product.sync(force=True)
-    Product(Name="Widget").save()
-    assert Product.where(Name="Widget").count() == 1
-
-
-def test_bind_existing_is_runtime_only_for_schema_operations():
-    adapter = FakeAdapter()
-    configure_default_runtime(adapter=adapter)
-    preload_schema(
-        adapter,
-        {
-            "name": "Demo.LegacyArticle",
-            "superclass": "%Persistent",
-            "properties": {
-                "Title": {"iris_type": "%String", "required": True, "collection": "", "default": "", "maxlen": 500, "description": ""},
-            },
-            "relationships": {},
-            "indexes": {},
-            "parameters": {},
-            "storage": None,
-        },
-    )
-
-    LegacyArticle = bind_existing("Demo.LegacyArticle")
-    assert LegacyArticle._iris_mode == "proxy"
-    with pytest.raises(RuntimeError, match='only available for models with _iris_mode = "python"'):
-        LegacyArticle.plan()
-    with pytest.raises(RuntimeError, match='only available for models with _iris_mode = "python"'):
-        LegacyArticle.sync()
+    assert schema.superclasses == ("%Persistent", "Demo.Auditable")
+    assert schema.storage["extent_size"] == "2"
+    assert schema.storage["properties"][0]["name"] == "Name"
+    assert schema.storage["properties"][0]["average_field_size"] == "8"
+    assert schema.storage["sql_maps"][0]["name"] == "IDKEY"
+    assert schema.storage["sql_maps"][0]["block_count"] == "-4"

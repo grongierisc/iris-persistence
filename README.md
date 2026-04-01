@@ -1,190 +1,61 @@
-# iris_orm — Python-First IRIS Mapper
+# iris_orm
 
-`iris_orm` has two ownership modes:
+`iris_orm` is a small Python-first mapper for InterSystems IRIS built around one idea:
 
-- `_iris_mode = "python"`: Python is the schema reference. The runtime auto-aligns IRIS on first real use when the drift is safe to apply.
-- `_iris_mode = "proxy"`: IRIS is the schema reference. Python only binds the class for CRUD and queries.
+- `_iris_mode = "python"`: Python owns the schema and overwrites IRIS to match it.
+- `_iris_mode = "proxy"`: IRIS owns the schema and Python only acts as a typed proxy.
 
-The package does not attach to live IRIS at import time. Declaring models is offline-safe and deterministic.
+The package keeps the `IRISModel` idea, supports brownfield scaffolding, and carries IRIS storage metadata in Python files so you can inspect it in proxy models or fine tune it in python-first models.
+
+## What This Version Supports
+
+- `IRISModel`
+- `field(...)`
+- `@parameter(...)`
+- `@index(...)`
+- python-first overwrite
+- proxy binding for existing IRIS classes
+- scaffold from live IRIS
+- scaffold from exported `.cls`
+- storage metadata on generated models and python-first models through `_iris_storage`
+
+This restart intentionally does not include the older migration/session/trigger surface.
 
 ## Quick Start
 
 ```python
-from iris_orm import IRISModel, field, index, parameter, trigger
+from iris_orm import IRISModel, field, index, parameter
 
-
-@parameter("DEFAULTGLOBAL", "^Demo.ArticleD")
-@trigger("AuditInsert", event="INSERT", time="AFTER", code="quit")
-@index("TitleIdx", properties="Title", unique=True)
-class Article(IRISModel):
-    _iris_classname = "Demo.Article"
-    _iris_mode = "python"
-
-    Title: str = field(required=True, maxlen=500)
-    Views: int = field(default=0)
-
-
-article = Article(Title="Hello", Views=1)
-article.save()
-
-loaded = Article.get(article.pk)
-assert loaded is article
-
-for row in Article.where(Views=1).order_by("Title"):
-    print(row.Title)
-```
-
-This path uses the default lazy runtime under the hood. No adapter or session setup is required for simple CRUD.
-
-## Convenience API
-
-ObjectScript-style usage is intentionally small:
-
-- `Model.get(id)`
-- `Model.where(...)`
-- `Model.query()`
-- `instance.save()`
-- `instance.delete()`
-
-Batching is still available when needed:
-
-```python
-from iris_orm import session_scope
-
-with session_scope():
-    Article(Title="One").save()
-    Article(Title="Two").save()
-```
-
-## Core API
-
-### Model Declaration
-
-Use `IRISModel` and `IRISSerial` only for declaration. They do not attach to IRIS at import time.
-
-Python-owned models should declare:
-
-```python
-class Product(IRISModel):
-    _iris_classname = "Demo.Product"
-    _iris_mode = "python"
-```
-
-Proxy bindings are created with:
-
-```python
-Article = bind_existing("Demo.Article")
-```
-
-### Registry
-
-```python
-registry = Registry()
-registry.register(Article)
-LegacyCustomer = registry.bind_existing("Demo.Customer")
-catalog = registry.export_schema()
-```
-
-### Schema Toolkit
-
-```python
-compiler = SchemaCompiler(adapter)
-live = compiler.catalog_from_iris(registry.classnames())
-desired = registry.export_schema()
-plan = SchemaPlanner().diff(live, desired)
-SchemaApplier(adapter).apply(plan, allow_manual=True)
-```
-
-`bind_existing("Demo.Customer")` creates a proxy model with `_iris_mode = "proxy"`. It can query and persist data, but `plan()` / `sync()` are disabled because Python is not the schema reference.
-
-### Runtime
-
-```python
-binder = Binder(registry, adapter)
-binder.bind_all()
-session = Session(binder, adapter)
-
-session.add(Article(Title="Hello"))
-session.commit()
-
-row = session.query(Article).filter_eq(Title="Hello").first()
-```
-
-Supported query operators are intentionally small:
-
-- `filter_eq`
-- `filter_in`
-- `order_by`
-- `limit`
-- `offset`
-- `count`
-- `first`
-- `all`
-
-Every queried field is validated against the bound schema before SQL is emitted.
-
-## Migrations
-
-`iris_orm.migrations` stores canonical `schema_before` / `schema_after` snapshots in each migration file.
-
-```python
-from iris_orm import Registry
-from iris_orm.migrations import MigrationRunner
-
-runner = MigrationRunner("./migrations", registry=registry, adapter=adapter)
-runner.init()
-runner.generate("create article")
-runner.upgrade()
-```
-
-Generated migrations rebuild upgrade/downgrade plans from the stored snapshots rather than replaying ad hoc state.
-
-## Scaffolding
-
-Scaffold typed proxy classes from live IRIS:
-
-```python
-from iris_orm.scaffold import scaffold_from_iris
-
-scaffold_from_iris("Demo.*", "./generated_models")
-```
-
-Generate Python-owned starting points instead:
-
-```python
-from iris_orm.scaffold import scaffold_from_iris
-
-scaffold_from_iris("Demo.*", "./generated_models", style="python")
-```
-
-Scaffold from exported `.cls` files:
-
-```python
-from iris_orm.scaffold import scaffold_from_cls
-
-scaffold_from_cls("./cls", "./generated_models")
-```
-
-Proxy scaffolds stay typed for editor support, but they bind live IRIS metadata at runtime. Python scaffolds render supported schema metadata with decorators plus `_iris_storage` when needed.
-
-Python-first advanced features can be declared directly as decorators:
-
-```python
-from iris_orm import index, parameter, trigger
 
 @parameter("DEFAULTGLOBAL", "^Demo.ProductD")
-@trigger("AuditInsert", event="INSERT", time="AFTER", code="quit")
 @index("NameIdx", properties="Name", unique=True)
 class Product(IRISModel):
     _iris_classname = "Demo.Product"
     _iris_mode = "python"
+    _iris_storage = {
+        "name": "Default",
+        "type": "%Storage.Persistent",
+        "data_location": "^Demo.ProductD",
+        "default_data": "ProductDefaultData",
+    }
+
+    Name: str = field(required=True, maxlen=200)
+    Price: float = field(default=0.0)
+    InStock: bool = field(default=True)
+
+
+product = Product(Name="Widget", Price=12.5, InStock=True)
+product.save()
+
+same = Product.get(product.pk)
+rows = Product.where(Name="Widget").order_by("Name").all()
 ```
 
-The list-style `_iris_indexes`, `_iris_triggers`, and `_iris_class_parameters` forms still work, but the decorator form is the intended Python-first syntax.
+On first real use, a python-first model compares its declared schema to IRIS and overwrites IRIS when they differ.
 
 ## Ownership Modes
 
-Use `_iris_mode` to make schema ownership explicit on the class:
+### Python First
 
 ```python
 class Product(IRISModel):
@@ -192,11 +63,127 @@ class Product(IRISModel):
     _iris_mode = "python"
 ```
 
+Behavior:
+
+- Python declarations are the reference
+- first runtime use auto-syncs the class to IRIS
+- extra IRIS properties, indexes, parameters, and storage settings are overwritten
+- `_iris_storage` lets you fine tune storage mapping directly in Python
+
+### Proxy
+
 ```python
-class LegacyArticle(IRISModel):
-    _iris_classname = "Demo.Article"
-    _iris_mode = "proxy"
+from iris_orm import bind_existing
+
+Article = bind_existing("Demo.Article")
 ```
 
-- `"python"`: Python declarations are authoritative. Runtime use auto-aligns safe schema drift. `plan()` and `sync(force=True)` remain available for advanced control.
-- `"proxy"`: the class binds to live IRIS for CRUD/query only. Schema management is disabled.
+Behavior:
+
+- IRIS stays authoritative
+- schema is fetched from IRIS
+- Python gets typed fields for CRUD and queries
+- no schema overwrite happens
+- scaffolded proxy files still keep `_iris_storage` metadata for visibility
+
+## Decorators
+
+Only 2 schema decorators are supported in this version:
+
+```python
+@parameter("DEFAULTGLOBAL", "^Demo.ProductD")
+@index("NameIdx", properties="Name", unique=True)
+class Product(IRISModel):
+    ...
+```
+
+They are meant for python-first models.
+
+## Storage Metadata
+
+Storage is carried as structured Python data on `_iris_storage`.
+
+Example:
+
+```python
+class Product(IRISModel):
+    _iris_classname = "Demo.Product"
+    _iris_mode = "python"
+    _iris_storage = {
+        "name": "Default",
+        "type": "%Storage.Persistent",
+        "data_location": "^Demo.ProductD",
+        "default_data": "ProductDefaultData",
+        "id_location": "^Demo.ProductD",
+        "index_location": "^Demo.ProductI",
+        "stream_location": "^Demo.ProductS",
+        "data": [
+            {
+                "name": "ProductDefaultData",
+                "structure": "listnode",
+                "values": [
+                    {"name": "1", "value": "%%CLASSNAME"},
+                    {"name": "2", "value": "Name"},
+                ],
+            }
+        ],
+    }
+```
+
+This is used in two places:
+
+- scaffolded/brownfield models keep IRIS storage information in the generated Python file
+- python-first models can declare or edit `_iris_storage` to fine tune storage mapping
+
+## Scaffold
+
+Generate typed proxy models from live IRIS:
+
+```python
+from iris_orm import scaffold_from_iris
+
+scaffold_from_iris("Demo.*", "./generated_models")
+```
+
+Generate python-first starting points instead:
+
+```python
+from iris_orm import scaffold_from_iris
+
+scaffold_from_iris("Demo.*", "./generated_models", style="python")
+```
+
+Generate models from exported `.cls` files:
+
+```python
+from iris_orm import scaffold_from_cls
+
+scaffold_from_cls("./cls", "./generated_models")
+```
+
+Scaffold rules:
+
+- `style="proxy"` is the default
+- proxy scaffolds keep typed fields and `_iris_storage`
+- `style="python"` renders `@parameter(...)`, `@index(...)`, and `_iris_storage`
+
+There is a runnable scaffold example at [examples/scaffold.py](/Users/grongier/git/iris-persistence/examples/scaffold.py).
+
+## Public API
+
+Small by design:
+
+- `IRISModel`
+- `field`
+- `parameter`
+- `index`
+- `bind_existing`
+- `scaffold_from_iris`
+- `scaffold_from_cls`
+
+Advanced but still available:
+
+- `SchemaCompiler`
+- `IRISAdapter`
+- `Model.plan()`
+- `Model.sync()`

@@ -1,28 +1,66 @@
-"""
-Developer-experience facade over the explicit IRIS runtime.
-"""
 from __future__ import annotations
 
-from contextlib import contextmanager
-from contextvars import ContextVar
-from typing import Any, Iterator
+from dataclasses import dataclass
+from typing import Any, Generic, TypeVar
 
 from .adapter import IRISAdapter
-from .binder import Binder
-from .registry import Registry
-from .schema import SchemaApplier, SchemaCompiler, SchemaPlan, SchemaPlanner
-from .session import Session
+from .model import IRISModel, bind_schema
+from .schema import SchemaCompiler, SchemaPlan, schema_equals
+
+_ModelT = TypeVar("_ModelT", bound=IRISModel)
+
+
+@dataclass
+class Query(Generic[_ModelT]):
+    runtime: "DefaultRuntime"
+    model_class: type[_ModelT]
+    filters: dict[str, Any]
+    order_field: str | None = None
+    limit_value: int | None = None
+    offset_value: int | None = None
+
+    def filter_eq(self, **kwargs: Any) -> "Query[_ModelT]":
+        merged = dict(self.filters)
+        merged.update(kwargs)
+        return Query(self.runtime, self.model_class, merged, self.order_field, self.limit_value, self.offset_value)
+
+    def order_by(self, field: str) -> "Query[_ModelT]":
+        return Query(self.runtime, self.model_class, dict(self.filters), field, self.limit_value, self.offset_value)
+
+    def limit(self, value: int) -> "Query[_ModelT]":
+        return Query(self.runtime, self.model_class, dict(self.filters), self.order_field, value, self.offset_value)
+
+    def offset(self, value: int) -> "Query[_ModelT]":
+        return Query(self.runtime, self.model_class, dict(self.filters), self.order_field, self.limit_value, value)
+
+    def all(self) -> list[_ModelT]:
+        self.runtime.prepare(self.model_class)
+        schema = self.model_class._iris_bound_schema
+        valid_fields = set(schema.property_map)
+        for key in self.filters:
+            if key not in valid_fields:
+                raise ValueError(f"Unknown field for {self.model_class.__name__}: {key}")
+        if self.order_field and self.order_field not in valid_fields:
+            raise ValueError(f"Unknown order_by field for {self.model_class.__name__}: {self.order_field}")
+        rows = self.runtime.adapter.query_rows(
+            self.model_class._iris_classname,
+            list(valid_fields),
+            self.filters,
+            order_by=self.order_field,
+            limit=self.limit_value,
+            offset=self.offset_value,
+        )
+        return [self.runtime._instance_from_row(self.model_class, row) for row in rows]
+
+    def first(self) -> _ModelT | None:
+        rows = self.limit(1).all()
+        return rows[0] if rows else None
 
 
 class DefaultRuntime:
-    """Lazy runtime facade for ObjectScript-style workflows."""
-
     def __init__(self) -> None:
-        self.registry = Registry()
         self._adapter: IRISAdapter | None = None
-        self._binder: Binder | None = None
-        self._session_var: ContextVar[Session | None] = ContextVar("iris_orm_default_session", default=None)
-        self._prepared: dict[str, int] = {}
+        self._prepared: dict[str, dict[str, Any]] = {}
 
     @property
     def adapter(self) -> IRISAdapter:
@@ -30,147 +68,101 @@ class DefaultRuntime:
             self._adapter = IRISAdapter()
         return self._adapter
 
-    @property
-    def binder(self) -> Binder:
-        if self._binder is None:
-            self._binder = Binder(self.registry, self.adapter)
-        return self._binder
+    def bind_existing(self, classname: str, *, model_name: str | None = None) -> type[IRISModel]:
+        name = model_name or classname.split(".")[-1]
+        model_class = type(name, (IRISModel,), {"_iris_classname": classname, "_iris_mode": "proxy"})
+        return self.bind(model_class)
 
-    def register(self, model_class: type) -> type:
-        self.registry.register(model_class)
-        classname = str(getattr(model_class, "_iris_classname", "") or "")
-        if classname:
-            model_id = id(model_class)
-            if self._prepared.get(classname) not in {None, model_id}:
-                self._prepared.pop(classname, None)
-                if self._binder is not None:
-                    self._binder._bound.pop(classname, None)  # type: ignore[attr-defined]
+    def bind(self, model_class: type[_ModelT]) -> type[_ModelT]:
+        self.prepare(model_class)
         return model_class
 
-    def bind_existing(
-        self,
-        classname: str,
-        *,
-        model_name: str | None = None,
-        serial: bool = False,
-    ) -> type:
-        model_class = self.registry.bind_existing(classname, model_name=model_name, serial=serial)
-        self.bind(model_class)
-        return model_class
+    def plan(self, model_class: type[IRISModel]) -> SchemaPlan:
+        desired = SchemaCompiler().compile_model(model_class)
+        try:
+            live = SchemaCompiler(self.adapter).class_from_iris(model_class._iris_classname)
+        except LookupError:
+            live = None
+        return SchemaPlan(classname=desired.name, desired=desired, live=live)
 
-    def bind(self, model_class: type) -> type:
-        self.register(model_class)
-        self._prepare_model(model_class)
-        return self.binder.bind_model(model_class)
-
-    def plan(self, model_class: type) -> SchemaPlan:
-        self.registry.register(model_class)
-        self._ensure_python_mode(model_class)
-        classnames = [model_class._iris_classname]  # type: ignore[attr-defined]
-        live = SchemaCompiler(self.adapter).catalog_from_iris(classnames)
-        desired = self.registry.export_schema().select(classnames)
-        return SchemaPlanner().diff(live, desired)
-
-    def sync(
-        self,
-        model_class: type,
-        *,
-        force: bool = False,
-        allow_manual: bool | None = None,
-    ) -> SchemaPlan:
+    def sync(self, model_class: type[IRISModel]) -> SchemaPlan:
+        desired = SchemaCompiler().compile_model(model_class)
         plan = self.plan(model_class)
-        manual = force if allow_manual is None else allow_manual
-        if not plan.is_empty():
-            SchemaApplier(self.adapter).apply(plan, allow_manual=manual)
-        self._mark_prepared(model_class)
+        self.adapter.replace_class(desired)
+        bind_schema(model_class, desired)
+        self._prepared[desired.name] = {"mode": "python", "schema": desired.to_dict()}
         return plan
 
-    def query(self, model_class: type) -> Any:
-        self._prepare_model(model_class)
-        session = self._current_session() or Session(self.binder, self.adapter)
-        return session.query(model_class)
+    def prepare(self, model_class: type[IRISModel]) -> None:
+        classname = str(model_class._iris_classname)
+        mode = str(getattr(model_class, "_iris_mode", "python") or "python").strip().lower()
+        if mode == "python":
+            desired = SchemaCompiler().compile_model(model_class)
+            cached = self._prepared.get(classname)
+            desired_dict = desired.to_dict()
+            if cached != {"mode": "python", "schema": desired_dict}:
+                try:
+                    live = SchemaCompiler(self.adapter).class_from_iris(classname)
+                except LookupError:
+                    live = None
+                if live is None or not schema_equals(live, desired):
+                    self.adapter.replace_class(desired)
+                bind_schema(model_class, desired)
+                self._prepared[classname] = {"mode": "python", "schema": desired_dict}
+            return
 
-    def get(self, model_class: type, obj_id: Any) -> Any | None:
-        self._prepare_model(model_class)
-        session = self._current_session() or Session(self.binder, self.adapter)
-        return session.get(model_class, obj_id)
+        live = SchemaCompiler(self.adapter).class_from_iris(classname)
+        bind_schema(model_class, live)
+        self._prepared[classname] = {"mode": "proxy", "schema": live.to_dict()}
+
+    def get(self, model_class: type[_ModelT], obj_id: Any) -> _ModelT | None:
+        self.prepare(model_class)
+        row = self.adapter.open_object(model_class._iris_classname, obj_id)
+        if row is None:
+            return None
+        return self._instance_from_row(model_class, {"id": row["id"], **row["data"]})
+
+    def query(self, model_class: type[_ModelT]) -> Query[_ModelT]:
+        return Query(self, model_class, {})
 
     def save(self, instance: Any) -> Any:
-        self._prepare_model(type(instance))
-        session = self._current_session()
-        if session is None:
-            session = Session(self.binder, self.adapter)
-            session.add(instance)
-            session.commit()
-            return instance
-        session.add(instance)
-        session.flush()
+        self.prepare(type(instance))
+        obj_id = self.adapter.save_object(type(instance)._iris_classname, dict(instance._iris_data), instance.pk)
+        object.__setattr__(instance, "_iris_id", obj_id)
         return instance
 
     def delete(self, instance: Any) -> None:
-        self._prepare_model(type(instance))
-        session = self._current_session()
-        if session is None:
-            session = Session(self.binder, self.adapter)
-            session.delete(instance)
-            session.commit()
-            return
-        session.delete(instance)
-        session.flush()
+        self.prepare(type(instance))
+        if instance.pk is not None:
+            self.adapter.delete_object(type(instance)._iris_classname, instance.pk)
 
-    @contextmanager
-    def session_scope(self) -> Iterator[Session]:
-        session = Session(self.binder, self.adapter)
-        token = self._session_var.set(session)
-        try:
-            yield session
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            self._session_var.reset(token)
-
-    def _current_session(self) -> Session | None:
-        return self._session_var.get()
-
-    def _prepare_model(self, model_class: type) -> None:
-        self.register(model_class)
-        classname = model_class._iris_classname  # type: ignore[attr-defined]
-        model_id = id(model_class)
-        if self._prepared.get(classname) == model_id:
-            return
-        mode = self._model_mode(model_class)
-        if mode == "python":
-            plan = self.plan(model_class)
-            if plan.manual_operations:
-                names = ", ".join(f"{item.kind}:{item.classname}" for item in plan.manual_operations)
-                raise RuntimeError(
-                    f"{model_class.__name__} requires manual schema alignment: {names}. "
-                    'Run sync(force=True) to apply destructive changes explicitly.'
-                )
-            if plan.executable_operations:
-                SchemaApplier(self.adapter).apply(plan, allow_manual=False)
-        self.binder.bind_model(model_class)
-        self._mark_prepared(model_class)
-
-    def _mark_prepared(self, model_class: type) -> None:
-        classname = str(getattr(model_class, "_iris_classname", "") or "")
-        if classname:
-            self._prepared[classname] = id(model_class)
+    def _instance_from_row(self, model_class: type[_ModelT], row: dict[str, Any]) -> _ModelT:
+        obj = model_class()
+        schema = getattr(model_class, "_iris_bound_schema", None)
+        converted: dict[str, Any] = {}
+        for key, value in row.items():
+            if key == "id":
+                continue
+            if schema is not None and key in schema.property_map:
+                iris_type = schema.property_map[key].iris_type
+                converted[key] = self._coerce_python_value(value, iris_type)
+            else:
+                converted[key] = value
+        object.__setattr__(obj, "_iris_id", row.get("id"))
+        object.__setattr__(obj, "_iris_data", converted)
+        return obj
 
     @staticmethod
-    def _model_mode(model_class: type) -> str:
-        return str(getattr(model_class, "_iris_mode", "python") or "python").strip().lower()
-
-    def _ensure_python_mode(self, model_class: type) -> None:
-        mode = self._model_mode(model_class)
-        if mode == "python":
-            return
-        raise RuntimeError(
-            f"{model_class.__name__} is in {mode!r} mode. "
-            'Schema plan/sync is only available for models with _iris_mode = "python".'
-        )
+    def _coerce_python_value(value: Any, iris_type: str) -> Any:
+        if value is None:
+            return None
+        if iris_type == "%Boolean":
+            return bool(value)
+        if iris_type in {"%Integer", "%SmallInt", "%BigInt"}:
+            return int(value)
+        if iris_type in {"%Float", "%Double", "%Numeric", "%Decimal"}:
+            return float(value)
+        return value
 
 
 _DEFAULT_RUNTIME = DefaultRuntime()
@@ -180,31 +172,18 @@ def get_default_runtime() -> DefaultRuntime:
     return _DEFAULT_RUNTIME
 
 
-def configure_default_runtime(
-    *,
-    adapter: IRISAdapter | None = None,
-    registry: Registry | None = None,
-) -> DefaultRuntime:
-    if registry is not None:
-        _DEFAULT_RUNTIME.registry = registry
+def configure_default_runtime(*, adapter: IRISAdapter | None = None) -> DefaultRuntime:
     if adapter is not None:
         _DEFAULT_RUNTIME._adapter = adapter
-    _DEFAULT_RUNTIME._binder = None
+    _DEFAULT_RUNTIME._prepared = {}
     return _DEFAULT_RUNTIME
 
 
 def reset_default_runtime() -> DefaultRuntime:
-    _DEFAULT_RUNTIME.registry = Registry()
     _DEFAULT_RUNTIME._adapter = None
-    _DEFAULT_RUNTIME._binder = None
     _DEFAULT_RUNTIME._prepared = {}
-    _DEFAULT_RUNTIME._session_var.set(None)
     return _DEFAULT_RUNTIME
 
 
-def bind_existing(classname: str, *, model_name: str | None = None, serial: bool = False) -> type:
-    return _DEFAULT_RUNTIME.bind_existing(classname, model_name=model_name, serial=serial)
-
-
-def session_scope() -> Any:
-    return _DEFAULT_RUNTIME.session_scope()
+def bind_existing(classname: str, *, model_name: str | None = None) -> type:
+    return _DEFAULT_RUNTIME.bind_existing(classname, model_name=model_name)

@@ -1,16 +1,15 @@
 """
-Scaffold Python models and lockfiles from live IRIS or exported .cls files.
+Scaffold Python models from live IRIS or exported .cls files.
 """
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from pprint import pformat
 from typing import Any
 
 from .introspection import list_classes
-from .lockfile import build_lockfile, lockfile_path_for_module, write_lockfile
 from .schema import (
-    SchemaCatalog,
     SchemaClass,
     SchemaCompiler,
     python_annotation_for_property,
@@ -24,35 +23,64 @@ def scaffold_from_iris(
     pattern: str,
     output_root: str | Path,
     *,
-    style: str = "typed",
+    style: str = "proxy",
     conn: Any = None,
 ) -> list[Path]:
     compiler = SchemaCompiler(conn)
     classnames = list_classes(pattern, conn)
     catalog = compiler.catalog_from_iris(classnames)
-    return _write_catalog(catalog, output_root=output_root, style=style, source_kind="iris")
+    return _write_catalog(catalog, output_root=output_root, style=style)
 
 
 def scaffold_from_cls(
     cls_root: str | Path,
     output_root: str | Path,
     *,
-    style: str = "typed",
+    style: str = "proxy",
 ) -> list[Path]:
     catalog = SchemaCompiler().catalog_from_cls_path(cls_root)
-    return _write_catalog(catalog, output_root=output_root, style=style, source_kind="cls")
+    return _write_catalog(catalog, output_root=output_root, style=style)
 
 
 def render_model(schema_class: SchemaClass, *, style: str = "typed") -> str:
+    style = _normalize_style(style)
     class_name = python_class_name(schema_class.name)
     base_class = "IRISSerial" if schema_class.kind == "serial" else "IRISModel"
-    lines = [GENERATED_START, f"from iris_orm import {base_class}, field, relationship", "", f"class {class_name}({base_class}):"]
+    imports = f"from iris_orm import {base_class}, field, relationship"
+    if style == "python":
+        imports += ", index, parameter, trigger"
+    lines = [GENERATED_START, imports, ""]
+    if style == "python":
+        for key in sorted(schema_class.parameters):
+            lines.append(f"@parameter({key!r}, {schema_class.parameters[key]!r})")
+        for item in schema_class.indexes:
+            parts = [f'"{item.name}"', f'properties="{item.properties}"']
+            if item.unique:
+                parts.append("unique=True")
+            if item.primary_key:
+                parts.append("primary_key=True")
+            lines.append(f"@index({', '.join(parts)})")
+        for item in schema_class.triggers:
+            parts = [
+                f'"{item.name}"',
+                f'event="{item.event}"',
+                f'time="{item.time}"',
+                f"code={item.code!r}",
+            ]
+            lines.append(f"@trigger({', '.join(parts)})")
+    lines.append(f"class {class_name}({base_class}):")
     lines.append(f'    _iris_classname = "{schema_class.name}"')
+    default_superclass = "%SerialObject" if schema_class.kind == "serial" else "%Persistent"
+    if schema_class.superclass and schema_class.superclass != default_superclass:
+        lines.append(f'    _iris_superclass = "{schema_class.superclass}"')
     lines.append("")
-    if style == "existing":
-        lines.append("    pass")
-        lines.append(GENERATED_END)
-        return "\n".join(lines)
+    if style == "proxy":
+        lines.append('    _iris_mode = "proxy"')
+    else:
+        lines.append('    _iris_mode = "python"')
+        if schema_class.storage is not None:
+            _append_assignment(lines, "_iris_storage", schema_class.storage.to_dict())
+        lines.append("")
 
     if not schema_class.properties and not schema_class.relationships:
         lines.append("    pass")
@@ -68,7 +96,7 @@ def render_model(schema_class: SchemaClass, *, style: str = "typed") -> str:
         if prop.description:
             extras.append(f'description="{prop.description}"')
         if prop.default:
-            extras.append(f'default={prop.default!r}')
+            extras.append(f"default={_python_default_source(prop)!s}")
         if prop.iris_type.startswith("Demo.") or prop.iris_type.startswith("%"):
             extras.append(f'iris_type="{prop.iris_type}"')
         call = f"field({', '.join(extras)})" if extras else "field()"
@@ -88,17 +116,11 @@ def write_scaffold(
     *,
     output_root: str | Path,
     style: str = "typed",
-    source_kind: str = "iris",
 ) -> Path:
     output_path = python_path_for_class(output_root, schema_class.name)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     _ensure_package_init(output_path.parent, stop_at=Path(output_root))
     output_path.write_text(render_model(schema_class, style=style) + "\n", encoding="utf-8")
-    lockfile = build_lockfile(
-        SchemaCatalog(classes=(schema_class,)),
-        source={"kind": source_kind, "origin": schema_class.source.get("origin", schema_class.name)},
-    )
-    write_lockfile(lockfile_path_for_module(output_path), lockfile)
     return output_path
 
 
@@ -111,20 +133,55 @@ def python_class_name(classname: str) -> str:
     return classname.split(".")[-1]
 
 
+def _python_default_source(prop: Any) -> str:
+    raw = str(getattr(prop, "default", "") or "")
+    iris_type = str(getattr(prop, "iris_type", "") or "")
+    if raw == "":
+        return "None"
+    if iris_type in {"%Boolean", "%Library.Boolean"}:
+        return "True" if raw.strip().lower() in {"1", "true"} else "False"
+    if iris_type in {
+        "%Integer",
+        "%SmallInt",
+        "%BigInt",
+        "%Library.Integer",
+    }:
+        return str(int(raw))
+    if iris_type in {
+        "%Float",
+        "%Double",
+        "%Numeric",
+        "%Decimal",
+        "%Library.Numeric",
+        "%Library.Float",
+        "%Library.Double",
+    }:
+        return repr(float(raw))
+    if len(raw) >= 2 and raw.startswith('"') and raw.endswith('"'):
+        raw = raw[1:-1].replace('""', '"')
+    return repr(raw)
+
+
 def _write_catalog(
-    catalog: SchemaCatalog,
+    catalog: Any,
     *,
     output_root: str | Path,
     style: str,
-    source_kind: str,
 ) -> list[Path]:
     paths: list[Path] = []
     output_root_path = Path(output_root)
     output_root_path.mkdir(parents=True, exist_ok=True)
     _ensure_package_init(output_root_path, stop_at=output_root_path)
     for schema_class in catalog.classes:
-        paths.append(write_scaffold(schema_class, output_root=output_root_path, style=style, source_kind=source_kind))
+        paths.append(write_scaffold(schema_class, output_root=output_root_path, style=style))
     return paths
+
+
+def _append_assignment(lines: list[str], name: str, value: Any) -> None:
+    rendered = pformat(value, width=100, sort_dicts=True).splitlines()
+    lines.append(f"    {name} = {rendered[0]}")
+    for line in rendered[1:]:
+        lines.append(f"    {line}")
 
 
 def _ensure_package_init(path: Path, *, stop_at: Path) -> None:
@@ -144,9 +201,20 @@ def _build_cli() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Scaffold Python IRIS models from live IRIS or .cls files.")
     parser.add_argument("source", help="IRIS class pattern or path to .cls root")
     parser.add_argument("--output", default="./generated_models", help="Output root")
-    parser.add_argument("--style", default="typed", choices=["typed", "existing"])
+    parser.add_argument("--style", default="proxy", choices=["proxy", "python", "typed", "existing"])
     parser.add_argument("--from-cls", action="store_true", help="Treat source as .cls root instead of live IRIS pattern")
     return parser
+
+
+def _normalize_style(style: str) -> str:
+    normalized = str(style or "proxy").strip().lower()
+    if normalized == "typed":
+        return "python"
+    if normalized == "existing":
+        return "proxy"
+    if normalized in {"proxy", "python"}:
+        return normalized
+    raise ValueError(f"Unsupported scaffold style: {style!r}")
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -4,10 +4,12 @@ Declaration and binding registry for IRIS model classes.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from .metaclass import IRISModel, IRISSerial
 from .schema import SchemaCatalog, SchemaCompiler
+
+if TYPE_CHECKING:
+    from .metaclass import IRISModel, IRISSerial
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,8 @@ class Registry:
         model_name: str | None = None,
         serial: bool = False,
     ) -> type:
+        from .metaclass import IRISModel, IRISSerial  # noqa: PLC0415
+
         base = IRISSerial if serial else IRISModel
         python_name = model_name or classname.split(".")[-1]
         model_class = type(
@@ -44,6 +48,7 @@ class Registry:
             (base,),
             {
                 "_iris_classname": classname,
+                "_iris_mode": "proxy",
                 "__module__": "iris_orm.registry",
             },
         )

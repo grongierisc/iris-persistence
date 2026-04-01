@@ -1,5 +1,5 @@
 """
-01_existing_class.py — Explicit binding to an existing IRIS class.
+01_existing_class.py — Convenience binding to an existing IRIS class.
 """
 from __future__ import annotations
 
@@ -9,22 +9,17 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from iris_orm import Binder, IRISAdapter, Registry, Session
+from iris_orm import bind_existing
 
 
 def main() -> None:
-    registry = Registry()
-    Article = registry.bind_existing("Demo.Article")
-
-    adapter = IRISAdapter()
-    binder = Binder(registry, adapter)
-    binder.bind_all()
-    session = Session(binder, adapter)
+    Article = bind_existing("Demo.Article")
+    Article.bind()
 
     print("Bound existing class:", Article._iris_classname)
-    print("Known fields:", [item.name for item in binder.schema_for(Article).properties])
+    print("Known fields:", [item.name for item in Article._iris_bound_schema.properties])
 
-    first = session.query(Article).limit(1).first()
+    first = Article.query().limit(1).first()
     if first is not None:
         print("First row id:", first.pk)
 

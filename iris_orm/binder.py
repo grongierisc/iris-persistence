@@ -37,7 +37,11 @@ class Binder:
         if classname in self._bound:
             return self._bound[classname]
 
-        if getattr(model_class, "_iris_declared_fields", None) or getattr(model_class, "_iris_declared_relationships", None):
+        mode = str(getattr(model_class, "_iris_mode", "python") or "python").strip().lower()
+        if mode == "proxy":
+            schema_class = self.compiler.class_from_iris(classname)
+            self._populate_declared_metadata(model_class, schema_class)
+        elif getattr(model_class, "_iris_declared_fields", None) or getattr(model_class, "_iris_declared_relationships", None):
             schema_class = self.compiler.compile_model(model_class)
         else:
             schema_class = self.compiler.class_from_iris(classname)

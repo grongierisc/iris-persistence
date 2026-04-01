@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import inspect
 import re
+import datetime
 from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -107,6 +108,31 @@ class SchemaIndex:
 
 
 @dataclass(frozen=True)
+class SchemaTrigger:
+    name: str
+    event: str
+    time: str
+    code: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "event": self.event,
+            "time": self.time,
+            "code": self.code,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "SchemaTrigger":
+        return cls(
+            name=str(payload["name"]),
+            event=str(payload.get("event", "")).upper(),
+            time=str(payload.get("time", "")).upper(),
+            code=str(payload.get("code", "")),
+        )
+
+
+@dataclass(frozen=True)
 class SchemaStorageValue:
     name: str
     value: str
@@ -204,6 +230,7 @@ class SchemaClass:
     properties: tuple[SchemaProperty, ...] = ()
     relationships: tuple[SchemaRelationship, ...] = ()
     indexes: tuple[SchemaIndex, ...] = ()
+    triggers: tuple[SchemaTrigger, ...] = ()
     parameters: dict[str, str] = dataclass_field(default_factory=dict)
     storage: SchemaStorage | None = None
     source: dict[str, Any] = dataclass_field(default_factory=dict)
@@ -218,6 +245,7 @@ class SchemaClass:
                 item.to_dict() for item in sorted(self.relationships, key=lambda item: item.name)
             ],
             "indexes": [item.to_dict() for item in sorted(self.indexes, key=lambda item: item.name)],
+            "triggers": [item.to_dict() for item in sorted(self.triggers, key=lambda item: item.name)],
             "parameters": {key: self.parameters[key] for key in sorted(self.parameters)},
             "source": dict(sorted(self.source.items())),
         }
@@ -243,6 +271,10 @@ class SchemaClass:
                 SchemaIndex.from_dict(dict(item))
                 for item in list(payload.get("indexes", []))
             ),
+            triggers=tuple(
+                SchemaTrigger.from_dict(dict(item))
+                for item in list(payload.get("triggers", []))
+            ),
             parameters={
                 str(key): str(value)
                 for key, value in dict(payload.get("parameters", {})).items()
@@ -266,6 +298,10 @@ class SchemaClass:
     @property
     def index_map(self) -> dict[str, SchemaIndex]:
         return {item.name: item for item in self.indexes}
+
+    @property
+    def trigger_map(self) -> dict[str, SchemaTrigger]:
+        return {item.name: item for item in self.triggers}
 
 
 @dataclass(frozen=True)
@@ -323,7 +359,7 @@ class SchemaPlan:
 
 
 class SchemaCompiler:
-    """Compile Python declarations, live IRIS metadata, lockfiles, and .cls input into AST."""
+    """Compile Python declarations, live IRIS metadata, and .cls input into AST."""
 
     def __init__(self, adapter: IRISAdapter | None = None) -> None:
         self.adapter = adapter or IRISAdapter()
@@ -342,7 +378,11 @@ class SchemaCompiler:
                     iris_type=iris_type,
                     required=bool(field_def.required),
                     collection=str(field_def.collection or ""),
-                    default="" if field_def.default is None else str(field_def.default),
+                    default=_default_literal(
+                        field_def.default,
+                        iris_type=iris_type,
+                        python_type=python_type,
+                    ),
                     maxlen=field_def.maxlen,
                     description=str(field_def.description or ""),
                 )
@@ -379,6 +419,10 @@ class SchemaCompiler:
                 SchemaIndex.from_dict(dict(item))
                 for item in list(getattr(model_class, "_iris_indexes", []))
             ),
+            triggers=tuple(
+                SchemaTrigger.from_dict(dict(item))
+                for item in list(getattr(model_class, "_iris_triggers", []))
+            ),
             parameters={
                 str(key): str(value)
                 for key, value in dict(getattr(model_class, "_iris_class_parameters", {})).items()
@@ -400,6 +444,7 @@ class SchemaCompiler:
         properties: list[SchemaProperty] = []
         relationships: list[SchemaRelationship] = []
         indexes: list[SchemaIndex] = []
+        triggers: list[SchemaTrigger] = []
         parameters: dict[str, str] = {}
 
         for prop_def in _iter_collection(getattr(class_def, "Properties", None)):
@@ -425,7 +470,7 @@ class SchemaCompiler:
                     iris_type=str(getattr(prop_def, "Type", "") or "%String"),
                     required=bool(getattr(prop_def, "Required", False)),
                     collection=str(getattr(prop_def, "Collection", "") or "").lower(),
-                    default=str(getattr(prop_def, "InitialExpression", "") or ""),
+                    default=_normalize_initial_expression(getattr(prop_def, "InitialExpression", "")),
                     maxlen=_property_maxlen(prop_def),
                     description=str(getattr(prop_def, "Description", "") or ""),
                 )
@@ -441,6 +486,19 @@ class SchemaCompiler:
                     properties=str(getattr(index_def, "Properties", "") or ""),
                     unique=bool(getattr(index_def, "Unique", False)),
                     primary_key=bool(getattr(index_def, "PrimaryKey", False)),
+                )
+            )
+
+        for trigger_def in _iter_collection(getattr(class_def, "Triggers", None)):
+            name = str(getattr(trigger_def, "Name", "") or "")
+            if not name:
+                continue
+            triggers.append(
+                SchemaTrigger(
+                    name=name,
+                    event=str(getattr(trigger_def, "Event", "") or "").upper(),
+                    time=str(getattr(trigger_def, "Time", "") or "").upper(),
+                    code=str(getattr(trigger_def, "Code", "") or ""),
                 )
             )
 
@@ -462,6 +520,7 @@ class SchemaCompiler:
             properties=tuple(sorted(properties, key=lambda item: item.name)),
             relationships=tuple(sorted(relationships, key=lambda item: item.name)),
             indexes=tuple(sorted(indexes, key=lambda item: item.name)),
+            triggers=tuple(sorted(triggers, key=lambda item: item.name)),
             parameters={key: parameters[key] for key in sorted(parameters)},
             storage=storage,
             source={"kind": "iris", "origin": classname},
@@ -656,6 +715,37 @@ class SchemaPlanner:
                     )
                 )
 
+        before_triggers = before_class.trigger_map if before_class is not None else {}
+        after_triggers = after_class.trigger_map
+        for name in sorted(set(before_triggers) | set(after_triggers)):
+            old_trigger = before_triggers.get(name)
+            new_trigger = after_triggers.get(name)
+            if old_trigger is None and new_trigger is not None:
+                ops.append(
+                    SchemaOperation(
+                        kind="add_trigger",
+                        classname=after_class.name,
+                        payload={"trigger": new_trigger.to_dict()},
+                    )
+                )
+            elif old_trigger is not None and new_trigger is None:
+                ops.append(
+                    SchemaOperation(
+                        kind="drop_trigger",
+                        classname=after_class.name,
+                        payload={"name": name},
+                        manual_only=True,
+                    )
+                )
+            elif old_trigger is not None and new_trigger is not None and old_trigger != new_trigger:
+                ops.append(
+                    SchemaOperation(
+                        kind="alter_trigger",
+                        classname=after_class.name,
+                        payload={"trigger": new_trigger.to_dict()},
+                    )
+                )
+
         before_params = dict(before_class.parameters) if before_class is not None else {}
         after_params = dict(after_class.parameters)
         for name in sorted(set(before_params) | set(after_params)):
@@ -681,7 +771,16 @@ class SchemaPlanner:
                     )
                 )
 
-        if after_class.storage is not None and (before_class is None or before_class.storage != after_class.storage):
+        if after_class.storage is None:
+            if before_class is not None and before_class.storage is not None:
+                ops.append(
+                    SchemaOperation(
+                        kind="clear_storage",
+                        classname=after_class.name,
+                        manual_only=True,
+                    )
+                )
+        elif before_class is None or before_class.storage != after_class.storage:
             ops.append(
                 SchemaOperation(
                     kind="set_storage",
@@ -757,6 +856,14 @@ class SchemaApplier:
                     f"{op.classname}||{op.payload['name']}"
                 )
                 changed_classes.add(op.classname)
+            elif op.kind in {"add_trigger", "alter_trigger"}:
+                self._upsert_trigger(op.classname, SchemaTrigger.from_dict(dict(op.payload["trigger"])))
+                changed_classes.add(op.classname)
+            elif op.kind == "drop_trigger":
+                self.adapter.iris_cls("%Dictionary.TriggerDefinition")._DeleteId(
+                    f"{op.classname}||{op.payload['name']}"
+                )
+                changed_classes.add(op.classname)
             elif op.kind == "set_parameter":
                 self._set_parameter(op.classname, str(op.payload["name"]), str(op.payload["value"]))
                 changed_classes.add(op.classname)
@@ -769,10 +876,26 @@ class SchemaApplier:
                 self._set_storage(op.classname, SchemaStorage.from_dict(dict(op.payload["storage"])))
                 changed_classes.add(op.classname)
             elif op.kind == "clear_storage":
-                class_def = self._open_class_definition(op.classname)
-                class_def.Storage = ""
-                class_def.StorageDefinition = ""
-                self.adapter.save(class_def, kind="class", identifier=op.classname)
+                cleared = False
+                try:
+                    class_def = self._open_class_definition(op.classname)
+                    for storage_def in _iter_collection(getattr(class_def, "Storages", None)):
+                        storage_name = str(getattr(storage_def, "Name", "") or "")
+                        if not storage_name:
+                            continue
+                        self.adapter.iris_cls("%Dictionary.StorageDefinition")._DeleteId(
+                            f"{op.classname}||{storage_name}"
+                        )
+                        cleared = True
+                except Exception:
+                    pass
+                if not cleared:
+                    class_def = self._open_class_definition(op.classname)
+                    if hasattr(class_def, "Storage"):
+                        class_def.Storage = ""
+                    if hasattr(class_def, "StorageDefinition"):
+                        class_def.StorageDefinition = ""
+                    self.adapter.save(class_def, kind="class", identifier=op.classname)
                 changed_classes.add(op.classname)
 
         for classname in sorted(changed_classes):
@@ -811,7 +934,10 @@ class SchemaApplier:
         prop_def.Type = prop.iris_type
         prop_def.Required = int(prop.required)
         prop_def.Collection = prop.collection.capitalize() if prop.collection else ""
-        prop_def.InitialExpression = prop.default
+        if prop.default:
+            prop_def.InitialExpression = prop.default
+        else:
+            prop_def.InitialExpression = ""
         prop_def.Description = prop.description
         if prop.maxlen is not None:
             prop_def.Parameters.SetAt(str(prop.maxlen), "MAXLEN")
@@ -844,6 +970,16 @@ class SchemaApplier:
         index_def.Unique = int(index.unique)
         index_def.PrimaryKey = int(index.primary_key)
         self.adapter.save(index_def, kind="index", identifier=index_id)
+
+    def _upsert_trigger(self, classname: str, trigger: SchemaTrigger) -> None:
+        class_def = self._open_class_definition(classname)
+        trigger_def_cls = self.adapter.iris_cls("%Dictionary.TriggerDefinition")
+        trigger_id = f"{classname}||{trigger.name}"
+        trigger_def = self._open_or_new(trigger_def_cls, trigger_id, name=trigger.name, parent=class_def)
+        trigger_def.Event = trigger.event
+        trigger_def.Time = trigger.time
+        trigger_def.Code = trigger.code
+        self.adapter.save(trigger_def, kind="trigger", identifier=trigger_id)
 
     def _set_parameter(self, classname: str, name: str, value: str) -> None:
         class_def = self._open_class_definition(classname)
@@ -971,6 +1107,85 @@ def _iris_type_for_python_field(python_type: Any) -> str:
     if isinstance(python_type, type) and getattr(python_type, "_iris_serial", False):
         return python_type._iris_classname  # type: ignore[attr-defined]
     return python_type_to_iris(python_type)
+
+
+def _default_literal(
+    value: Any,
+    *,
+    iris_type: str = "",
+    python_type: Any = None,
+) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple, set, dict)) and not value:
+        return ""
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, datetime.datetime):
+        return _quote_iris_string(value.strftime("%Y-%m-%d %H:%M:%S"))
+    if isinstance(value, datetime.date):
+        return _quote_iris_string(value.strftime("%Y-%m-%d"))
+    if isinstance(value, datetime.time):
+        return _quote_iris_string(value.strftime("%H:%M:%S"))
+    if isinstance(value, str):
+        raw = value.strip()
+        if raw == "":
+            return ""
+        if _is_boolean_type(iris_type, python_type):
+            normalized = raw.lower()
+            if normalized in {"1", "true", "t", "yes"}:
+                return "1"
+            if normalized in {"0", "false", "f", "no"}:
+                return "0"
+        if _is_numeric_type(iris_type, python_type):
+            return raw
+        if _is_string_type(iris_type, python_type):
+            if _is_iris_string_literal(raw):
+                return raw
+            return _quote_iris_string(raw)
+        return raw
+    return str(value)
+
+
+def _normalize_initial_expression(value: Any) -> str:
+    raw = str(value or "")
+    if raw in {"", '""'}:
+        return ""
+    return raw
+
+
+def _is_boolean_type(iris_type: str, python_type: Any) -> bool:
+    return iris_type in {"%Boolean", "%Library.Boolean"} or python_type is bool
+
+
+def _is_numeric_type(iris_type: str, python_type: Any) -> bool:
+    return iris_type in {
+        "%Integer",
+        "%SmallInt",
+        "%BigInt",
+        "%Float",
+        "%Double",
+        "%Numeric",
+        "%Decimal",
+        "%Library.Integer",
+        "%Library.Numeric",
+        "%Library.Float",
+        "%Library.Double",
+    } or python_type in {int, float}
+
+
+def _is_string_type(iris_type: str, python_type: Any) -> bool:
+    return iris_type in {"%String", "%Library.String"} or python_type is str
+
+
+def _is_iris_string_literal(value: str) -> bool:
+    return len(value) >= 2 and value.startswith('"') and value.endswith('"')
+
+
+def _quote_iris_string(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
 
 
 def _normalize_cardinality(value: str) -> str:

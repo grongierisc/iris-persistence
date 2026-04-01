@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
-
-from iris_orm import Binder, IRISAdapter, Registry, SchemaApplier, SchemaCatalog, SchemaCompiler, SchemaPlanner, Session
-from iris_orm.lockfile import build_lockfile, lockfile_path_for_module, write_lockfile
+from iris_orm import Binder, IRISAdapter, Registry, SchemaApplier, SchemaCompiler, SchemaPlanner, Session
 
 
 def sync_registry(registry: Registry, *, adapter: IRISAdapter | None = None) -> IRISAdapter:
@@ -22,21 +19,3 @@ def bind_session(registry: Registry, *, adapter: IRISAdapter | None = None) -> t
     binder = Binder(registry, adapter)
     binder.bind_all()
     return adapter, binder, Session(binder, adapter)
-
-
-def write_model_lockfile(model_class: type, registry: Registry, *, source_kind: str = "declared") -> Path:
-    schema_class = registry.export_schema().get_class(model_class._iris_classname)  # type: ignore[attr-defined]
-    if schema_class is None:
-        raise LookupError(f"No schema found for {model_class._iris_classname!r}")  # type: ignore[attr-defined]
-    module_path = Path(model_class.__module__.replace(".", "/"))
-    try:
-        import inspect
-
-        module_file = Path(inspect.getfile(model_class)).resolve()
-    except (OSError, TypeError):
-        module_file = module_path
-    lockfile = build_lockfile(
-        SchemaCatalog(classes=(schema_class,)),
-        source={"kind": source_kind, "origin": str(module_file)},
-    )
-    return write_lockfile(lockfile_path_for_module(module_file), lockfile)

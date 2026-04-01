@@ -5,9 +5,16 @@ from __future__ import annotations
 
 from .adapter import IRISAdapter
 from .binder import Binder
-from .fields import FieldDefinition, RelationshipDefinition, field, relationship
+from .fields import FieldDefinition, IndexDefinition, ParameterDefinition, RelationshipDefinition, TriggerDefinition, field, index, parameter, relationship, trigger
 from .metaclass import IRISMeta, IRISModel, IRISSerial, _MODEL_REGISTRY
 from .registry import Registry
+from .runtime import (
+    bind_existing,
+    configure_default_runtime,
+    get_default_runtime,
+    reset_default_runtime,
+    session_scope,
+)
 from .schema import (
     SchemaApplier,
     SchemaCatalog,
@@ -21,6 +28,7 @@ from .schema import (
     SchemaStorage,
     SchemaStorageData,
     SchemaStorageValue,
+    SchemaTrigger,
     compile_declared_model_schema,
 )
 from .session import Session
@@ -52,11 +60,23 @@ __all__ = [
     "SchemaStorage",
     "SchemaStorageData",
     "SchemaStorageValue",
+    "SchemaTrigger",
+    "bind_existing",
+    "configure_default_runtime",
+    "get_default_runtime",
+    "reset_default_runtime",
+    "session_scope",
     "_MODEL_REGISTRY",
     "FieldDefinition",
+    "IndexDefinition",
+    "ParameterDefinition",
     "RelationshipDefinition",
+    "TriggerDefinition",
     "field",
+    "index",
+    "parameter",
     "relationship",
+    "trigger",
     "compile_declared_model_schema",
     "IRIS_TO_PYTHON",
     "PYTHON_TO_IRIS",

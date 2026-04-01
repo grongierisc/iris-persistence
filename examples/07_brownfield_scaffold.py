@@ -16,8 +16,8 @@ def main() -> None:
     generated_root = PROJECT_ROOT / "generated_models"
 
     try:
-        iris_paths = scaffold_from_iris("Demo.*", generated_root)
-        print("Scaffolded from IRIS:")
+        iris_paths = scaffold_from_iris("Demo.*", generated_root, style="proxy")
+        print("Scaffolded typed proxy from IRIS:")
         for path in iris_paths:
             print(" ", path)
     except Exception as exc:

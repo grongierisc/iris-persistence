@@ -168,6 +168,29 @@ class FakeParameterDefinition:
         return 1
 
 
+class FakeTriggerDefinition:
+    def __init__(self, adapter: "FakeAdapter", classname: str, name: str, payload: dict[str, Any] | None = None) -> None:
+        payload = payload or {}
+        self._adapter = adapter
+        self._classname = classname
+        self.Name = name
+        self.Event = payload.get("event", "")
+        self.Time = payload.get("time", "")
+        self.Code = payload.get("code", "")
+        self.parent = None
+
+    def _Save(self) -> int:
+        classname = self._classname or getattr(self.parent, "Name", "")
+        self._classname = classname
+        schema = self._adapter.schemas.setdefault(classname, self._adapter.empty_schema(classname))
+        schema["triggers"][self.Name] = {
+            "event": self.Event,
+            "time": self.Time,
+            "code": self.Code,
+        }
+        return 1
+
+
 class FakeClassDefinition:
     def __init__(self, adapter: "FakeAdapter", classname: str, schema: dict[str, Any] | None = None) -> None:
         self._adapter = adapter
@@ -210,6 +233,16 @@ class FakeClassDefinition:
         )
 
     @property
+    def Triggers(self) -> FakeCollection:
+        schema = self._adapter.schemas.get(self.Name, self._adapter.empty_schema(self.Name))
+        return FakeCollection(
+            [
+                FakeTriggerDefinition(self._adapter, self.Name, name, payload)
+                for name, payload in sorted(schema["triggers"].items())
+            ]
+        )
+
+    @property
     def Storages(self) -> FakeCollection:
         schema = self._adapter.schemas.get(self.Name, self._adapter.empty_schema(self.Name))
         storage = schema.get("storage")
@@ -223,6 +256,8 @@ class FakeClassDefinition:
         if self.StorageDefinition:
             parsed = parse_storage_definition(self.StorageDefinition)
             schema["storage"] = parsed
+        elif not self.Storage:
+            schema["storage"] = None
         return 1
 
 
@@ -238,8 +273,12 @@ class FakeDictionaryProxy:
             return FakePropertyDefinition(self._adapter, "", "")
         if self._kind == "relationship":
             return FakeRelationshipDefinition(self._adapter, "", "")
+        if self._kind == "storage":
+            return FakeStorageDefinition({})
         if self._kind == "index":
             return FakeIndexDefinition(self._adapter, "", "")
+        if self._kind == "trigger":
+            return FakeTriggerDefinition(self._adapter, "", "")
         if self._kind == "parameter":
             return FakeParameterDefinition(self._adapter, "", "")
         raise ValueError(self._kind)
@@ -258,9 +297,17 @@ class FakeDictionaryProxy:
         if self._kind == "relationship":
             payload = schema["relationships"].get(name)
             return None if payload is None else FakeRelationshipDefinition(self._adapter, classname, name, payload)
+        if self._kind == "storage":
+            payload = schema.get("storage")
+            if payload is None or name != payload.get("name", "Default"):
+                return None
+            return FakeStorageDefinition(payload)
         if self._kind == "index":
             payload = schema["indexes"].get(name)
             return None if payload is None else FakeIndexDefinition(self._adapter, classname, name, payload)
+        if self._kind == "trigger":
+            payload = schema["triggers"].get(name)
+            return None if payload is None else FakeTriggerDefinition(self._adapter, classname, name, payload)
         if self._kind == "parameter":
             if name not in schema["parameters"]:
                 return None
@@ -277,9 +324,16 @@ class FakeDictionaryProxy:
         mapping_name = {
             "property": "properties",
             "relationship": "relationships",
+            "storage": "storage",
             "index": "indexes",
+            "trigger": "triggers",
             "parameter": "parameters",
         }[self._kind]
+        if mapping_name == "storage":
+            payload = schema.get("storage")
+            if payload is not None and name == payload.get("name", "Default"):
+                schema["storage"] = None
+            return
         schema[mapping_name].pop(name, None)
 
     def _ExistsId(self, identifier: str) -> int:
@@ -343,6 +397,7 @@ class FakeAdapter:
             "properties": {},
             "relationships": {},
             "indexes": {},
+            "triggers": {},
             "parameters": {},
             "storage": None,
         }
@@ -359,7 +414,9 @@ class FakeAdapter:
             "%Dictionary.ClassDefinition": FakeDictionaryProxy(self, "class"),
             "%Dictionary.PropertyDefinition": FakeDictionaryProxy(self, "property"),
             "%Dictionary.RelationshipDefinition": FakeDictionaryProxy(self, "relationship"),
+            "%Dictionary.StorageDefinition": FakeDictionaryProxy(self, "storage"),
             "%Dictionary.IndexDefinition": FakeDictionaryProxy(self, "index"),
+            "%Dictionary.TriggerDefinition": FakeDictionaryProxy(self, "trigger"),
             "%Dictionary.ParameterDefinition": FakeDictionaryProxy(self, "parameter"),
             "%SYSTEM.OBJ": self.system_obj,
         }
@@ -477,6 +534,7 @@ def preload_schema(adapter: FakeAdapter, schema: dict[str, Any]) -> None:
         "properties": payload.get("properties", {}),
         "relationships": payload.get("relationships", {}),
         "indexes": payload.get("indexes", {}),
+        "triggers": payload.get("triggers", {}),
         "parameters": payload.get("parameters", {}),
         "storage": payload.get("storage"),
     }

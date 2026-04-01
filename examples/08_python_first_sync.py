@@ -1,23 +1,24 @@
 """
-08_python_first_sync.py — Python-owned schema sync with a canonical lockfile.
+08_python_first_sync.py — Python-owned schema auto-alignment on first use.
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from iris_orm import IRISModel, Registry, SchemaCompiler, field
-
-from examples._common import bind_session, sync_registry, write_model_lockfile
+from iris_orm import IRISModel, SchemaCompiler, field, index, parameter, trigger
 
 
+@parameter("DEFAULTGLOBAL", "^Demo.PythonFirstSyncProductD")
+@trigger("AuditInsert", event="INSERT", time="AFTER", code="quit")
+@index("NameIdx", properties="Name", unique=True)
 class Product(IRISModel):
-    _iris_classname = "Demo.Product"
-    _iris_class_parameters = {"DEFAULTGLOBAL": "^Demo.ProductD"}
-    _iris_indexes = [{"name": "NameIdx", "properties": "Name", "unique": True, "primary_key": False}]
+    _iris_classname = "Demo.PythonFirstSyncProduct"
+    _iris_mode = "python"
 
     Name: str = field(required=True, maxlen=200)
     Price: float = field(default=0.0)
@@ -25,25 +26,18 @@ class Product(IRISModel):
 
 
 def main() -> None:
-    registry = Registry()
-    registry.register(Product)
+    Product.sync(force=True)
 
-    adapter = sync_registry(registry)
-    lockfile_path = write_model_lockfile(Product, registry)
+    live = SchemaCompiler().catalog_from_iris([Product._iris_classname])
 
-    live = SchemaCompiler(adapter).catalog_from_iris(registry.classnames())
-    desired = registry.export_schema()
-
-    print(f"Lockfile: {lockfile_path}")
-    print("Desired classes:", [item.name for item in desired.classes])
+    print("Desired classes:", [Product._iris_classname])
     print("Live classes:", [item.name for item in live.classes])
 
-    _adapter, _binder, session = bind_session(registry, adapter=adapter)
-    product = Product(Name="Widget", Price=12.5, InStock=True)
-    session.add(product)
-    session.commit()
+    name = f"Widget-{int(time.time())}"
+    product = Product(Name=name, Price=12.5, InStock=True)
+    product.save()
 
-    fetched = session.query(Product).filter_eq(Name="Widget").first()
+    fetched = Product.where(Name=name).order_by("Name").first()
     print("Saved product id:", product.pk)
     print("Fetched:", fetched.Name, fetched.Price, fetched.InStock)
 

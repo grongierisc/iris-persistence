@@ -7,7 +7,7 @@ import copy
 import typing
 from typing import Any, ClassVar, Optional, get_type_hints
 
-from .fields import FieldDefinition, RelationshipDefinition
+from .fields import FieldDefinition, IndexDefinition, ParameterDefinition, RelationshipDefinition, TriggerDefinition
 from .types import python_type_to_iris, unwrap_optional
 
 _MODEL_REGISTRY: dict[str, type] = {}
@@ -56,6 +56,8 @@ class IRISMeta(type):
             cls._iris_class_parameters = {}  # type: ignore[attr-defined]
         if not hasattr(cls, "_iris_indexes"):
             cls._iris_indexes = []  # type: ignore[attr-defined]
+        if not hasattr(cls, "_iris_triggers"):
+            cls._iris_triggers = []  # type: ignore[attr-defined]
         if not hasattr(cls, "_iris_storage"):
             cls._iris_storage = None  # type: ignore[attr-defined]
 
@@ -99,12 +101,27 @@ class IRISMeta(type):
             rel_copy.prop_name = attr_name
             normalized_relationships[attr_name] = rel_copy
 
+        cls._iris_class_parameters = _normalize_parameter_definitions(  # type: ignore[attr-defined]
+            getattr(cls, "_iris_class_parameters", {})
+        )
+        cls._iris_indexes = [  # type: ignore[attr-defined]
+            _normalize_index_definition(item)
+            for item in list(getattr(cls, "_iris_indexes", []))
+        ]
+        cls._iris_triggers = [  # type: ignore[attr-defined]
+            _normalize_trigger_definition(item)
+            for item in list(getattr(cls, "_iris_triggers", []))
+        ]
+
         cls._iris_declared_fields = normalized_fields  # type: ignore[attr-defined]
         cls._iris_declared_relationships = normalized_relationships  # type: ignore[attr-defined]
         cls._iris_bound = False  # type: ignore[attr-defined]
         cls._iris_bound_schema = None  # type: ignore[attr-defined]
 
         _MODEL_REGISTRY[iris_classname] = cls
+        from .runtime import get_default_runtime  # noqa: PLC0415
+
+        get_default_runtime().register(cls)
         return cls
 
     @staticmethod
@@ -122,14 +139,57 @@ class IRISMeta(type):
             return resolved
 
 
+def _normalize_index_definition(value: Any) -> dict[str, Any]:
+    if isinstance(value, IndexDefinition):
+        return value.to_dict()
+    if isinstance(value, dict):
+        return {
+            "name": str(value["name"]),
+            "properties": str(value.get("properties", "")),
+            "unique": bool(value.get("unique", False)),
+            "primary_key": bool(value.get("primary_key", False)),
+        }
+    raise TypeError(f"Unsupported index declaration: {type(value)!r}")
+
+
+def _normalize_parameter_definitions(value: Any) -> dict[str, str]:
+    if isinstance(value, dict):
+        return {str(key): str(item) for key, item in value.items()}
+    normalized: dict[str, str] = {}
+    for item in list(value):
+        if isinstance(item, ParameterDefinition):
+            key, val = item.to_pair()
+            normalized[key] = val
+            continue
+        if isinstance(item, tuple) and len(item) == 2:
+            normalized[str(item[0])] = str(item[1])
+            continue
+        raise TypeError(f"Unsupported parameter declaration: {type(item)!r}")
+    return normalized
+
+
+def _normalize_trigger_definition(value: Any) -> dict[str, Any]:
+    if isinstance(value, TriggerDefinition):
+        return value.to_dict()
+    if isinstance(value, dict):
+        return {
+            "name": str(value["name"]),
+            "event": str(value.get("event", "")).upper(),
+            "time": str(value.get("time", "")).upper(),
+            "code": str(value.get("code", "")),
+        }
+    raise TypeError(f"Unsupported trigger declaration: {type(value)!r}")
+
+
 class _IRISModelBase(metaclass=IRISMeta):
     _iris_classname: ClassVar[str] = ""
     _iris_superclass: ClassVar[str] = ""
     _iris_serial: ClassVar[bool] = False
-    _iris_lockfile_path: ClassVar[str] = ""
+    _iris_mode: ClassVar[str] = "python"
     _iris_storage: ClassVar[Any] = None
     _iris_class_parameters: ClassVar[dict[str, str]] = {}
     _iris_indexes: ClassVar[list[dict[str, Any]]] = []
+    _iris_triggers: ClassVar[list[dict[str, Any]]] = []
 
     _iris_declared_fields: ClassVar[dict[str, FieldDefinition]]
     _iris_declared_relationships: ClassVar[dict[str, RelationshipDefinition]]
@@ -144,6 +204,50 @@ class _IRISModelBase(metaclass=IRISMeta):
         object.__setattr__(self, "_iris_session", None)
         for key, value in kwargs.items():
             setattr(self, key, value)
+
+    @classmethod
+    def _runtime(cls) -> Any:
+        from .runtime import get_default_runtime  # noqa: PLC0415
+
+        return get_default_runtime()
+
+    @classmethod
+    def bind(cls) -> type:
+        return cls._runtime().bind(cls)
+
+    @classmethod
+    def plan(cls) -> Any:
+        return cls._runtime().plan(cls)
+
+    @classmethod
+    def sync(cls, *, force: bool = False, allow_manual: bool | None = None) -> Any:
+        return cls._runtime().sync(cls, force=force, allow_manual=allow_manual)
+
+    @classmethod
+    def get(cls, obj_id: Any) -> Any | None:
+        return cls._runtime().get(cls, obj_id)
+
+    @classmethod
+    def query(cls) -> Any:
+        return cls._runtime().query(cls)
+
+    @classmethod
+    def where(cls, **kwargs: Any) -> Any:
+        return cls.query().filter_eq(**kwargs)
+
+    @classmethod
+    def all(cls) -> list[Any]:
+        return cls.query().all()
+
+    @classmethod
+    def first(cls) -> Any | None:
+        return cls.query().first()
+
+    @classmethod
+    def create(cls, **kwargs: Any) -> Any:
+        instance = cls(**kwargs)
+        instance.save()
+        return instance
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
@@ -179,6 +283,12 @@ class _IRISModelBase(metaclass=IRISMeta):
     def to_dict(self) -> dict[str, Any]:
         keys = list(type(self)._iris_declared_fields) + list(type(self)._iris_declared_relationships)
         return {key: getattr(self, key, None) for key in keys}
+
+    def save(self) -> Any:
+        return type(self)._runtime().save(self)
+
+    def delete(self) -> None:
+        type(self)._runtime().delete(self)
 
 
 class IRISModel(_IRISModelBase):

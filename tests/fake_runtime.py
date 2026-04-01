@@ -12,6 +12,8 @@ class FakeAdapter:
         self.schemas: dict[str, dict[str, Any]] = {}
         self.rows: dict[str, dict[int, dict[str, Any]]] = {}
         self.next_ids: dict[str, int] = {}
+        self.instance_methods: dict[str, dict[str, Any]] = {}
+        self.class_methods: dict[str, dict[str, Any]] = {}
 
     def list_classes(self, pattern: str) -> list[str]:
         return sorted(name for name in self.schemas if fnmatch.fnmatch(name, pattern))
@@ -39,6 +41,34 @@ class FakeAdapter:
         if row is None:
             return None
         return {"id": int(obj_id), "data": copy.deepcopy(row)}
+
+    def open_native_object(self, classname: str, obj_id: Any) -> Any | None:
+        row = self.rows.get(classname, {}).get(int(obj_id))
+        if row is None:
+            return None
+        adapter = self
+        methods = self.instance_methods.get(classname, {})
+
+        class NativeObject:
+            pass
+
+        obj = NativeObject()
+        for key, value in row.items():
+            setattr(obj, key, copy.deepcopy(value))
+        for name, method in methods.items():
+            setattr(obj, name, method.__get__(obj, NativeObject))
+        return obj
+
+    def native_class(self, classname: str) -> Any:
+        methods = self.class_methods.get(classname, {})
+
+        class NativeClass:
+            pass
+
+        native = NativeClass()
+        for name, method in methods.items():
+            setattr(native, name, method)
+        return native
 
     def delete_object(self, classname: str, obj_id: Any) -> None:
         self.rows.get(classname, {}).pop(int(obj_id), None)

@@ -1,163 +1,451 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Generic, TypeVar
+import importlib
+from typing import Any
 
-from .adapter import IRISAdapter
-from .model import IRISModel, bind_schema
-from .schema import SchemaCompiler, SchemaPlan, schema_equals
+from .schema import SchemaClass, match_classnames, normalize_superclasses
 
-_ModelT = TypeVar("_ModelT", bound=IRISModel)
+_STORAGE_TOP_LEVEL_FIELDS: list[tuple[str, str]] = [
+    ("counter_location", "CounterLocation"),
+    ("data_location", "DataLocation"),
+    ("default_data", "DefaultData"),
+    ("description", "Description"),
+    ("extent_location", "ExtentLocation"),
+    ("extent_size", "ExtentSize"),
+    ("id_expression", "IdExpression"),
+    ("id_function", "IdFunction"),
+    ("id_location", "IdLocation"),
+    ("index_location", "IndexLocation"),
+    ("sql_child_sub", "SqlChildSub"),
+    ("sql_id_expression", "SqlIdExpression"),
+    ("sql_row_id_name", "SqlRowIdName"),
+    ("sql_row_id_property", "SqlRowIdProperty"),
+    ("stream_location", "StreamLocation"),
+    ("type", "Type"),
+    ("version_location", "VersionLocation"),
+]
 
+_STORAGE_PROPERTY_FIELDS: list[tuple[str, str]] = [
+    ("average_field_size", "AverageFieldSize"),
+    ("bias_queries_as_outlier", "BiasQueriesAsOutlier"),
+    ("child_block_count", "ChildBlockCount"),
+    ("child_extent_size", "ChildExtentSize"),
+    ("histogram", "Histogram"),
+    ("outlier_selectivity", "OutlierSelectivity"),
+    ("selectivity", "Selectivity"),
+    ("stream_location", "StreamLocation"),
+]
 
-@dataclass
-class Query(Generic[_ModelT]):
-    runtime: "DefaultRuntime"
-    model_class: type[_ModelT]
-    filters: dict[str, Any]
-    order_field: str | None = None
-    limit_value: int | None = None
-    offset_value: int | None = None
-
-    def filter_eq(self, **kwargs: Any) -> "Query[_ModelT]":
-        merged = dict(self.filters)
-        merged.update(kwargs)
-        return Query(self.runtime, self.model_class, merged, self.order_field, self.limit_value, self.offset_value)
-
-    def order_by(self, field: str) -> "Query[_ModelT]":
-        return Query(self.runtime, self.model_class, dict(self.filters), field, self.limit_value, self.offset_value)
-
-    def limit(self, value: int) -> "Query[_ModelT]":
-        return Query(self.runtime, self.model_class, dict(self.filters), self.order_field, value, self.offset_value)
-
-    def offset(self, value: int) -> "Query[_ModelT]":
-        return Query(self.runtime, self.model_class, dict(self.filters), self.order_field, self.limit_value, value)
-
-    def all(self) -> list[_ModelT]:
-        self.runtime.prepare(self.model_class)
-        schema = self.model_class._iris_bound_schema
-        valid_fields = set(schema.property_map)
-        for key in self.filters:
-            if key not in valid_fields:
-                raise ValueError(f"Unknown field for {self.model_class.__name__}: {key}")
-        if self.order_field and self.order_field not in valid_fields:
-            raise ValueError(f"Unknown order_by field for {self.model_class.__name__}: {self.order_field}")
-        rows = self.runtime.adapter.query_rows(
-            self.model_class._iris_classname,
-            list(valid_fields),
-            self.filters,
-            order_by=self.order_field,
-            limit=self.limit_value,
-            offset=self.offset_value,
-        )
-        return [self.runtime._instance_from_row(self.model_class, row) for row in rows]
-
-    def first(self) -> _ModelT | None:
-        rows = self.limit(1).all()
-        return rows[0] if rows else None
+_STORAGE_SQL_MAP_FIELDS: list[tuple[str, str]] = [
+    ("block_count", "BlockCount"),
+    ("condition", "Condition"),
+    ("condition_fields", "ConditionFields"),
+    ("conditional_with_host_vars", "ConditionalWithHostVars"),
+    ("global", "Global"),
+    ("population_pct", "PopulationPct"),
+    ("population_type", "PopulationType"),
+    ("row_reference", "RowReference"),
+    ("structure", "Structure"),
+    ("type", "Type"),
+]
 
 
-class DefaultRuntime:
-    def __init__(self) -> None:
-        self._adapter: IRISAdapter | None = None
-        self._prepared: dict[str, dict[str, Any]] = {}
+class IRISRuntime:
+    def __init__(self, runtime: Any | None = None) -> None:
+        self.runtime = runtime or importlib.import_module("iris")
 
-    @property
-    def adapter(self) -> IRISAdapter:
-        if self._adapter is None:
-            self._adapter = IRISAdapter()
-        return self._adapter
-
-    def bind_existing(self, classname: str, *, model_name: str | None = None) -> type[IRISModel]:
-        name = model_name or classname.split(".")[-1]
-        model_class = type(name, (IRISModel,), {"_iris_classname": classname, "_iris_mode": "proxy"})
-        return self.bind(model_class)
-
-    def bind(self, model_class: type[_ModelT]) -> type[_ModelT]:
-        self.prepare(model_class)
-        return model_class
-
-    def plan(self, model_class: type[IRISModel]) -> SchemaPlan:
-        desired = SchemaCompiler().compile_model(model_class)
-        try:
-            live = SchemaCompiler(self.adapter).class_from_iris(model_class._iris_classname)
-        except LookupError:
-            live = None
-        return SchemaPlan(classname=desired.name, desired=desired, live=live)
-
-    def sync(self, model_class: type[IRISModel]) -> SchemaPlan:
-        desired = SchemaCompiler().compile_model(model_class)
-        plan = self.plan(model_class)
-        self.adapter.replace_class(desired)
-        bind_schema(model_class, desired)
-        self._prepared[desired.name] = {"mode": "python", "schema": desired.to_dict()}
-        return plan
-
-    def prepare(self, model_class: type[IRISModel]) -> None:
-        classname = str(model_class._iris_classname)
-        mode = str(getattr(model_class, "_iris_mode", "python") or "python").strip().lower()
-        if mode == "python":
-            desired = SchemaCompiler().compile_model(model_class)
-            cached = self._prepared.get(classname)
-            desired_dict = desired.to_dict()
-            if cached != {"mode": "python", "schema": desired_dict}:
-                try:
-                    live = SchemaCompiler(self.adapter).class_from_iris(classname)
-                except LookupError:
-                    live = None
-                if live is None or not schema_equals(live, desired):
-                    self.adapter.replace_class(desired)
-                bind_schema(model_class, desired)
-                self._prepared[classname] = {"mode": "python", "schema": desired_dict}
-            return
-
-        live = SchemaCompiler(self.adapter).class_from_iris(classname)
-        bind_schema(model_class, live)
-        self._prepared[classname] = {"mode": "proxy", "schema": live.to_dict()}
-
-    def get(self, model_class: type[_ModelT], obj_id: Any) -> _ModelT | None:
-        self.prepare(model_class)
-        row = self.adapter.open_object(model_class._iris_classname, obj_id)
-        if row is None:
+    def load_schema(self, classname: str) -> dict[str, Any] | None:
+        class_def = self.runtime.cls("%Dictionary.ClassDefinition")._OpenId(classname)
+        if not self.looks_like_iris_object(class_def):
             return None
-        return self._instance_from_row(model_class, {"id": row["id"], **row["data"]})
-
-    def query(self, model_class: type[_ModelT]) -> Query[_ModelT]:
-        return Query(self, model_class, {})
-
-    def save(self, instance: Any) -> Any:
-        self.prepare(type(instance))
-        obj_id = self.adapter.save_object(type(instance)._iris_classname, dict(instance._iris_data), instance.pk)
-        object.__setattr__(instance, "_iris_id", obj_id)
-        return instance
-
-    def delete(self, instance: Any) -> None:
-        self.prepare(type(instance))
-        if instance.pk is not None:
-            self.adapter.delete_object(type(instance)._iris_classname, instance.pk)
-
-    def _instance_from_row(self, model_class: type[_ModelT], row: dict[str, Any]) -> _ModelT:
-        obj = model_class()
-        schema = getattr(model_class, "_iris_bound_schema", None)
-        converted: dict[str, Any] = {}
-        for key, value in row.items():
-            if key == "id":
+        properties = []
+        for prop in self._iter_collection(getattr(class_def, "Properties", None)):
+            if bool(getattr(prop, "Private", False)) or bool(getattr(prop, "Internal", False)) or bool(getattr(prop, "Relationship", False)):
                 continue
-            if schema is not None and key in schema.property_map:
-                iris_type = schema.property_map[key].iris_type
-                converted[key] = self._coerce_python_value(value, iris_type)
-            else:
-                converted[key] = value
-        object.__setattr__(obj, "_iris_id", row.get("id"))
-        object.__setattr__(obj, "_iris_data", converted)
+            properties.append(
+                {
+                    "name": str(getattr(prop, "Name", "") or ""),
+                    "iris_type": str(getattr(prop, "Type", "") or "%String"),
+                    "required": bool(getattr(prop, "Required", False)),
+                    "default": self._normalize_default(str(getattr(prop, "InitialExpression", "") or "")),
+                    "maxlen": self._to_int(getattr(prop, "MaxLen", None)),
+                    "description": str(getattr(prop, "Description", "") or ""),
+                }
+            )
+        indexes = []
+        for idx in self._iter_collection(getattr(class_def, "Indexes", None)):
+            name = str(getattr(idx, "Name", "") or "")
+            if not name:
+                continue
+            indexes.append(
+                {
+                    "name": name,
+                    "properties": str(getattr(idx, "Properties", "") or ""),
+                    "unique": bool(getattr(idx, "Unique", False)),
+                    "primary_key": bool(getattr(idx, "PrimaryKey", False)),
+                }
+            )
+        parameters: dict[str, str] = {}
+        for item in self._iter_collection(getattr(class_def, "Parameters", None)):
+            name = str(getattr(item, "Name", "") or "")
+            if name:
+                parameters[name] = str(getattr(item, "Default", "") or "")
+        storage = None
+        storages = list(self._iter_collection(getattr(class_def, "Storages", None)))
+        if storages:
+            storage = self._extract_storage(classname, storages[0])
+        return {
+            "name": classname,
+            "superclasses": list(normalize_superclasses(str(getattr(class_def, "Super", "") or "%Persistent"))),
+            "properties": properties,
+            "indexes": indexes,
+            "parameters": parameters,
+            "storage": storage,
+            "source": {"kind": "iris"},
+        }
+
+    def list_classes(self, pattern: str) -> list[str]:
+        rows = self.sql("SELECT Name FROM %Dictionary.ClassDefinition")
+        all_names = [str(row[0]) for row in rows]
+        return sorted(match_classnames(all_names, pattern))
+
+    def replace_class(self, schema_class: SchemaClass) -> None:
+        classname = schema_class.name
+        class_def = self.runtime.cls("%Dictionary.ClassDefinition")._OpenId(classname)
+        if not self.looks_like_iris_object(class_def):
+            class_def = self.runtime.cls("%Dictionary.ClassDefinition")._New()
+            self._set_value(class_def, "Name", classname)
+        self._set_value(class_def, "Super", ",".join(schema_class.superclasses))
+
+        self._delete_missing(classname, "%Dictionary.PropertyDefinition", schema_class.property_map)
+        self._delete_missing(classname, "%Dictionary.IndexDefinition", schema_class.index_map)
+        self._delete_missing(classname, "%Dictionary.ParameterDefinition", schema_class.parameters)
+        if schema_class.storage is None:
+            self._delete_all_storage(classname)
+
+        for prop in schema_class.properties:
+            prop_def = self.runtime.cls("%Dictionary.PropertyDefinition")._OpenId(f"{classname}||{prop.name}")
+            if not self.looks_like_iris_object(prop_def):
+                prop_def = self.runtime.cls("%Dictionary.PropertyDefinition")._New()
+                prop_def.parent = class_def
+                self._set_value(prop_def, "Name", prop.name)
+            self._set_value(prop_def, "Type", prop.iris_type)
+            self._set_value(prop_def, "Required", prop.required)
+            self._set_value(prop_def, "InitialExpression", prop.default)
+            self._set_value(prop_def, "Description", prop.description)
+            self._check_status(prop_def._Save())
+
+        for idx in schema_class.indexes:
+            idx_def = self.runtime.cls("%Dictionary.IndexDefinition")._OpenId(f"{classname}||{idx.name}")
+            if not self.looks_like_iris_object(idx_def):
+                idx_def = self.runtime.cls("%Dictionary.IndexDefinition")._New()
+                idx_def.parent = class_def
+                self._set_value(idx_def, "Name", idx.name)
+            self._set_value(idx_def, "Properties", idx.properties)
+            self._set_value(idx_def, "Unique", idx.unique)
+            self._set_value(idx_def, "PrimaryKey", idx.primary_key)
+            self._check_status(idx_def._Save())
+
+        for name, value in schema_class.parameters.items():
+            param_def = self.runtime.cls("%Dictionary.ParameterDefinition")._OpenId(f"{classname}||{name}")
+            if not self.looks_like_iris_object(param_def):
+                param_def = self.runtime.cls("%Dictionary.ParameterDefinition")._New()
+                param_def.parent = class_def
+                self._set_value(param_def, "Name", name)
+            self._set_value(param_def, "Default", value)
+            self._check_status(param_def._Save())
+
+        if schema_class.storage is not None:
+            self._replace_storage(class_def, schema_class.storage)
+
+        self._check_status(class_def._Save())
+        self.compile(classname)
+
+    def save_object(self, classname: str, data: dict[str, Any], obj_id: Any | None = None) -> Any:
+        cls = self.runtime.cls(classname)
+        obj = cls._OpenId(obj_id) if obj_id is not None else cls._New()
+        schema = self.load_schema(classname) or {"properties": []}
+        property_types = {item["name"]: item.get("iris_type", "%String") for item in schema.get("properties", [])}
+        for key, value in data.items():
+            setattr(obj, key, self._coerce_runtime_value(value, property_types.get(key, "%String")))
+        self._check_status(obj._Save())
+        try:
+            return obj._Id()
+        except Exception:
+            return obj_id
+
+    def open_native_object(self, classname: str, obj_id: Any) -> Any | None:
+        cls = self.runtime.cls(classname)
+        obj = cls._OpenId(obj_id)
+        if not self.looks_like_iris_object(obj):
+            return None
         return obj
 
+    def native_class(self, classname: str) -> Any:
+        return self.runtime.cls(classname)
+
+    def open_object(self, classname: str, obj_id: Any) -> dict[str, Any] | None:
+        cls = self.runtime.cls(classname)
+        obj = cls._OpenId(obj_id)
+        if not self.looks_like_iris_object(obj):
+            return None
+        schema = self.load_schema(classname)
+        if schema is None:
+            return None
+        return {
+            "id": obj_id,
+            "data": {prop["name"]: getattr(obj, prop["name"], None) for prop in schema["properties"]},
+        }
+
+    def delete_object(self, classname: str, obj_id: Any) -> None:
+        cls = self.runtime.cls(classname)
+        self._check_status(cls._DeleteId(obj_id))
+
+    def query_rows(
+        self,
+        classname: str,
+        fields: list[str],
+        filters: dict[str, Any],
+        order_by: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> list[dict[str, Any]]:
+        select_fields = ["%ID"] + fields
+        sql = f"SELECT {', '.join(select_fields)} FROM {classname}"
+        params: list[Any] = []
+        if filters:
+            clauses = []
+            for key, value in filters.items():
+                clauses.append(f"{key} = ?")
+                params.append(value)
+            sql += " WHERE " + " AND ".join(clauses)
+        if order_by:
+            sql += f" ORDER BY {order_by}"
+        if limit is not None:
+            sql += f" LIMIT {int(limit)}"
+        if offset:
+            sql += f" OFFSET {int(offset)}"
+        rows = self.sql(sql, params)
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            payload = {"id": row[0]}
+            for idx, field in enumerate(fields, start=1):
+                payload[field] = row[idx]
+            result.append(payload)
+        return result
+
+    def sql(self, statement: str, params: list[Any] | None = None) -> list[tuple[Any, ...]]:
+        params = params or []
+        result = self.runtime.sql.exec(statement, *params)
+        return [tuple(row) for row in result]
+
+    def compile(self, classname: str) -> None:
+        status = self.runtime.cls("%SYSTEM.OBJ").Compile(classname, "ck")
+        self._check_status(status)
+
+    def looks_like_iris_object(self, value: Any) -> bool:
+        return value not in {None, "", 0}
+
+    def _delete_missing(self, classname: str, dictionary_class: str, expected: Any) -> None:
+        try:
+            rows = self.sql(f"SELECT Name FROM {dictionary_class} WHERE parent = ?", [classname])
+        except Exception:
+            return
+        names = {str(row[0]) for row in rows}
+        expected_names = set(expected.keys()) if isinstance(expected, dict) else set(expected)
+        for name in names - expected_names:
+            try:
+                self.sql(f"DELETE FROM {dictionary_class} WHERE parent = ? AND Name = ?", [classname, name])
+            except Exception:
+                continue
+
+    def _delete_all_storage(self, classname: str) -> None:
+        try:
+            self.sql("DELETE FROM %Dictionary.StorageDefinition WHERE parent = ?", [classname])
+        except Exception:
+            return
+
+    def _replace_storage(self, class_def: Any, storage: dict[str, Any]) -> None:
+        classname = str(getattr(class_def, "Name"))
+        self._delete_all_storage(classname)
+        storage_def = self.runtime.cls("%Dictionary.StorageDefinition")._New()
+        storage_def.parent = class_def
+        self._set_value(storage_def, "Name", storage.get("name", "Default"))
+        for key, setter_name in _STORAGE_TOP_LEVEL_FIELDS:
+            self._set_value(storage_def, setter_name, storage.get(key, ""))
+        self._check_status(storage_def._Save())
+        self._replace_storage_children(storage_def, storage)
+
+    def _extract_storage(self, classname: str, storage_def: Any) -> dict[str, Any]:
+        storage_name = str(getattr(storage_def, "Name", "") or "")
+        storage = {"name": storage_name}
+        definition_rows = self.sql(
+            "SELECT CounterLocation, DataLocation, DefaultData, Description, ExtentLocation, ExtentSize, "
+            "IdExpression, IdFunction, IdLocation, IndexLocation, SqlChildSub, SqlIdExpression, "
+            "SqlRowIdName, SqlRowIdProperty, StreamLocation, Type, VersionLocation "
+            "FROM %Dictionary.StorageDefinition WHERE parent = ? AND Name = ?",
+            [classname, storage_name],
+        )
+        if definition_rows:
+            row = definition_rows[0]
+            for index, (key, _) in enumerate(_STORAGE_TOP_LEVEL_FIELDS):
+                value = row[index]
+                if value not in {"", None}:
+                    storage[key] = str(value)
+        storage_id = f"{classname}||{storage_name}"
+        data_rows = self.sql(
+            "SELECT Name, Structure FROM %Dictionary.StorageDataDefinition WHERE parent = ?",
+            [storage_id],
+        )
+        if data_rows:
+            data_items: list[dict[str, Any]] = []
+            for row in data_rows:
+                data_name = str(row[0])
+                values = self.sql(
+                    "SELECT Name, Value FROM %Dictionary.StorageDataValueDefinition WHERE parent = ?",
+                    [f"{storage_id}||{data_name}"],
+                )
+                data_items.append(
+                    {
+                        "name": data_name,
+                        "structure": str(row[1] or ""),
+                        "values": [
+                            {"name": str(value_row[0]), "value": str(value_row[1])}
+                            for value_row in sorted(values, key=lambda item: _sort_storage_value_name(item[0]))
+                        ],
+                    }
+                )
+            storage["data"] = data_items
+        property_rows = self.sql(
+            "SELECT Name, AverageFieldSize, BiasQueriesAsOutlier, ChildBlockCount, ChildExtentSize, "
+            "Histogram, OutlierSelectivity, Selectivity, StreamLocation "
+            "FROM %Dictionary.StoragePropertyDefinition WHERE parent = ?",
+            [storage_id],
+        )
+        if property_rows:
+            properties: list[dict[str, Any]] = []
+            for row in property_rows:
+                item: dict[str, Any] = {"name": str(row[0])}
+                for index, (key, _) in enumerate(_STORAGE_PROPERTY_FIELDS, start=1):
+                    value = row[index]
+                    if value not in {"", None}:
+                        item[key] = str(value)
+                properties.append(item)
+            storage["properties"] = properties
+        sql_map_rows = self.sql(
+            'SELECT Name, BlockCount, Condition, ConditionFields, ConditionalWithHostVars, "_Global", '
+            "PopulationPct, PopulationType, RowReference, Structure, Type "
+            "FROM %Dictionary.StorageSQLMapDefinition WHERE parent = ?",
+            [storage_id],
+        )
+        if sql_map_rows:
+            sql_maps: list[dict[str, Any]] = []
+            for row in sql_map_rows:
+                item: dict[str, Any] = {"name": str(row[0])}
+                for index, (key, _) in enumerate(_STORAGE_SQL_MAP_FIELDS, start=1):
+                    value = row[index]
+                    if value not in {"", None}:
+                        item[key] = str(value)
+                sql_maps.append(item)
+            storage["sql_maps"] = sql_maps
+        return {key: value for key, value in storage.items() if value != "" and value is not None}
+
+    def _replace_storage_children(self, storage_def: Any, storage: dict[str, Any]) -> None:
+        storage_name = str(storage.get("name", "Default"))
+        classname = str(getattr(getattr(storage_def, "parent", None), "Name", "") or "")
+        storage_id = f"{classname}||{storage_name}" if classname else ""
+        if storage_id:
+            for sql, params in [
+                ("DELETE FROM %Dictionary.StorageDataValueDefinition WHERE parent %STARTSWITH ?", [f"{storage_id}||"]),
+                ("DELETE FROM %Dictionary.StorageDataDefinition WHERE parent = ?", [storage_id]),
+                ("DELETE FROM %Dictionary.StoragePropertyDefinition WHERE parent = ?", [storage_id]),
+                ("DELETE FROM %Dictionary.StorageSQLMapDefinition WHERE parent = ?", [storage_id]),
+            ]:
+                try:
+                    self.sql(sql, params)
+                except Exception:
+                    continue
+
+        for item in storage.get("data", []):
+            data_def = self.runtime.cls("%Dictionary.StorageDataDefinition")._New()
+            data_def.parent = storage_def
+            self._set_value(data_def, "Name", item.get("name", ""))
+            self._set_value(data_def, "Structure", item.get("structure", ""))
+            self._check_status(data_def._Save())
+            for value in item.get("values", []):
+                value_def = self.runtime.cls("%Dictionary.StorageDataValueDefinition")._New()
+                value_def.parent = data_def
+                self._set_value(value_def, "Name", value.get("name", ""))
+                self._set_value(value_def, "Value", value.get("value", ""))
+                self._check_status(value_def._Save())
+
+        for item in storage.get("properties", []):
+            property_def = self.runtime.cls("%Dictionary.StoragePropertyDefinition")._New()
+            property_def.parent = storage_def
+            self._set_value(property_def, "Name", item.get("name", ""))
+            for key, setter_name in _STORAGE_PROPERTY_FIELDS:
+                self._set_value(property_def, setter_name, item.get(key, ""))
+            self._check_status(property_def._Save())
+
+        for item in storage.get("sql_maps", []):
+            sql_map_def = self.runtime.cls("%Dictionary.StorageSQLMapDefinition")._New()
+            sql_map_def.parent = storage_def
+            self._set_value(sql_map_def, "Name", item.get("name", ""))
+            for key, setter_name in _STORAGE_SQL_MAP_FIELDS:
+                self._set_value(sql_map_def, setter_name, item.get(key, ""))
+            self._check_status(sql_map_def._Save())
+
+    def _iter_collection(self, collection: Any) -> list[Any]:
+        if collection is None:
+            return []
+        try:
+            count = int(collection.Count())
+        except Exception:
+            try:
+                return list(collection)
+            except Exception:
+                return []
+        return [collection.GetAt(i) for i in range(1, count + 1)]
+
     @staticmethod
-    def _coerce_python_value(value: Any, iris_type: str) -> Any:
+    def _normalize_default(value: str) -> str:
+        return "" if value in {"", '""', "{}"} else value
+
+    @staticmethod
+    def _to_int(value: Any) -> int | None:
+        if value in {None, ""}:
+            return None
+        try:
+            return int(value)
+        except Exception:
+            return None
+
+    def _check_status(self, status: Any) -> None:
+        if status in {None, "", 1, True}:
+            return
+        try:
+            ok = bool(self.runtime.cls("%SYSTEM.Status").IsOK(status))
+        except Exception:
+            ok = bool(status)
+        if not ok:
+            raise RuntimeError(f"IRIS status failure: {status!r}")
+
+    @staticmethod
+    def _set_value(obj: Any, name: str, value: Any) -> None:
+        if isinstance(value, bool):
+            value = 1 if value else 0
+        setter = getattr(obj, f"{name}Set", None)
+        if callable(setter):
+            setter(value)
+            return
+        setattr(obj, name, value)
+
+    @staticmethod
+    def _coerce_runtime_value(value: Any, iris_type: str) -> Any:
         if value is None:
             return None
         if iris_type == "%Boolean":
-            return bool(value)
+            return 1 if bool(value) else 0
         if iris_type in {"%Integer", "%SmallInt", "%BigInt"}:
             return int(value)
         if iris_type in {"%Float", "%Double", "%Numeric", "%Decimal"}:
@@ -165,25 +453,40 @@ class DefaultRuntime:
         return value
 
 
-_DEFAULT_RUNTIME = DefaultRuntime()
+def _sort_storage_value_name(value: Any) -> tuple[int, str]:
+    text = str(value)
+    try:
+        return (0, f"{int(text):020d}")
+    except Exception:
+        return (1, text)
 
 
-def get_default_runtime() -> DefaultRuntime:
+_DEFAULT_RUNTIME: IRISRuntime | None = None
+_RUNTIME_GENERATION = 0
+
+
+def _get_runtime() -> IRISRuntime:
+    global _DEFAULT_RUNTIME
+    if _DEFAULT_RUNTIME is None:
+        _DEFAULT_RUNTIME = IRISRuntime()
     return _DEFAULT_RUNTIME
 
 
-def configure_default_runtime(*, adapter: IRISAdapter | None = None) -> DefaultRuntime:
-    if adapter is not None:
-        _DEFAULT_RUNTIME._adapter = adapter
-    _DEFAULT_RUNTIME._prepared = {}
+def _runtime_version() -> int:
+    return _RUNTIME_GENERATION
+
+
+def configure_default_runtime(*, runtime: IRISRuntime | None = None) -> IRISRuntime:
+    global _DEFAULT_RUNTIME, _RUNTIME_GENERATION
+    if runtime is not None:
+        _DEFAULT_RUNTIME = runtime
+    else:
+        _DEFAULT_RUNTIME = _DEFAULT_RUNTIME or IRISRuntime()
+    _RUNTIME_GENERATION += 1
     return _DEFAULT_RUNTIME
 
 
-def reset_default_runtime() -> DefaultRuntime:
-    _DEFAULT_RUNTIME._adapter = None
-    _DEFAULT_RUNTIME._prepared = {}
-    return _DEFAULT_RUNTIME
-
-
-def bind_existing(classname: str, *, model_name: str | None = None) -> type:
-    return _DEFAULT_RUNTIME.bind_existing(classname, model_name=model_name)
+def reset_default_runtime() -> None:
+    global _DEFAULT_RUNTIME, _RUNTIME_GENERATION
+    _DEFAULT_RUNTIME = None
+    _RUNTIME_GENERATION += 1

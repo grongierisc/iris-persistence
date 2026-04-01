@@ -4,15 +4,14 @@ import pytest
 
 from iris_orm import (
     IRISModel,
-    SchemaCompiler,
-    bind_existing,
     configure_default_runtime,
     field,
     index,
     parameter,
     reset_default_runtime,
 )
-from iris_orm.schema import parse_cls, schema_equals
+from iris_orm.schema import SchemaCompiler, schema_equals
+from iris_orm.scaffold import parse_cls
 
 from .fake_runtime import FakeAdapter, preload_schema
 
@@ -67,7 +66,7 @@ def test_python_first_auto_overwrites_live_schema() -> None:
             "storage": {"name": "Default", "data_location": "^Old.Global"},
         },
     )
-    configure_default_runtime(adapter=adapter)
+    configure_default_runtime(runtime=adapter)
 
     @parameter("DEFAULTGLOBAL", "^Demo.ProductD")
     @index("NameIdx", properties="Name", unique=True)
@@ -90,7 +89,7 @@ def test_python_first_auto_overwrites_live_schema() -> None:
     assert adapter.rows["Demo.Product"][1]["Name"] == "Widget"
 
 
-def test_proxy_bind_existing_uses_live_schema_without_overwrite() -> None:
+def test_proxy_model_uses_live_schema_without_overwrite() -> None:
     adapter = FakeAdapter()
     preload_schema(
         adapter,
@@ -105,9 +104,12 @@ def test_proxy_bind_existing_uses_live_schema_without_overwrite() -> None:
             "storage": {"name": "Default", "data_location": "^Demo.ArticleD"},
         },
     )
-    configure_default_runtime(adapter=adapter)
+    configure_default_runtime(runtime=adapter)
 
-    Article = bind_existing("Demo.Article")
+    class Article(IRISModel):
+        _iris_classname = "Demo.Article"
+        _iris_mode = "proxy"
+
     Article.bind()
 
     assert Article._iris_mode == "proxy"
@@ -122,7 +124,7 @@ def test_proxy_bind_existing_uses_live_schema_without_overwrite() -> None:
 
 def test_query_and_get_work_with_fake_runtime() -> None:
     adapter = FakeAdapter()
-    configure_default_runtime(adapter=adapter)
+    configure_default_runtime(runtime=adapter)
 
     class Product(IRISModel):
         _iris_classname = "Demo.Product"
@@ -143,7 +145,7 @@ def test_query_and_get_work_with_fake_runtime() -> None:
 
 def test_query_rejects_unknown_field() -> None:
     adapter = FakeAdapter()
-    configure_default_runtime(adapter=adapter)
+    configure_default_runtime(runtime=adapter)
 
     class Product(IRISModel):
         _iris_classname = "Demo.Product"
@@ -152,6 +154,64 @@ def test_query_rejects_unknown_field() -> None:
 
     with pytest.raises(ValueError):
         Product.where(Unknown="x").all()
+
+
+def test_proxy_instance_method_bridge_works() -> None:
+    adapter = FakeAdapter()
+    preload_schema(
+        adapter,
+        {
+            "name": "Demo.Article",
+            "properties": {
+                "Body": {"iris_type": "%String"},
+                "Title": {"iris_type": "%String", "required": True},
+            },
+            "indexes": {},
+            "parameters": {},
+            "storage": {"name": "Default", "data_location": "^Demo.ArticleD"},
+        },
+    )
+
+    def method_name(self):
+        return self.Body
+
+    adapter.instance_methods["Demo.Article"] = {"MethodName": method_name}
+    configure_default_runtime(runtime=adapter)
+
+    class Article(IRISModel):
+        _iris_classname = "Demo.Article"
+        _iris_mode = "proxy"
+
+    row = Article(Title="Hello", Body="Body text").save()
+    loaded = Article.get(row.pk)
+    assert loaded is not None
+    assert loaded.MethodName() == "Body text"
+
+
+def test_proxy_class_method_bridge_works() -> None:
+    adapter = FakeAdapter()
+    preload_schema(
+        adapter,
+        {
+            "name": "Demo.Article",
+            "properties": {
+                "Title": {"iris_type": "%String", "required": True},
+            },
+            "indexes": {},
+            "parameters": {},
+            "storage": {"name": "Default", "data_location": "^Demo.ArticleD"},
+        },
+    )
+    adapter.class_methods["Demo.Article"] = {
+        "EchoSlug": staticmethod(lambda slug: f"slug:{slug}"),
+    }
+    configure_default_runtime(runtime=adapter)
+
+    class Article(IRISModel):
+        _iris_classname = "Demo.Article"
+        _iris_mode = "proxy"
+
+    assert Article.EchoSlug("hello") == "slug:hello"
 
 
 def test_python_superclasses_accept_string_or_list() -> None:

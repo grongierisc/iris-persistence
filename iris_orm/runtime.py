@@ -50,9 +50,23 @@ _STORAGE_SQL_MAP_FIELDS: list[tuple[str, str]] = [
 ]
 
 
-class IRISRuntime:
-    def __init__(self, runtime: Any | None = None) -> None:
-        self.runtime = runtime or importlib.import_module("iris")
+# ---------------------------------------------------------------------------
+# Internal base — shared ORM business logic
+# ---------------------------------------------------------------------------
+
+class _BaseRuntime:
+    """All ORM business logic lives here.
+
+    Subclasses set ``self.runtime`` to the IRIS native-API object and may
+    override ``sql()`` (and optionally ``compile()``) to route SQL through
+    a different transport (e.g. a SQLAlchemy raw connection).
+
+    This class is an internal implementation detail.  The public contract is
+    ``IRISRuntimeProtocol`` in ``iris_orm.protocol``.
+    """
+
+    # subclasses set this in __init__
+    runtime: Any
 
     def load_schema(self, classname: str) -> dict[str, Any] | None:
         class_def = self.runtime.cls("%Dictionary.ClassDefinition")._OpenId(classname)
@@ -461,6 +475,182 @@ def _sort_storage_value_name(value: Any) -> tuple[int, str]:
         return (1, text)
 
 
+# ---------------------------------------------------------------------------
+# Concrete backend implementations
+# ---------------------------------------------------------------------------
+
+class EmbeddedRuntime(_BaseRuntime):
+    """Backend for the embedded InterSystems IRIS Python runtime.
+
+    Uses the ``iris`` module imported directly, identical to the pre-refactor
+    ``IRISRuntime`` behaviour.  Pass a custom *iris_module* to inject a mock
+    in tests — or rely on ``FakeAdapter`` for full unit testing.
+    """
+
+    def __init__(self, iris_module: Any | None = None) -> None:
+        self.runtime = iris_module or importlib.import_module("iris")
+
+    def sql(self, statement: str, params: list[Any] | None = None) -> list[tuple[Any, ...]]:
+        params = params or []
+        result = self.runtime.sql.exec(statement, *params)
+        return [tuple(row) for row in result]
+
+
+class NetworkRuntime(_BaseRuntime):
+    """Backend for InterSystems IRIS accessed via the ``intersystems_iris``
+    (Python Gateway / native-API) driver.
+
+    Mirrors ``iris_global.IRISGref``: extracts ``driver_connection`` from the
+    SQLAlchemy raw connection and wraps it with the ``IRIS`` native-API object.
+    SQL is executed through the raw DBAPI cursor so ``?`` placeholders work
+    identically to the embedded backend.
+    """
+
+    def __init__(self, engine: Any) -> None:
+        from intersystems_iris import IRIS  # type: ignore[import]
+
+        self._raw_conn = engine.raw_connection()
+        self.runtime = IRIS(self._raw_conn.driver_connection)
+
+    def sql(self, statement: str, params: list[Any] | None = None) -> list[tuple[Any, ...]]:
+        cursor = self._raw_conn.cursor()
+        cursor.execute(statement, params or [])
+        rows = cursor.fetchall()
+        return [tuple(row) for row in rows]
+
+
+class OfficialRuntime(_BaseRuntime):
+    """Backend for InterSystems IRIS accessed via the official ``iris``
+    (``iris+intersystems``) driver.
+
+    Mirrors ``iris_global.IRISOfficial``: extracts ``driver_connection`` from
+    the SQLAlchemy raw connection and wraps it with the ``IRIS`` native-API
+    object.  SQL is executed through the raw DBAPI cursor.
+    """
+
+    def __init__(self, engine: Any) -> None:
+        from iris import IRIS  # type: ignore[import]
+
+        self._raw_conn = engine.raw_connection()
+        self.runtime = IRIS(self._raw_conn.driver_connection)
+
+    def sql(self, statement: str, params: list[Any] | None = None) -> list[tuple[Any, ...]]:
+        cursor = self._raw_conn.cursor()
+        cursor.execute(statement, params or [])
+        rows = cursor.fetchall()
+        return [tuple(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# User-facing dispatcher — mirrors iris_global.GlobalReference
+# ---------------------------------------------------------------------------
+
+class IRISRuntime:
+    """User-facing runtime dispatcher.
+
+    Selects the correct backend (``EmbeddedRuntime``, ``NetworkRuntime``, or
+    ``OfficialRuntime``) based on the SQLAlchemy engine's drivername, mirroring
+    the way ``iris_global.GlobalReference.__post_init__`` selects a ``GrefABC``
+    implementation.
+
+    Usage::
+
+        # Embedded (backward-compatible, no engine required)
+        rt = IRISRuntime()
+
+        # IRIS Python Gateway / intersystems_iris driver
+        rt = IRISRuntime(engine=create_engine("iris://user:pass@host:port/namespace"))
+
+        # Official InterSystems driver
+        rt = IRISRuntime(engine=create_engine("iris+intersystems://user:pass@host:port/namespace"))
+
+        # Embedded via explicit SQLAlchemy engine
+        rt = IRISRuntime(engine=create_engine("iris+emb:///namespace"))
+    """
+
+    def __init__(
+        self,
+        runtime: Any | None = None,
+        engine: Any | None = None,
+    ) -> None:
+        drivername: str = ""
+        if engine is not None:
+            drivername = getattr(getattr(engine, "url", None), "drivername", "") or ""
+
+        if engine is None or drivername in {"", "iris+emb"}:
+            self._impl: _BaseRuntime = EmbeddedRuntime(runtime)
+        elif drivername == "iris":
+            self._impl = NetworkRuntime(engine)
+        elif drivername == "iris+intersystems":
+            self._impl = OfficialRuntime(engine)
+        else:
+            raise ValueError(
+                f"Unsupported SQLAlchemy drivername: {drivername!r}. "
+                "Expected one of: 'iris+emb', 'iris', 'iris+intersystems'."
+            )
+
+    # ------------------------------------------------------------------ schema
+
+    def load_schema(self, classname: str) -> dict[str, Any] | None:
+        return self._impl.load_schema(classname)
+
+    def list_classes(self, pattern: str) -> list[str]:
+        return self._impl.list_classes(pattern)
+
+    def replace_class(self, schema_class: SchemaClass) -> None:
+        self._impl.replace_class(schema_class)
+
+    # ------------------------------------------------------------------ objects
+
+    def save_object(
+        self,
+        classname: str,
+        data: dict[str, Any],
+        obj_id: Any | None = None,
+    ) -> Any:
+        return self._impl.save_object(classname, data, obj_id)
+
+    def open_object(self, classname: str, obj_id: Any) -> dict[str, Any] | None:
+        return self._impl.open_object(classname, obj_id)
+
+    def open_native_object(self, classname: str, obj_id: Any) -> Any | None:
+        return self._impl.open_native_object(classname, obj_id)
+
+    def native_class(self, classname: str) -> Any:
+        return self._impl.native_class(classname)
+
+    def delete_object(self, classname: str, obj_id: Any) -> None:
+        self._impl.delete_object(classname, obj_id)
+
+    # ------------------------------------------------------------------ queries
+
+    def query_rows(
+        self,
+        classname: str,
+        fields: list[str],
+        filters: dict[str, Any],
+        order_by: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> list[dict[str, Any]]:
+        return self._impl.query_rows(classname, fields, filters, order_by, limit, offset)
+
+    def sql(self, statement: str, params: list[Any] | None = None) -> list[tuple[Any, ...]]:
+        return self._impl.sql(statement, params)
+
+    # ------------------------------------------------------------------ utility
+
+    def compile(self, classname: str) -> None:
+        self._impl.compile(classname)
+
+    def looks_like_iris_object(self, value: Any) -> bool:
+        return self._impl.looks_like_iris_object(value)
+
+
+# ---------------------------------------------------------------------------
+# Module-level default-runtime management (unchanged public API)
+# ---------------------------------------------------------------------------
+
 _DEFAULT_RUNTIME: IRISRuntime | None = None
 _RUNTIME_GENERATION = 0
 
@@ -476,10 +666,24 @@ def _runtime_version() -> int:
     return _RUNTIME_GENERATION
 
 
-def configure_default_runtime(*, runtime: IRISRuntime | None = None) -> IRISRuntime:
+def configure_default_runtime(
+    *,
+    runtime: IRISRuntime | None = None,
+    engine: Any | None = None,
+) -> IRISRuntime:
+    """Set (or create) the process-wide default runtime.
+
+    Pass *runtime* to supply a pre-built ``IRISRuntime`` (or any object that
+    satisfies ``IRISRuntimeProtocol``, such as ``FakeAdapter`` in tests).
+    Pass *engine* to build a new ``IRISRuntime`` from a SQLAlchemy engine.
+    When neither is given the existing default is kept (or a new
+    ``EmbeddedRuntime``-backed ``IRISRuntime`` is created).
+    """
     global _DEFAULT_RUNTIME, _RUNTIME_GENERATION
     if runtime is not None:
         _DEFAULT_RUNTIME = runtime
+    elif engine is not None:
+        _DEFAULT_RUNTIME = IRISRuntime(engine=engine)
     else:
         _DEFAULT_RUNTIME = _DEFAULT_RUNTIME or IRISRuntime()
     _RUNTIME_GENERATION += 1

@@ -163,6 +163,7 @@ class IRISModel(metaclass=IRISMeta):
     _iris_storage: ClassVar[dict[str, Any] | None] = None
     _iris_indexes: ClassVar[list[dict[str, Any]]] = []
     _iris_parameters: ClassVar[dict[str, str]] = {}
+    _iris_engine: ClassVar[Any] = None  # SQLAlchemy engine; overrides the default runtime
     _iris_declared_fields: ClassVar[dict[str, FieldDefinition]]
     _iris_bound_schema: ClassVar[Any]
     _iris_bound: ClassVar[bool]
@@ -189,14 +190,27 @@ class IRISModel(metaclass=IRISMeta):
 
     @classmethod
     def _runtime(cls) -> Any:
+        engine = getattr(cls, "_iris_engine", None)
+        if engine is not None:
+            # Build and cache a dedicated runtime for this model's engine.
+            # Stored in the class's own __dict__ so subclasses don't share it.
+            cached = cls.__dict__.get("_iris_engine_runtime")
+            if cached is None:
+                from .runtime import IRISRuntime
+                cached = IRISRuntime(engine=engine)
+                cls._iris_engine_runtime = cached  # type: ignore[attr-defined]
+            return cached
         from .runtime import _get_runtime
-
         return _get_runtime()
 
     @classmethod
     def _runtime_version(cls) -> int:
+        engine = getattr(cls, "_iris_engine", None)
+        if engine is not None:
+            # Use the engine's identity as a stable version token.
+            # The engine is kept alive by the class reference so id() won't be reused.
+            return id(engine)
         from .runtime import _runtime_version
-
         return _runtime_version()
 
     @classmethod

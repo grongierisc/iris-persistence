@@ -8,6 +8,7 @@ from .runtime import (
     IRISRuntime,
     NetworkRuntime,
     OfficialRuntime,
+    configure,
     configure_default_runtime,
     reset_default_runtime,
 )
@@ -24,11 +25,12 @@ __all__ = [
     "EmbeddedRuntime",
     "NetworkRuntime",
     "OfficialRuntime",
+    "configure",
+    "configure_default_runtime",
+    "reset_default_runtime",
     "field",
     "index",
     "parameter",
-    "configure_default_runtime",
-    "reset_default_runtime",
     "scaffold_from_cls",
     "scaffold_from_iris",
 ]

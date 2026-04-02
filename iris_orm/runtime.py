@@ -694,3 +694,28 @@ def reset_default_runtime() -> None:
     global _DEFAULT_RUNTIME, _RUNTIME_GENERATION
     _DEFAULT_RUNTIME = None
     _RUNTIME_GENERATION += 1
+
+
+def configure(
+    engine: Any | None = None,
+    *,
+    runtime: IRISRuntime | None = None,
+) -> IRISRuntime:
+    """Primary public entry point for connecting ``iris_orm`` to IRIS.
+
+    Call this once at application start, before any model is used::
+
+        import iris_orm
+        from sqlalchemy import create_engine
+
+        iris_orm.configure(create_engine("iris://user:pass@host:1972/USER"))
+
+    *engine* may also be passed as a keyword argument.  Pass *runtime* instead
+    to supply a fully constructed ``IRISRuntime`` (or a ``FakeAdapter`` in
+    tests)::
+
+        iris_orm.configure(runtime=FakeAdapter())
+
+    Returns the ``IRISRuntime`` that was registered as the default.
+    """
+    return configure_default_runtime(runtime=runtime, engine=engine)

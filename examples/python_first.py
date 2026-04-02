@@ -1,22 +1,23 @@
 from __future__ import annotations
 
-from iris_orm import IRISModel, field, index, parameter
+from typing import Annotated
 
+from iris_orm import Field, IRISModel, Index, StorageDefinition
 
-@parameter("DEFAULTGLOBAL", "^Demo.ProductD")
-@index("NameIdx", properties="Name", unique=True)
 class Product(IRISModel):
-    _iris_classname = "Demo.ExampleProduct"
-    _iris_mode = "python"
-    _iris_storage = {
-        "name": "Default",
-        "type": "%Storage.Persistent",
-        "data_location": "^Demo.ExampleProductD",
-        "default_data": "ExampleProductDefaultData",
-    }
+    Name: Annotated[str, Field(required=True, maxlen=200)]
+    Price: Annotated[float, Field(default=0.0)]
 
-    Name: str = field(required=True, maxlen=200)
-    Price: float = field(default=0.0)
+    class Meta:
+        classname = "Demo.ExampleProduct"
+        mode = "python"
+        storage = StorageDefinition(
+            data_location="^Demo.ExampleProductD",
+            default_data="ExampleProductDefaultData",
+            type="%Storage.Persistent",
+        )
+        indexes = [Index("NameIdx", properties="Name", unique=True)]
+        parameters = {"DEFAULTGLOBAL": "^Demo.ProductD"}
 
 
 def main() -> None:
@@ -26,4 +27,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

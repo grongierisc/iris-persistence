@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from contextvars import ContextVar
 import importlib
 from typing import Any
 
 from .schema import SchemaClass, match_classnames, normalize_superclasses
+from .storage import StorageDefinition
 
 _STORAGE_TOP_LEVEL_FIELDS: list[tuple[str, str]] = [
     ("counter_location", "CounterLocation"),
@@ -288,18 +290,21 @@ class _BaseRuntime:
         except Exception:
             return
 
-    def _replace_storage(self, class_def: Any, storage: dict[str, Any]) -> None:
+    def _replace_storage(self, class_def: Any, storage: StorageDefinition | dict[str, Any]) -> None:
+        storage_defn = StorageDefinition.from_dict(storage)
+        if storage_defn is None:
+            return
         classname = str(getattr(class_def, "Name"))
         self._delete_all_storage(classname)
         storage_def = self.runtime.cls("%Dictionary.StorageDefinition")._New()
         storage_def.parent = class_def
-        self._set_value(storage_def, "Name", storage.get("name", "Default"))
+        self._set_value(storage_def, "Name", storage_defn.name)
         for key, setter_name in _STORAGE_TOP_LEVEL_FIELDS:
-            self._set_value(storage_def, setter_name, storage.get(key, ""))
+            self._set_value(storage_def, setter_name, getattr(storage_defn, key))
         self._check_status(storage_def._Save())
-        self._replace_storage_children(storage_def, storage)
+        self._replace_storage_children(storage_def, storage_defn)
 
-    def _extract_storage(self, classname: str, storage_def: Any) -> dict[str, Any]:
+    def _extract_storage(self, classname: str, storage_def: Any) -> StorageDefinition:
         storage_name = str(getattr(storage_def, "Name", "") or "")
         storage = {"name": storage_name}
         definition_rows = self.sql(
@@ -371,10 +376,10 @@ class _BaseRuntime:
                         item[key] = str(value)
                 sql_maps.append(item)
             storage["sql_maps"] = sql_maps
-        return {key: value for key, value in storage.items() if value != "" and value is not None}
+        return StorageDefinition.from_dict({key: value for key, value in storage.items() if value != "" and value is not None}) or StorageDefinition(name=storage_name)
 
-    def _replace_storage_children(self, storage_def: Any, storage: dict[str, Any]) -> None:
-        storage_name = str(storage.get("name", "Default"))
+    def _replace_storage_children(self, storage_def: Any, storage: StorageDefinition) -> None:
+        storage_name = str(storage.name or "Default")
         classname = str(getattr(getattr(storage_def, "parent", None), "Name", "") or "")
         storage_id = f"{classname}||{storage_name}" if classname else ""
         if storage_id:
@@ -389,33 +394,34 @@ class _BaseRuntime:
                 except Exception:
                     continue
 
-        for item in storage.get("data", []):
+        for item in storage.data:
             data_def = self.runtime.cls("%Dictionary.StorageDataDefinition")._New()
             data_def.parent = storage_def
-            self._set_value(data_def, "Name", item.get("name", ""))
-            self._set_value(data_def, "Structure", item.get("structure", ""))
+            self._set_value(data_def, "Name", item.name)
+            self._set_value(data_def, "Structure", item.structure)
             self._check_status(data_def._Save())
-            for value in item.get("values", []):
+            for name, value in sorted(item.values.items()):
                 value_def = self.runtime.cls("%Dictionary.StorageDataValueDefinition")._New()
                 value_def.parent = data_def
-                self._set_value(value_def, "Name", value.get("name", ""))
-                self._set_value(value_def, "Value", value.get("value", ""))
+                self._set_value(value_def, "Name", name)
+                self._set_value(value_def, "Value", value)
                 self._check_status(value_def._Save())
 
-        for item in storage.get("properties", []):
+        for item in storage.properties:
             property_def = self.runtime.cls("%Dictionary.StoragePropertyDefinition")._New()
             property_def.parent = storage_def
-            self._set_value(property_def, "Name", item.get("name", ""))
+            self._set_value(property_def, "Name", item.name)
             for key, setter_name in _STORAGE_PROPERTY_FIELDS:
-                self._set_value(property_def, setter_name, item.get(key, ""))
+                self._set_value(property_def, setter_name, getattr(item, key))
             self._check_status(property_def._Save())
 
-        for item in storage.get("sql_maps", []):
+        for item in storage.sql_maps:
             sql_map_def = self.runtime.cls("%Dictionary.StorageSQLMapDefinition")._New()
             sql_map_def.parent = storage_def
-            self._set_value(sql_map_def, "Name", item.get("name", ""))
+            self._set_value(sql_map_def, "Name", item.name)
             for key, setter_name in _STORAGE_SQL_MAP_FIELDS:
-                self._set_value(sql_map_def, setter_name, item.get(key, ""))
+                attr_name = "global_" if key == "global" else key
+                self._set_value(sql_map_def, setter_name, getattr(item, attr_name))
             self._check_status(sql_map_def._Save())
 
     def _iter_collection(self, collection: Any) -> list[Any]:
@@ -699,15 +705,15 @@ class IRISRuntime:
 # Module-level default-runtime management (unchanged public API)
 # ---------------------------------------------------------------------------
 
-_DEFAULT_RUNTIME: IRISRuntime | None = None
+_DEFAULT_RUNTIME: ContextVar[IRISRuntime | Any | None] = ContextVar("iris_orm_default_runtime", default=None)
 _RUNTIME_GENERATION = 0
 
 
 def _get_runtime() -> IRISRuntime:
-    global _DEFAULT_RUNTIME
-    if _DEFAULT_RUNTIME is None:
-        _DEFAULT_RUNTIME = IRISRuntime()
-    return _DEFAULT_RUNTIME
+    runtime = _DEFAULT_RUNTIME.get()
+    if runtime is None:
+        raise RuntimeError("No IRIS runtime is configured. Call iris_orm.configure(...) or set _iris_engine on the model.")
+    return runtime
 
 
 def _runtime_version() -> int:
@@ -727,20 +733,21 @@ def configure_default_runtime(
     When neither is given the existing default is kept (or a new
     ``EmbeddedRuntime``-backed ``IRISRuntime`` is created).
     """
-    global _DEFAULT_RUNTIME, _RUNTIME_GENERATION
+    global _RUNTIME_GENERATION
     if runtime is not None:
-        _DEFAULT_RUNTIME = runtime
+        configured = runtime
     elif engine is not None:
-        _DEFAULT_RUNTIME = IRISRuntime(engine=engine)
+        configured = IRISRuntime(engine=engine)
     else:
-        _DEFAULT_RUNTIME = _DEFAULT_RUNTIME or IRISRuntime()
+        configured = _DEFAULT_RUNTIME.get() or IRISRuntime()
+    _DEFAULT_RUNTIME.set(configured)
     _RUNTIME_GENERATION += 1
-    return _DEFAULT_RUNTIME
+    return configured
 
 
 def reset_default_runtime() -> None:
-    global _DEFAULT_RUNTIME, _RUNTIME_GENERATION
-    _DEFAULT_RUNTIME = None
+    global _RUNTIME_GENERATION
+    _DEFAULT_RUNTIME.set(None)
     _RUNTIME_GENERATION += 1
 
 

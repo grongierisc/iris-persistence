@@ -6,7 +6,7 @@ from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
 from typing import Any
 
-from .fields import _SENTINEL
+from .storage import StorageDefinition
 
 PYTHON_TO_IRIS: dict[type, str] = {
     str: "%String",
@@ -94,7 +94,7 @@ class SchemaClass:
     properties: tuple[SchemaProperty, ...]
     indexes: tuple[SchemaIndex, ...] = ()
     parameters: dict[str, str] = dataclass_field(default_factory=dict)
-    storage: dict[str, Any] | None = None
+    storage: StorageDefinition | None = None
     source: dict[str, Any] | None = None
 
     @property
@@ -112,7 +112,7 @@ class SchemaClass:
             "properties": [item.to_dict() for item in self.properties],
             "indexes": [item.to_dict() for item in self.indexes],
             "parameters": dict(sorted(self.parameters.items())),
-            "storage": copy.deepcopy(self.storage),
+            "storage": None if self.storage is None else self.storage.to_dict(),
             "source": copy.deepcopy(self.source),
         }
 
@@ -124,7 +124,7 @@ class SchemaClass:
             properties=tuple(SchemaProperty.from_dict(item) for item in payload.get("properties", [])),
             indexes=tuple(SchemaIndex.from_dict(item) for item in payload.get("indexes", [])),
             parameters={str(k): str(v) for k, v in dict(payload.get("parameters", {})).items()},
-            storage=copy.deepcopy(payload.get("storage")),
+            storage=StorageDefinition.from_dict(payload.get("storage")),
             source=copy.deepcopy(payload.get("source")),
         )
 
@@ -187,7 +187,7 @@ def iris_type_to_python(iris_type: str) -> type:
 
 
 def default_literal(value: Any, iris_type: str) -> str:
-    if value is _SENTINEL or value is None or value == "" or value == [] or value == {}:
+    if value is None or value == "" or value == [] or value == {}:
         return ""
     if iris_type == "%Boolean":
         if isinstance(value, str):
@@ -219,7 +219,7 @@ def python_default_source(default: str, iris_type: str) -> str | None:
 
 def python_default_value(default: str, iris_type: str) -> Any:
     if default == "":
-        return _SENTINEL
+        return None
     if iris_type == "%Boolean":
         return default.strip().lower() in {"1", "true"}
     if iris_type in {"%Integer", "%SmallInt", "%BigInt"}:
@@ -245,7 +245,7 @@ class SchemaCompiler:
                     name=name,
                     iris_type=iris_type,
                     required=bool(field_def.required),
-                    default=default_literal(field_def.default, iris_type),
+                    default=default_literal(field_def.default, iris_type) if field_def.has_default else "",
                     maxlen=field_def.maxlen,
                     description=str(field_def.description or ""),
                 )
@@ -255,7 +255,7 @@ class SchemaCompiler:
             for item in getattr(model_class, "_iris_indexes", [])
         )
         parameters = {str(k): str(v) for k, v in dict(getattr(model_class, "_iris_parameters", {})).items()}
-        storage = copy.deepcopy(getattr(model_class, "_iris_storage", None))
+        storage = StorageDefinition.from_dict(getattr(model_class, "_iris_storage", None))
         return SchemaClass(
             name=str(model_class._iris_classname),
             superclasses=normalize_superclasses(getattr(model_class, "_iris_superclasses", "%Persistent")),
@@ -289,3 +289,34 @@ class SchemaCompiler:
 
 def match_classnames(classnames: list[str], pattern: str) -> list[str]:
     return [name for name in classnames if fnmatch.fnmatch(name, pattern)]
+
+
+def merge_additive_schema(live: SchemaClass, desired: SchemaClass) -> SchemaClass:
+    property_names = {item.name for item in live.properties}
+    properties = list(live.properties)
+    for item in desired.properties:
+        if item.name in property_names:
+            properties = [item if current.name == item.name else current for current in properties]
+        else:
+            properties.append(item)
+
+    index_names = {item.name for item in live.indexes}
+    indexes = list(live.indexes)
+    for item in desired.indexes:
+        if item.name in index_names:
+            indexes = [item if current.name == item.name else current for current in indexes]
+        else:
+            indexes.append(item)
+
+    parameters = dict(live.parameters)
+    parameters.update(desired.parameters)
+
+    return SchemaClass(
+        name=desired.name,
+        superclasses=desired.superclasses,
+        properties=tuple(properties),
+        indexes=tuple(indexes),
+        parameters=parameters,
+        storage=desired.storage if desired.storage is not None else live.storage,
+        source={"kind": "python", "mode": "additive"},
+    )

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from iris_orm import bind_existing
+from iris_orm import IRISModel
 
 
-Article = bind_existing("Demo.Article")
+class Article(IRISModel):
+    class Meta:
+        classname = "Demo.Article"
+        mode = "proxy"
 
 
 def main() -> None:

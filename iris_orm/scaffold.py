@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from pprint import pformat
 import re
 from typing import Any
 
 from .runtime import IRISRuntime
 from .schema import SchemaClass, SchemaCompiler, SchemaIndex, SchemaProperty, normalize_superclasses, python_default_source
+from .storage import StorageDefinition
 
 
 def scaffold_from_iris(
@@ -107,7 +107,7 @@ def parse_cls(source: str, *, source_path: str = "") -> SchemaClass:
     )
 
 
-def parse_storage_block(source: str) -> dict[str, Any] | None:
+def parse_storage_block(source: str) -> StorageDefinition | None:
     match = re.search(r"Storage\s+([A-Za-z0-9_%]+)\s*\{(.*)\n\}", source, re.DOTALL)
     if not match:
         return None
@@ -152,39 +152,31 @@ def parse_storage_block(source: str) -> dict[str, Any] | None:
         "properties": properties,
         "sql_maps": sql_maps,
     }
-    return {key: value for key, value in storage.items() if value != "" and value != [] and value is not None}
+    return StorageDefinition.from_dict({key: value for key, value in storage.items() if value != "" and value != [] and value is not None})
 
 
 def render_model(schema_class: SchemaClass, *, style: str = "proxy") -> str:
     mode = normalize_style(style)
-    imports = "from iris_orm import IRISModel, field"
-    if mode == "python":
-        imports += ", index, parameter"
-    lines = [imports, ""]
-    if mode == "python":
-        for key in sorted(schema_class.parameters):
-            lines.append(f"@parameter({key!r}, {schema_class.parameters[key]!r})")
-        for item in schema_class.indexes:
-            args = [f'"{item.name}"', f'properties="{item.properties}"']
-            if item.unique:
-                args.append("unique=True")
-            if item.primary_key:
-                args.append("primary_key=True")
-            lines.append(f"@index({', '.join(args)})")
-    lines.append(f"class {schema_class.name.split('.')[-1]}(IRISModel):")
-    lines.append(f'    _iris_classname = "{schema_class.name}"')
-    lines.append(f'    _iris_mode = "{mode}"')
-    if schema_class.superclasses != ("%Persistent",):
-        if len(schema_class.superclasses) == 1:
-            lines.append(f'    _iris_superclasses = "{schema_class.superclasses[0]}"')
-        else:
-            lines.append(f"    _iris_superclasses = {list(schema_class.superclasses)!r}")
+    imports = ["from typing import Annotated"]
+    iris_imports = ["Field", "IRISModel"]
+    if schema_class.indexes:
+        iris_imports.append("Index")
     if schema_class.storage is not None:
-        rendered = pformat(schema_class.storage, width=100, sort_dicts=True).splitlines()
-        lines.append(f"    _iris_storage = {rendered[0]}")
-        for line in rendered[1:]:
-            lines.append(f"    {line}")
+        iris_imports.append("StorageDefinition")
+        if schema_class.storage.data:
+            iris_imports.append("StorageData")
+        if schema_class.storage.properties:
+            iris_imports.append("StorageProperty")
+        if schema_class.storage.sql_maps:
+            iris_imports.append("StorageSQLMap")
+    imports.append(f"from iris_orm import {', '.join(sorted(set(iris_imports)))}")
+    lines = [*imports, ""]
+    lines.append(f"class {schema_class.name.split('.')[-1]}(IRISModel):")
     lines.append("")
+    meta_lines = _render_meta_block(schema_class, mode=mode, indent="    ")
+    if meta_lines:
+        lines.extend(meta_lines)
+        lines.append("")
     if not schema_class.properties:
         lines.append("    pass")
     for prop in schema_class.properties:
@@ -197,7 +189,7 @@ def render_model(schema_class: SchemaClass, *, style: str = "proxy") -> str:
         if default_src is not None:
             parts.append(f"default={default_src}")
         parts.append(f'iris_type="{prop.iris_type}"')
-        lines.append(f"    {prop.name}: {_annotation(prop.iris_type)} = field({', '.join(parts)})")
+        lines.append(f"    {prop.name}: Annotated[{_annotation(prop.iris_type)}, Field({', '.join(parts)})]")
     return "\n".join(lines) + "\n"
 
 
@@ -246,3 +238,79 @@ def _parse_storage_named_sections(source: str, tag: str) -> list[dict[str, Any]]
 
 def _tag_to_key(tag: str) -> str:
     return re.sub(r"(?<!^)(?=[A-Z])", "_", tag).lower()
+
+
+def _render_storage_definition(storage: StorageDefinition, *, indent: str) -> list[str]:
+    lines = [f"{indent}storage = StorageDefinition("]
+    nested_indent = indent + "    "
+    scalar_fields = storage.to_dict()
+    for key in [
+        "name",
+        "counter_location",
+        "data_location",
+        "default_data",
+        "description",
+        "extent_location",
+        "extent_size",
+        "id_expression",
+        "id_function",
+        "id_location",
+        "index_location",
+        "sql_child_sub",
+        "sql_id_expression",
+        "sql_row_id_name",
+        "sql_row_id_property",
+        "stream_location",
+        "type",
+        "version_location",
+    ]:
+        if key in scalar_fields:
+            lines.append(f"{nested_indent}{key}={scalar_fields[key]!r},")
+    if storage.data:
+        lines.append(f"{nested_indent}data=(")
+        for item in storage.data:
+            lines.append(
+                f"{nested_indent}    StorageData(name={item.name!r}, structure={item.structure!r}, values={item.values!r}),"
+            )
+        lines.append(f"{nested_indent}),")
+    if storage.properties:
+        lines.append(f"{nested_indent}properties=(")
+        for item in storage.properties:
+            args = ", ".join(f"{key}={value!r}" for key, value in item.to_dict().items())
+            lines.append(f"{nested_indent}    StorageProperty({args}),")
+        lines.append(f"{nested_indent}),")
+    if storage.sql_maps:
+        lines.append(f"{nested_indent}sql_maps=(")
+        for item in storage.sql_maps:
+            args = ", ".join(f"{key if key != 'global' else 'global_'}={value!r}" for key, value in item.to_dict().items())
+            lines.append(f"{nested_indent}    StorageSQLMap({args}),")
+        lines.append(f"{nested_indent}),")
+    lines.append(f"{indent})")
+    return lines
+
+
+def _render_meta_block(schema_class: SchemaClass, *, mode: str, indent: str) -> list[str]:
+    lines = [f"{indent}class Meta:"]
+    body_indent = indent + "    "
+    lines.append(f'{body_indent}classname = "{schema_class.name}"')
+    lines.append(f'{body_indent}mode = "{mode}"')
+    if schema_class.superclasses != ("%Persistent",):
+        if len(schema_class.superclasses) == 1:
+            lines.append(f'{body_indent}superclasses = "{schema_class.superclasses[0]}"')
+        else:
+            lines.append(f"{body_indent}superclasses = {list(schema_class.superclasses)!r}")
+    if schema_class.storage is not None:
+        lines.extend(_render_storage_definition(schema_class.storage, indent=body_indent))
+    if schema_class.indexes:
+        lines.append(f"{body_indent}indexes = [")
+        for item in schema_class.indexes:
+            args = [f"{item.name!r}", f"properties={item.properties!r}"]
+            if item.unique:
+                args.append("unique=True")
+            if item.primary_key:
+                args.append("primary_key=True")
+            lines.append(f"{body_indent}    Index({', '.join(args)}),")
+        lines.append(f"{body_indent}]")
+    if schema_class.parameters:
+        lines.append(f"{body_indent}parameters = {dict(sorted(schema_class.parameters.items()))!r}")
+    return lines

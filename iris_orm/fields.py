@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import warnings
+from dataclasses import MISSING, dataclass
 from typing import Any, Optional, TypeVar, overload
 
-_SENTINEL = object()
 _ModelClass = TypeVar("_ModelClass", bound=type)
 _FieldValue = TypeVar("_FieldValue")
 
@@ -14,15 +14,49 @@ def _ensure_model_class(value: Any) -> type:
     return value
 
 
-@dataclass
-class FieldDefinition:
-    required: bool = False
-    default: Any = _SENTINEL
-    maxlen: Optional[int] = None
-    iris_type: Optional[str] = None
-    description: str = ""
-    python_type: type | None = None
-    prop_name: str = ""
+@dataclass(init=False)
+class Field:
+    required: bool
+    default: Any
+    has_default: bool
+    maxlen: Optional[int]
+    iris_type: Optional[str]
+    description: str
+    python_type: Any
+    prop_name: str
+
+    def __init__(
+        self,
+        *,
+        required: bool = False,
+        default: Any = MISSING,
+        maxlen: Optional[int] = None,
+        iris_type: Optional[str] = None,
+        description: str = "",
+    ) -> None:
+        self.required = required
+        self.default = None if default is MISSING else default
+        self.has_default = default is not MISSING
+        self.maxlen = maxlen
+        self.iris_type = iris_type
+        self.description = description
+        self.python_type = None
+        self.prop_name = ""
+
+    def copy(self) -> "Field":
+        clone = Field(
+            required=self.required,
+            default=self.default if self.has_default else MISSING,
+            maxlen=self.maxlen,
+            iris_type=self.iris_type,
+            description=self.description,
+        )
+        clone.python_type = self.python_type
+        clone.prop_name = self.prop_name
+        return clone
+
+
+FieldDefinition = Field
 
 
 @dataclass
@@ -80,7 +114,7 @@ def field(
 def field(
     *,
     required: bool = False,
-    default: Any = _SENTINEL,
+    default: Any = MISSING,
     maxlen: Optional[int] = None,
     iris_type: Optional[str] = None,
     description: str = "",
@@ -91,12 +125,17 @@ def field(
 def field(
     *,
     required: bool = False,
-    default: Any = _SENTINEL,
+    default: Any = MISSING,
     maxlen: Optional[int] = None,
     iris_type: Optional[str] = None,
     description: str = "",
 ) -> Any:
-    return FieldDefinition(
+    warnings.warn(
+        "field(...) is deprecated; use Annotated[..., Field(...)] instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return Field(
         required=required,
         default=default,
         maxlen=maxlen,
@@ -112,6 +151,11 @@ def index(
     unique: bool = False,
     primary_key: bool = False,
 ) -> IndexDefinition:
+    warnings.warn(
+        "index(...) is deprecated; use class Meta.indexes = [Index(...)] instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     return IndexDefinition(
         name=name,
         properties=properties,
@@ -121,4 +165,12 @@ def index(
 
 
 def parameter(name: str, value: Any) -> ParameterDefinition:
+    warnings.warn(
+        "parameter(...) is deprecated; use class Meta.parameters instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     return ParameterDefinition(name=str(name), value=str(value))
+
+
+Index = IndexDefinition

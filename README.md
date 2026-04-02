@@ -73,9 +73,12 @@ Behavior:
 ### Proxy
 
 ```python
-from iris_orm import bind_existing
+from iris_orm import IRISModel
 
-Article = bind_existing("Demo.Article")
+
+class Article(IRISModel):
+    _iris_classname = "Demo.Article"
+    _iris_mode = "proxy"
 ```
 
 Behavior:
@@ -177,13 +180,11 @@ Small by design:
 - `field`
 - `parameter`
 - `index`
-- `bind_existing`
 - `scaffold_from_iris`
 - `scaffold_from_cls`
 
 Advanced but still available:
 
-- `SchemaCompiler`
-- `IRISAdapter`
 - `Model.plan()`
 - `Model.sync()`
+- `configure_default_runtime(runtime=...)`

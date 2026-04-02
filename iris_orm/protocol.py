@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
-from .schema import SchemaClass
+if TYPE_CHECKING:
+    from .schema import SchemaClass
 
 
 class IRISRuntimeProtocol(Protocol):
@@ -92,4 +93,18 @@ class IRISRuntimeProtocol(Protocol):
 
     def looks_like_iris_object(self, value: Any) -> bool:
         """Return ``True`` when *value* appears to be a valid IRIS object."""
+        ...
+
+    # --------------------------------------------------------------- transactions
+
+    def begin(self) -> None:
+        """Start an IRIS transaction (``TSTART``)."""
+        ...
+
+    def commit(self) -> None:
+        """Commit the current IRIS transaction (``TCOMMIT``)."""
+        ...
+
+    def rollback(self) -> None:
+        """Roll back the current IRIS transaction (``TROLLBACK``)."""
         ...

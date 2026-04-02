@@ -97,6 +97,26 @@ class FakeAdapter:
             rows = rows[:limit]
         return rows
 
+    # ------------------------------------------------------------------ stubs satisfying IRISRuntimeProtocol
+
+    def sql(self, statement: str, params: list[Any] | None = None) -> list[tuple[Any, ...]]:
+        return []
+
+    def compile(self, classname: str) -> None:
+        pass
+
+    def looks_like_iris_object(self, value: Any) -> bool:
+        return value is not None and value != ""
+
+    def begin(self) -> None:
+        pass
+
+    def commit(self) -> None:
+        pass
+
+    def rollback(self) -> None:
+        pass
+
 
 def preload_schema(adapter: FakeAdapter, payload: dict[str, Any]) -> None:
     properties = payload.get("properties", {})

@@ -258,7 +258,16 @@ class _BaseRuntime:
         self._check_status(status)
 
     def looks_like_iris_object(self, value: Any) -> bool:
-        return value not in {None, "", 0}
+        return value is not None and value != ""
+
+    def begin(self) -> None:
+        self.runtime.tstart()
+
+    def commit(self) -> None:
+        self.runtime.tcommit()
+
+    def rollback(self) -> None:
+        self.runtime.trollback()
 
     def _delete_missing(self, classname: str, dictionary_class: str, expected: Any) -> None:
         try:
@@ -500,45 +509,73 @@ class NetworkRuntime(_BaseRuntime):
     """Backend for InterSystems IRIS accessed via the ``intersystems_iris``
     (Python Gateway / native-API) driver.
 
-    Mirrors ``iris_global.IRISGref``: extracts ``driver_connection`` from the
-    SQLAlchemy raw connection and wraps it with the ``IRIS`` native-API object.
-    SQL is executed through the raw DBAPI cursor so ``?`` placeholders work
-    identically to the embedded backend.
+    Mirrors ``iris_global.IRISGref``: extracts ``driver_connection`` from a
+    dedicated raw connection for the native-API object (schema / class ops) and
+    borrows a fresh pooled connection for every SQL call.
     """
 
     def __init__(self, engine: Any) -> None:
         from intersystems_iris import IRIS  # type: ignore[import]
 
-        self._raw_conn = engine.raw_connection()
-        self.runtime = IRIS(self._raw_conn.driver_connection)
+        self._engine = engine
+        # Dedicated stable connection for the native IRIS class-dictionary API.
+        self._native_raw_conn = engine.raw_connection()
+        self.runtime = IRIS(self._native_raw_conn.driver_connection)
 
     def sql(self, statement: str, params: list[Any] | None = None) -> list[tuple[Any, ...]]:
-        cursor = self._raw_conn.cursor()
-        cursor.execute(statement, params or [])
-        rows = cursor.fetchall()
-        return [tuple(row) for row in rows]
+        raw_conn = self._engine.raw_connection()
+        try:
+            cursor = raw_conn.cursor()
+            cursor.execute(statement, params or [])
+            rows = cursor.fetchall()
+            return [tuple(row) for row in rows]
+        finally:
+            raw_conn.close()  # returns connection to the pool
+
+    def begin(self) -> None:
+        self.runtime.tStart()
+
+    def commit(self) -> None:
+        self.runtime.tCommit()
+
+    def rollback(self) -> None:
+        self.runtime.tRollback()
 
 
 class OfficialRuntime(_BaseRuntime):
     """Backend for InterSystems IRIS accessed via the official ``iris``
     (``iris+intersystems``) driver.
 
-    Mirrors ``iris_global.IRISOfficial``: extracts ``driver_connection`` from
-    the SQLAlchemy raw connection and wraps it with the ``IRIS`` native-API
-    object.  SQL is executed through the raw DBAPI cursor.
+    Mirrors ``iris_global.IRISOfficial``: uses a dedicated stable connection for
+    the native-API object and borrows a fresh pooled connection per SQL call.
     """
 
     def __init__(self, engine: Any) -> None:
         from iris import IRIS  # type: ignore[import]
 
-        self._raw_conn = engine.raw_connection()
-        self.runtime = IRIS(self._raw_conn.driver_connection)
+        self._engine = engine
+        # Dedicated stable connection for the native IRIS class-dictionary API.
+        self._native_raw_conn = engine.raw_connection()
+        self.runtime = IRIS(self._native_raw_conn.driver_connection)
 
     def sql(self, statement: str, params: list[Any] | None = None) -> list[tuple[Any, ...]]:
-        cursor = self._raw_conn.cursor()
-        cursor.execute(statement, params or [])
-        rows = cursor.fetchall()
-        return [tuple(row) for row in rows]
+        raw_conn = self._engine.raw_connection()
+        try:
+            cursor = raw_conn.cursor()
+            cursor.execute(statement, params or [])
+            rows = cursor.fetchall()
+            return [tuple(row) for row in rows]
+        finally:
+            raw_conn.close()  # returns connection to the pool
+
+    def begin(self) -> None:
+        self.runtime.tStart()
+
+    def commit(self) -> None:
+        self.runtime.tCommit()
+
+    def rollback(self) -> None:
+        self.runtime.tRollback()
 
 
 # ---------------------------------------------------------------------------
@@ -645,6 +682,17 @@ class IRISRuntime:
 
     def looks_like_iris_object(self, value: Any) -> bool:
         return self._impl.looks_like_iris_object(value)
+
+    # ---------------------------------------------------------------- transactions
+
+    def begin(self) -> None:
+        self._impl.begin()
+
+    def commit(self) -> None:
+        self._impl.commit()
+
+    def rollback(self) -> None:
+        self._impl.rollback()
 
 
 # ---------------------------------------------------------------------------

@@ -9,28 +9,31 @@ from .runtime import (
     NetworkRuntime,
     OfficialRuntime,
     configure,
-    configure_default_runtime,
+    configure_default_runtime,  # kept for backward compat; prefer configure()
     reset_default_runtime,
 )
 from .scaffold import scaffold_from_cls, scaffold_from_iris
 
 __all__ = [
+    # Models
     "IRISMeta",
     "IRISModel",
+    # Fields
     "FieldDefinition",
     "IndexDefinition",
     "ParameterDefinition",
+    "field",
+    "index",
+    "parameter",
+    # Runtime — public surface
     "IRISRuntimeProtocol",
     "IRISRuntime",
     "EmbeddedRuntime",
     "NetworkRuntime",
     "OfficialRuntime",
     "configure",
-    "configure_default_runtime",
     "reset_default_runtime",
-    "field",
-    "index",
-    "parameter",
+    # Scaffold
     "scaffold_from_cls",
     "scaffold_from_iris",
 ]

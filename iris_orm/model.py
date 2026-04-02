@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import copy
 from dataclasses import dataclass
 from typing import Any, ClassVar, Generic, Self, TypeVar, get_type_hints
@@ -163,7 +164,7 @@ class IRISModel(metaclass=IRISMeta):
     _iris_storage: ClassVar[dict[str, Any] | None] = None
     _iris_indexes: ClassVar[list[dict[str, Any]]] = []
     _iris_parameters: ClassVar[dict[str, str]] = {}
-    _iris_engine: ClassVar[Any] = None  # SQLAlchemy engine; overrides the default runtime
+    _iris_engine: ClassVar[Any] = None  # SQLAlchemy engine (sqlalchemy.Engine); overrides the default runtime
     _iris_declared_fields: ClassVar[dict[str, FieldDefinition]]
     _iris_bound_schema: ClassVar[Any]
     _iris_bound: ClassVar[bool]
@@ -192,14 +193,14 @@ class IRISModel(metaclass=IRISMeta):
     def _runtime(cls) -> Any:
         engine = getattr(cls, "_iris_engine", None)
         if engine is not None:
-            # Build and cache a dedicated runtime for this model's engine.
-            # Stored in the class's own __dict__ so subclasses don't share it.
-            cached = cls.__dict__.get("_iris_engine_runtime")
-            if cached is None:
+            # Rebuild the cached runtime when the engine has been replaced.
+            # Use the class's own __dict__ so subclasses don't share the cache.
+            if cls.__dict__.get("_iris_engine_runtime_for") is not engine:
                 from .runtime import IRISRuntime
                 cached = IRISRuntime(engine=engine)
-                cls._iris_engine_runtime = cached  # type: ignore[attr-defined]
-            return cached
+                cls._iris_engine_runtime: Any = cached  # type: ignore[attr-defined]
+                cls._iris_engine_runtime_for: Any = engine  # type: ignore[attr-defined]
+            return cls.__dict__["_iris_engine_runtime"]
         from .runtime import _get_runtime
         return _get_runtime()
 
@@ -301,6 +302,18 @@ class IRISModel(metaclass=IRISMeta):
         if self.pk is not None:
             model_class._runtime().delete_object(model_class._iris_classname, self.pk)
 
+    @classmethod
+    def transaction(cls) -> contextlib.AbstractContextManager[None]:
+        """Context manager that wraps a block of operations in an IRIS transaction.
+
+        Usage::
+
+            with Product.transaction():
+                Product(Name="A").save()
+                Product(Name="B").save()
+        """
+        return _transaction_ctx(cls._runtime())
+
     def __getattr__(self, name: str) -> Any:
         declared = type(self)._iris_declared_fields
         if name in declared:
@@ -366,6 +379,18 @@ class IRISModel(metaclass=IRISMeta):
         if iris_type in {"%Float", "%Double", "%Numeric", "%Decimal"}:
             return float(value)
         return value
+
+
+@contextlib.contextmanager
+def _transaction_ctx(runtime: Any):  # type: ignore[return]
+    runtime.begin()
+    try:
+        yield
+    except Exception:
+        runtime.rollback()
+        raise
+    else:
+        runtime.commit()
 
 
 def bind_schema(model_class: type, schema_class: Any) -> type:

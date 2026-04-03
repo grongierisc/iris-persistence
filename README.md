@@ -188,6 +188,8 @@ from sqlalchemy import create_engine
 iris_orm.configure(create_engine("iris://user:pass@host:1972/USER"))
 ```
 
+If you do not call `configure(...)` and a model has no `Meta.engine`, `iris_orm` falls back to the embedded Python runtime by default.
+
 Or attach an engine directly to a model:
 
 ```python

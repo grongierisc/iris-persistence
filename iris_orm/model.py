@@ -10,6 +10,7 @@ from .fields import Field, FieldDefinition, IndexDefinition
 from .schema import (
     SchemaCompiler,
     SchemaPlan,
+    coerce_to_python,
     iris_type_to_python,
     merge_additive_schema,
     python_default_value,
@@ -290,7 +291,7 @@ class IRISModel:
 
     @classmethod
     def _normalized_mode(cls) -> str:
-        mode = str(getattr(cls, "_iris_mode", "additive") or "additive").strip().lower()
+        mode = str(getattr(cls, "_iris_mode", "additive") or "additive").strip()
         if mode not in _VALID_MODES:
             raise ValueError(f"Unsupported _iris_mode: {getattr(cls, '_iris_mode', None)!r}")
         return mode
@@ -491,15 +492,7 @@ class IRISModel:
 
     @staticmethod
     def _coerce_python_value(value: Any, iris_type: str) -> Any:
-        if value is None:
-            return None
-        if iris_type == "%Boolean":
-            return bool(value)
-        if iris_type in {"%Integer", "%SmallInt", "%BigInt"}:
-            return int(value)
-        if iris_type in {"%Float", "%Double", "%Numeric", "%Decimal"}:
-            return float(value)
-        return value
+        return coerce_to_python(value, iris_type)
 
 
 @contextlib.contextmanager
@@ -523,6 +516,7 @@ def bind_schema(model_class: type, schema_class: Any) -> type:
         field_def.maxlen = prop.maxlen
         field_def.description = prop.description
         field_def.iris_type = prop.iris_type
+        field_def.parameters = dict(prop.parameters)
         field_def.python_type = iris_type_to_python(prop.iris_type)
         field_def.has_default = prop.default != ""
         field_def.default = python_default_value(prop.default, prop.iris_type)

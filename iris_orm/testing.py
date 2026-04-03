@@ -4,7 +4,36 @@ import copy
 import fnmatch
 from typing import Any
 
-from .schema import SchemaClass
+from .schema import SchemaClass, is_stream_type, read_stream_value
+
+
+class FakeStream:
+    def __init__(self, *, binary: bool, initial: bytes | str | None = None) -> None:
+        self.binary = binary
+        self._value: bytes | str = b"" if binary else ""
+        self._position = 0
+        if initial is not None:
+            self.Write(initial)
+            self.Rewind()
+
+    def Write(self, data: Any) -> None:
+        if self.binary:
+            if isinstance(data, str):
+                data = data.encode("utf-8")
+            self._value = bytes(data)
+        else:
+            if isinstance(data, bytes):
+                data = data.decode("utf-8")
+            self._value = str(data)
+
+    def ReadAll(self) -> bytes | str:
+        return self._value
+
+    def Rewind(self) -> None:
+        self._position = 0
+
+    def clone(self) -> "FakeStream":
+        return FakeStream(binary=self.binary, initial=self._value)
 
 
 class FakeAdapter:
@@ -33,14 +62,32 @@ class FakeAdapter:
         if obj_id is None:
             obj_id = self.next_ids[classname]
             self.next_ids[classname] += 1
-        self.rows[classname][int(obj_id)] = copy.deepcopy(data)
+        schema = self.schemas.get(classname, {})
+        property_types = {item["name"]: item.get("iris_type", "%String") for item in schema.get("properties", [])}
+        stored_row: dict[str, Any] = {}
+        for key, value in data.items():
+            iris_type = property_types.get(key, "%String")
+            if is_stream_type(iris_type) and value is not None:
+                stored_row[key] = FakeStream(binary="binary" in iris_type.lower(), initial=copy.deepcopy(value))
+            else:
+                stored_row[key] = copy.deepcopy(value)
+        self.rows[classname][int(obj_id)] = stored_row
         return obj_id
 
     def open_object(self, classname: str, obj_id: Any) -> dict[str, Any] | None:
         row = self.rows.get(classname, {}).get(int(obj_id))
         if row is None:
             return None
-        return {"id": int(obj_id), "data": copy.deepcopy(row)}
+        schema = self.schemas.get(classname, {})
+        property_types = {item["name"]: item.get("iris_type", "%String") for item in schema.get("properties", [])}
+        data: dict[str, Any] = {}
+        for key, value in row.items():
+            iris_type = property_types.get(key, "%String")
+            if is_stream_type(iris_type):
+                data[key] = read_stream_value(value.clone() if isinstance(value, FakeStream) else value, iris_type)
+            else:
+                data[key] = copy.deepcopy(value)
+        return {"id": int(obj_id), "data": data}
 
     def open_native_object(self, classname: str, obj_id: Any) -> Any | None:
         row = self.rows.get(classname, {}).get(int(obj_id))
@@ -53,7 +100,10 @@ class FakeAdapter:
 
         obj = NativeObject()
         for key, value in row.items():
-            setattr(obj, key, copy.deepcopy(value))
+            if isinstance(value, FakeStream):
+                setattr(obj, key, value.clone())
+            else:
+                setattr(obj, key, copy.deepcopy(value))
         for name, method in methods.items():
             setattr(obj, name, method.__get__(obj, NativeObject))
         return obj
@@ -86,7 +136,11 @@ class FakeAdapter:
             if all(row.get(key) == value for key, value in filters.items()):
                 payload = {"id": obj_id}
                 for field in fields:
-                    payload[field] = row.get(field)
+                    value = row.get(field)
+                    if isinstance(value, FakeStream):
+                        payload[field] = value.ReadAll()
+                    else:
+                        payload[field] = value
                 rows.append(payload)
         if order_by:
             rows.sort(key=lambda item: (item.get(order_by) is None, item.get(order_by)))
@@ -126,6 +180,7 @@ def preload_schema(adapter: FakeAdapter, payload: dict[str, Any]) -> None:
                 "default": str(item.get("default", "") or ""),
                 "maxlen": item.get("maxlen"),
                 "description": str(item.get("description", "") or ""),
+                "parameters": {str(k): str(v) for k, v in dict(item.get("parameters", {})).items()},
             }
             for name, item in properties.items()
         ]

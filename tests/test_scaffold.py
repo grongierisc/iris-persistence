@@ -80,7 +80,7 @@ def test_scaffold_from_iris_python_renders_decorators_and_storage(tmp_path: Path
             "name": "Demo.Article",
             "superclasses": ["%Persistent", "Demo.Auditable"],
             "properties": {
-                "Title": {"iris_type": "%String", "required": True, "maxlen": 500},
+                "Title": {"iris_type": "%String", "required": True, "maxlen": 500, "parameters": {"VALUELIST": ",A,B"}},
             },
             "indexes": {"TitleIdx": {"properties": "Title", "unique": True}},
             "parameters": {"DEFAULTGLOBAL": "^Demo.ArticleD"},
@@ -102,6 +102,7 @@ def test_scaffold_from_iris_python_renders_decorators_and_storage(tmp_path: Path
     assert "Index('TitleIdx', properties='Title', unique=True)" in source
     assert "superclasses = ['%Persistent', 'Demo.Auditable']" in source
     assert "StorageDefinition(" in source
+    assert "Field(required=True, maxlen=500, parameters={'VALUELIST': ',A,B'}, iris_type=\"%String\")" in source
 
     module = _load_module(paths[0], "article_python")
     generated = SchemaCompiler().compile_model(module.Article)
@@ -118,7 +119,7 @@ Class Demo.Product Extends %Persistent
 {
 Parameter DEFAULTGLOBAL = "^Demo.ProductD";
 
-Property Name As %String(MAXLEN = 200) [ Required ];
+Property Name As %String(MAXLEN = 200, VALUELIST = ",A,B") [ Required ];
 
 Index NameIdx On (Name) [ Unique ];
 
@@ -150,3 +151,24 @@ Storage Default
     assert "extent_size='2'" in source
     assert "StorageProperty(name='Name', average_field_size='8')" in source
     assert "StorageSQLMap(name='IDKEY', block_count='-4')" in source
+    assert "Field(required=True, maxlen=200, parameters={'VALUELIST': ',A,B'}, iris_type=\"%String\")" in source
+
+
+def test_scaffold_maps_stream_types_to_python_native_types(tmp_path: Path) -> None:
+    adapter = FakeAdapter()
+    preload_schema(
+        adapter,
+        {
+            "name": "Demo.StreamDoc",
+            "properties": {
+                "Body": {"iris_type": "%Stream.GlobalCharacter"},
+                "Payload": {"iris_type": "%Stream.GlobalBinary"},
+            },
+        },
+    )
+
+    paths = scaffold_from_iris("Demo.StreamDoc", tmp_path, conn=adapter)
+    source = paths[0].read_text(encoding="utf-8")
+
+    assert 'Body: Annotated[str, Field(iris_type="%Stream.GlobalCharacter")]' in source
+    assert 'Payload: Annotated[bytes, Field(iris_type="%Stream.GlobalBinary")]' in source

@@ -4,7 +4,15 @@ from contextvars import ContextVar
 import importlib
 from typing import Any
 
-from .schema import SchemaClass, match_classnames, normalize_superclasses
+from .schema import (
+    SchemaClass,
+    coerce_to_iris_logical,
+    is_stream_type,
+    match_classnames,
+    normalize_superclasses,
+    read_stream_value,
+    SUPPORTED_PROPERTY_PARAMETERS,
+)
 from .storage import StorageDefinition
 
 _STORAGE_TOP_LEVEL_FIELDS: list[tuple[str, str]] = [
@@ -86,6 +94,7 @@ class _BaseRuntime:
                     "default": self._normalize_default(str(getattr(prop, "InitialExpression", "") or "")),
                     "maxlen": self._to_int(getattr(prop, "MaxLen", None)),
                     "description": str(getattr(prop, "Description", "") or ""),
+                    "parameters": self._extract_property_parameters(prop),
                 }
             )
         indexes = []
@@ -149,6 +158,7 @@ class _BaseRuntime:
             self._set_value(prop_def, "Required", prop.required)
             self._set_value(prop_def, "InitialExpression", prop.default)
             self._set_value(prop_def, "Description", prop.description)
+            self._replace_property_parameters(prop_def, prop.parameters)
             self._check_status(prop_def._Save())
 
         for idx in schema_class.indexes:
@@ -183,7 +193,11 @@ class _BaseRuntime:
         schema = self.load_schema(classname) or {"properties": []}
         property_types = {item["name"]: item.get("iris_type", "%String") for item in schema.get("properties", [])}
         for key, value in data.items():
-            setattr(obj, key, self._coerce_runtime_value(value, property_types.get(key, "%String")))
+            iris_type = property_types.get(key, "%String")
+            if is_stream_type(iris_type):
+                self._write_stream_property(obj, key, value, iris_type)
+                continue
+            setattr(obj, key, self._coerce_runtime_value(value, iris_type))
         self._check_status(obj._Save())
         try:
             return obj._Id()
@@ -208,9 +222,16 @@ class _BaseRuntime:
         schema = self.load_schema(classname)
         if schema is None:
             return None
+        data: dict[str, Any] = {}
+        for prop in schema["properties"]:
+            value = getattr(obj, prop["name"], None)
+            iris_type = str(prop.get("iris_type", "%String") or "%String")
+            if is_stream_type(iris_type):
+                value = read_stream_value(value, iris_type)
+            data[prop["name"]] = value
         return {
             "id": obj_id,
-            "data": {prop["name"]: getattr(obj, prop["name"], None) for prop in schema["properties"]},
+            "data": data,
         }
 
     def delete_object(self, classname: str, obj_id: Any) -> None:
@@ -471,15 +492,82 @@ class _BaseRuntime:
 
     @staticmethod
     def _coerce_runtime_value(value: Any, iris_type: str) -> Any:
+        return coerce_to_iris_logical(value, iris_type)
+
+    def _write_stream_property(self, obj: Any, prop_name: str, value: Any, iris_type: str) -> None:
         if value is None:
-            return None
-        if iris_type == "%Boolean":
-            return 1 if bool(value) else 0
-        if iris_type in {"%Integer", "%SmallInt", "%BigInt"}:
-            return int(value)
-        if iris_type in {"%Float", "%Double", "%Numeric", "%Decimal"}:
-            return float(value)
-        return value
+            self._set_value(obj, prop_name, None)
+            return
+        stream = self._new_stream_object(iris_type)
+        payload = self._coerce_runtime_value(value, iris_type)
+        self._stream_call(stream, "Write", payload)
+        self._stream_call(stream, "Rewind")
+        self._set_value(obj, prop_name, stream)
+
+    def _new_stream_object(self, iris_type: str) -> Any:
+        stream_class = self.runtime.cls(iris_type)
+        constructor = getattr(stream_class, "_New", None)
+        if not callable(constructor):
+            raise TypeError(f"Unable to create stream object for {iris_type}")
+        return constructor()
+
+    @staticmethod
+    def _stream_call(stream: Any, method_name: str, *args: Any) -> Any:
+        method = getattr(stream, method_name, None)
+        if callable(method):
+            return method(*args)
+        invoke = getattr(stream, "invoke", None)
+        if callable(invoke):
+            return invoke(method_name, *args)
+        raise TypeError(f"Stream object does not support {method_name}()")
+
+    @staticmethod
+    def _extract_property_parameters(prop: Any) -> dict[str, str]:
+        result: dict[str, str] = {}
+        getter = getattr(prop, "ParametersGetAt", None)
+        if callable(getter):
+            for name in SUPPORTED_PROPERTY_PARAMETERS:
+                try:
+                    value = getter(name)
+                except Exception:
+                    continue
+                if value not in {"", None}:
+                    result[name] = str(value)
+            return result
+
+        collection = getattr(prop, "Parameters", None)
+        for name in SUPPORTED_PROPERTY_PARAMETERS:
+            value = _collection_get_at(collection, name)
+            if value not in {"", None}:
+                result[name] = str(value)
+        return result
+
+    def _replace_property_parameters(self, prop_def: Any, parameters: dict[str, str]) -> None:
+        normalized = {str(k): str(v) for k, v in dict(parameters).items() if str(k) in SUPPORTED_PROPERTY_PARAMETERS}
+        remover = getattr(prop_def, "ParametersRemoveAt", None)
+        setter = getattr(prop_def, "ParametersSetAt", None)
+        if callable(setter):
+            for name in SUPPORTED_PROPERTY_PARAMETERS:
+                if callable(remover):
+                    try:
+                        remover(name)
+                    except Exception:
+                        pass
+                elif name not in normalized:
+                    try:
+                        setter("", name)
+                    except Exception:
+                        pass
+            for name, value in normalized.items():
+                setter(value, name)
+            return
+
+        collection = getattr(prop_def, "Parameters", None)
+        if collection is None:
+            return
+        _collection_clear_supported(collection)
+        for name, value in normalized.items():
+            _collection_set_at(collection, name, value)
 
 
 def _sort_storage_value_name(value: Any) -> tuple[int, str]:
@@ -488,6 +576,52 @@ def _sort_storage_value_name(value: Any) -> tuple[int, str]:
         return (0, f"{int(text):020d}")
     except Exception:
         return (1, text)
+
+
+def _collection_get_at(collection: Any, key: str) -> Any:
+    if collection is None:
+        return None
+    getter = getattr(collection, "GetAt", None)
+    if callable(getter):
+        try:
+            return getter(key)
+        except Exception:
+            return None
+    if isinstance(collection, dict):
+        return collection.get(key)
+    try:
+        return collection[key]
+    except Exception:
+        return None
+
+
+def _collection_set_at(collection: Any, key: str, value: Any) -> None:
+    setter = getattr(collection, "SetAt", None)
+    if callable(setter):
+        setter(value, key)
+        return
+    if isinstance(collection, dict):
+        collection[key] = value
+        return
+    collection[key] = value
+
+
+def _collection_clear_supported(collection: Any) -> None:
+    clear = getattr(collection, "Clear", None)
+    if callable(clear):
+        clear()
+        return
+    remover = getattr(collection, "RemoveAt", None)
+    if callable(remover):
+        for name in SUPPORTED_PROPERTY_PARAMETERS:
+            try:
+                remover(name)
+            except Exception:
+                continue
+        return
+    if isinstance(collection, dict):
+        for name in SUPPORTED_PROPERTY_PARAMETERS:
+            collection.pop(name, None)
 
 
 # ---------------------------------------------------------------------------
@@ -712,7 +846,8 @@ _RUNTIME_GENERATION = 0
 def _get_runtime() -> IRISRuntime:
     runtime = _DEFAULT_RUNTIME.get()
     if runtime is None:
-        raise RuntimeError("No IRIS runtime is configured. Call iris_orm.configure(...) or set _iris_engine on the model.")
+        runtime = IRISRuntime()
+        _DEFAULT_RUNTIME.set(runtime)
     return runtime
 
 

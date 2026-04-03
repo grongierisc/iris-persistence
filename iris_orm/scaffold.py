@@ -5,7 +5,15 @@ import re
 from typing import Any
 
 from .runtime import IRISRuntime
-from .schema import SchemaClass, SchemaCompiler, SchemaIndex, SchemaProperty, normalize_superclasses, python_default_source
+from .schema import (
+    SchemaClass,
+    SchemaCompiler,
+    SchemaIndex,
+    SchemaProperty,
+    SUPPORTED_PROPERTY_PARAMETERS,
+    normalize_superclasses,
+    python_default_source,
+)
 from .storage import StorageDefinition
 
 
@@ -51,10 +59,12 @@ def parse_cls(source: str, *, source_path: str = "") -> SchemaClass:
         required = False
         default = ""
         description = ""
+        property_parameters: dict[str, str] = {}
         if args:
             maxlen_match = re.search(r"MAXLEN\s*=\s*([0-9]+)", args, re.IGNORECASE)
             if maxlen_match:
                 maxlen = int(maxlen_match.group(1))
+            property_parameters = _parse_property_parameters(args)
         if opts:
             required = "required" in opts.lower()
             default_match = re.search(r"InitialExpression\s*=\s*([^,\]]+)", opts, re.IGNORECASE)
@@ -71,6 +81,7 @@ def parse_cls(source: str, *, source_path: str = "") -> SchemaClass:
                 default=default,
                 maxlen=maxlen,
                 description=description,
+                parameters=property_parameters,
             )
         )
 
@@ -158,6 +169,12 @@ def parse_storage_block(source: str) -> StorageDefinition | None:
 def render_model(schema_class: SchemaClass, *, style: str = "proxy") -> str:
     mode = normalize_style(style)
     imports = ["from typing import Annotated"]
+    extra_imports: list[str] = []
+    iris_types = {prop.iris_type for prop in schema_class.properties}
+    if iris_types & {"%Date", "%Time", "%TimeStamp"}:
+        extra_imports.append("from datetime import date, datetime, time")
+    if "%Decimal" in iris_types:
+        extra_imports.append("from decimal import Decimal")
     iris_imports = ["Field", "IRISModel"]
     if schema_class.indexes:
         iris_imports.append("Index")
@@ -169,6 +186,7 @@ def render_model(schema_class: SchemaClass, *, style: str = "proxy") -> str:
             iris_imports.append("StorageProperty")
         if schema_class.storage.sql_maps:
             iris_imports.append("StorageSQLMap")
+    imports.extend(extra_imports)
     imports.append(f"from iris_orm import {', '.join(sorted(set(iris_imports)))}")
     lines = [*imports, ""]
     lines.append(f"class {schema_class.name.split('.')[-1]}(IRISModel):")
@@ -188,6 +206,8 @@ def render_model(schema_class: SchemaClass, *, style: str = "proxy") -> str:
         default_src = python_default_source(prop.default, prop.iris_type)
         if default_src is not None:
             parts.append(f"default={default_src}")
+        if prop.parameters:
+            parts.append(f"parameters={dict(sorted(prop.parameters.items()))!r}")
         parts.append(f'iris_type="{prop.iris_type}"')
         lines.append(f"    {prop.name}: Annotated[{_annotation(prop.iris_type)}, Field({', '.join(parts)})]")
     return "\n".join(lines) + "\n"
@@ -213,7 +233,11 @@ def _annotation(iris_type: str) -> str:
         "%String": "str",
         "%Integer": "int",
         "%Float": "float",
+        "%Decimal": "Decimal",
         "%Boolean": "bool",
+        "%Date": "date",
+        "%Time": "time",
+        "%TimeStamp": "datetime",
         "%Stream.GlobalBinary": "bytes",
     }
     return mapping.get(iris_type, "str")
@@ -314,3 +338,16 @@ def _render_meta_block(schema_class: SchemaClass, *, mode: str, indent: str) -> 
     if schema_class.parameters:
         lines.append(f"{body_indent}parameters = {dict(sorted(schema_class.parameters.items()))!r}")
     return lines
+
+
+def _parse_property_parameters(args: str) -> dict[str, str]:
+    parameters: dict[str, str] = {}
+    for name in SUPPORTED_PROPERTY_PARAMETERS:
+        match = re.search(rf"{name}\s*=\s*(\"[^\"]*\"|'[^']*'|[^,]+)", args, re.IGNORECASE)
+        if not match:
+            continue
+        value = match.group(1).strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        parameters[name] = value
+    return parameters

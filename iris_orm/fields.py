@@ -22,6 +22,7 @@ class Field:
     maxlen: Optional[int]
     iris_type: Optional[str]
     description: str
+    parameters: dict[str, str]
     python_type: Any
     prop_name: str
 
@@ -33,6 +34,7 @@ class Field:
         maxlen: Optional[int] = None,
         iris_type: Optional[str] = None,
         description: str = "",
+        parameters: dict[str, Any] | None = None,
     ) -> None:
         self.required = required
         self.default = None if default is MISSING else default
@@ -40,6 +42,7 @@ class Field:
         self.maxlen = maxlen
         self.iris_type = iris_type
         self.description = description
+        self.parameters = {str(k): str(v) for k, v in dict(parameters or {}).items()}
         self.python_type = None
         self.prop_name = ""
 
@@ -50,6 +53,7 @@ class Field:
             maxlen=self.maxlen,
             iris_type=self.iris_type,
             description=self.description,
+            parameters=dict(self.parameters),
         )
         clone.python_type = self.python_type
         clone.prop_name = self.prop_name
@@ -106,6 +110,7 @@ def field(
     maxlen: Optional[int] = None,
     iris_type: Optional[str] = None,
     description: str = "",
+    parameters: dict[str, Any] | None = None,
 ) -> _FieldValue:
     ...
 
@@ -118,6 +123,7 @@ def field(
     maxlen: Optional[int] = None,
     iris_type: Optional[str] = None,
     description: str = "",
+    parameters: dict[str, Any] | None = None,
 ) -> Any:
     ...
 
@@ -129,6 +135,7 @@ def field(
     maxlen: Optional[int] = None,
     iris_type: Optional[str] = None,
     description: str = "",
+    parameters: dict[str, Any] | None = None,
 ) -> Any:
     warnings.warn(
         "field(...) is deprecated; use Annotated[..., Field(...)] instead.",
@@ -141,6 +148,7 @@ def field(
         maxlen=maxlen,
         iris_type=iris_type,
         description=description,
+        parameters=parameters,
     )
 
 

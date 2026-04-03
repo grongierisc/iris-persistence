@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import copy
+import datetime as datetime_module
 import fnmatch
 from dataclasses import dataclass, field as dataclass_field
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from .storage import StorageDefinition
+
+_IRIS_EPOCH = datetime_module.date(1840, 12, 31)
 
 PYTHON_TO_IRIS: dict[type, str] = {
     str: "%String",
@@ -14,6 +18,10 @@ PYTHON_TO_IRIS: dict[type, str] = {
     float: "%Float",
     bool: "%Boolean",
     bytes: "%Stream.GlobalBinary",
+    datetime_module.date: "%Date",
+    datetime_module.time: "%Time",
+    datetime_module.datetime: "%TimeStamp",
+    Decimal: "%Decimal",
 }
 
 IRIS_TO_PYTHON: dict[str, type] = {
@@ -24,11 +32,25 @@ IRIS_TO_PYTHON: dict[str, type] = {
     "%Float": float,
     "%Double": float,
     "%Numeric": float,
-    "%Decimal": float,
+    "%Decimal": Decimal,
     "%Boolean": bool,
+    "%Date": datetime_module.date,
+    "%Time": datetime_module.time,
+    "%TimeStamp": datetime_module.datetime,
     "%Stream.GlobalBinary": bytes,
     "%Stream.GlobalCharacter": str,
 }
+
+SUPPORTED_PROPERTY_PARAMETERS: tuple[str, ...] = (
+    "VALUELIST",
+    "DISPLAYLIST",
+    "SCALE",
+    "PRECISION",
+    "MINVAL",
+    "MAXVAL",
+    "TRUNCATE",
+    "COLLATION",
+)
 
 
 @dataclass(frozen=True)
@@ -39,6 +61,7 @@ class SchemaProperty:
     default: str = ""
     maxlen: int | None = None
     description: str = ""
+    parameters: dict[str, str] = dataclass_field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -48,6 +71,7 @@ class SchemaProperty:
             "default": self.default,
             "maxlen": self.maxlen,
             "description": self.description,
+            "parameters": dict(sorted(self.parameters.items())),
         }
 
     @classmethod
@@ -59,6 +83,7 @@ class SchemaProperty:
             default=str(payload.get("default", "") or ""),
             maxlen=payload.get("maxlen"),
             description=str(payload.get("description", "") or ""),
+            parameters={str(k): str(v) for k, v in dict(payload.get("parameters", {})).items()},
         )
 
 
@@ -186,17 +211,89 @@ def iris_type_to_python(iris_type: str) -> type:
     return IRIS_TO_PYTHON.get(iris_type, str)
 
 
+def coerce_to_iris_logical(value: Any, iris_type: str) -> Any:
+    if value is None:
+        return None
+    if is_stream_type(iris_type):
+        if is_binary_stream_type(iris_type):
+            if isinstance(value, bytearray):
+                return bytes(value)
+            if isinstance(value, memoryview):
+                return value.tobytes()
+        return value
+    if iris_type == "%Boolean":
+        if isinstance(value, str):
+            return 1 if value.strip().lower() in {"1", "true"} else 0
+        return 1 if bool(value) else 0
+    if iris_type in {"%Integer", "%SmallInt", "%BigInt"}:
+        return int(value)
+    if iris_type in {"%Float", "%Double", "%Numeric"}:
+        return float(value)
+    if iris_type == "%Decimal":
+        return _decimal_to_string(value)
+    if iris_type == "%Date":
+        return _date_to_logical(value)
+    if iris_type == "%Time":
+        return _time_to_logical(value)
+    if iris_type == "%TimeStamp":
+        return _timestamp_to_logical(value)
+    return value
+
+
+def coerce_to_python(value: Any, iris_type: str) -> Any:
+    if value is None:
+        return None
+    if is_stream_type(iris_type):
+        return read_stream_value(value, iris_type)
+    if iris_type == "%Boolean":
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true"}
+        return bool(value)
+    if iris_type in {"%Integer", "%SmallInt", "%BigInt"}:
+        return int(value)
+    if iris_type in {"%Float", "%Double", "%Numeric"}:
+        return float(value)
+    if iris_type == "%Decimal":
+        if isinstance(value, Decimal):
+            return value
+        return Decimal(str(value))
+    if iris_type == "%Date":
+        if isinstance(value, datetime_module.datetime):
+            return value.date()
+        if isinstance(value, datetime_module.date):
+            return value
+        return _parse_date_logical(value)
+    if iris_type == "%Time":
+        if isinstance(value, datetime_module.datetime):
+            return value.timetz().replace(tzinfo=None)
+        if isinstance(value, datetime_module.time):
+            return value
+        return _parse_time_logical(value)
+    if iris_type == "%TimeStamp":
+        if isinstance(value, datetime_module.datetime):
+            return value
+        return _parse_timestamp_logical(value)
+    return value
+
+
 def default_literal(value: Any, iris_type: str) -> str:
     if value is None or value == "" or value == [] or value == {}:
         return ""
-    if iris_type == "%Boolean":
-        if isinstance(value, str):
-            return "1" if value.strip().lower() in {"1", "true"} else "0"
-        return "1" if bool(value) else "0"
-    if iris_type in {"%Integer", "%SmallInt", "%BigInt"}:
-        return str(int(value))
-    if iris_type in {"%Float", "%Double", "%Numeric", "%Decimal"}:
-        return str(float(value))
+    if iris_type in {
+        "%Boolean",
+        "%Integer",
+        "%SmallInt",
+        "%BigInt",
+        "%Float",
+        "%Double",
+        "%Numeric",
+        "%Decimal",
+        "%Date",
+        "%Time",
+        "%TimeStamp",
+    }:
+        logical = coerce_to_iris_logical(value, iris_type)
+        return "" if logical is None else str(logical)
     if isinstance(value, str):
         escaped = value.replace('"', '""')
         return f'"{escaped}"'
@@ -210,8 +307,27 @@ def python_default_source(default: str, iris_type: str) -> str | None:
         return "True" if default.strip().lower() in {"1", "true"} else "False"
     if iris_type in {"%Integer", "%SmallInt", "%BigInt"}:
         return str(int(default))
-    if iris_type in {"%Float", "%Double", "%Numeric", "%Decimal"}:
+    if iris_type in {"%Float", "%Double", "%Numeric"}:
         return repr(float(default))
+    if iris_type == "%Decimal":
+        return f"Decimal({default!r})"
+    if iris_type == "%Date":
+        value = coerce_to_python(default, iris_type)
+        return f"date({value.year}, {value.month}, {value.day})"
+    if iris_type == "%Time":
+        value = coerce_to_python(default, iris_type)
+        return (
+            f"time({value.hour}, {value.minute}, {value.second}, {value.microsecond})"
+            if value.microsecond
+            else f"time({value.hour}, {value.minute}, {value.second})"
+        )
+    if iris_type == "%TimeStamp":
+        value = coerce_to_python(default, iris_type)
+        return (
+            f"datetime({value.year}, {value.month}, {value.day}, {value.hour}, {value.minute}, {value.second}, {value.microsecond})"
+            if value.microsecond
+            else f"datetime({value.year}, {value.month}, {value.day}, {value.hour}, {value.minute}, {value.second})"
+        )
     if len(default) >= 2 and default.startswith('"') and default.endswith('"'):
         return repr(default[1:-1].replace('""', '"'))
     return repr(default)
@@ -220,12 +336,20 @@ def python_default_source(default: str, iris_type: str) -> str | None:
 def python_default_value(default: str, iris_type: str) -> Any:
     if default == "":
         return None
-    if iris_type == "%Boolean":
-        return default.strip().lower() in {"1", "true"}
-    if iris_type in {"%Integer", "%SmallInt", "%BigInt"}:
-        return int(default)
-    if iris_type in {"%Float", "%Double", "%Numeric", "%Decimal"}:
-        return float(default)
+    if iris_type in {
+        "%Boolean",
+        "%Integer",
+        "%SmallInt",
+        "%BigInt",
+        "%Float",
+        "%Double",
+        "%Numeric",
+        "%Decimal",
+        "%Date",
+        "%Time",
+        "%TimeStamp",
+    }:
+        return coerce_to_python(default, iris_type)
     if len(default) >= 2 and default.startswith('"') and default.endswith('"'):
         return default[1:-1].replace('""', '"')
     return default
@@ -248,6 +372,7 @@ class SchemaCompiler:
                     default=default_literal(field_def.default, iris_type) if field_def.has_default else "",
                     maxlen=field_def.maxlen,
                     description=str(field_def.description or ""),
+                    parameters={str(k): str(v) for k, v in dict(getattr(field_def, "parameters", {})).items()},
                 )
             )
         indexes = tuple(
@@ -320,3 +445,143 @@ def merge_additive_schema(live: SchemaClass, desired: SchemaClass) -> SchemaClas
         storage=desired.storage if desired.storage is not None else live.storage,
         source={"kind": "python", "mode": "additive"},
     )
+
+
+def _decimal_to_string(value: Any) -> str:
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    return format(Decimal(str(value)), "f")
+
+
+def is_stream_type(iris_type: str) -> bool:
+    return str(iris_type or "").startswith("%Stream.")
+
+
+def is_binary_stream_type(iris_type: str) -> bool:
+    return "binary" in str(iris_type or "").lower()
+
+
+def read_stream_value(value: Any, iris_type: str) -> str | bytes | None | Any:
+    if value is None:
+        return None
+    if is_binary_stream_type(iris_type):
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            return bytes(value)
+    elif isinstance(value, str):
+        return value
+
+    for reader_name in ("ReadAll",):
+        reader = getattr(value, reader_name, None)
+        if callable(reader):
+            payload = reader()
+            return _normalize_stream_payload(payload, iris_type)
+
+    invoke = getattr(value, "invoke", None)
+    if callable(invoke):
+        payload = invoke("ReadAll")
+        return _normalize_stream_payload(payload, iris_type)
+
+    invoke_string = getattr(value, "invokeString", None)
+    if callable(invoke_string):
+        payload = invoke_string("ReadAll")
+        return _normalize_stream_payload(payload, iris_type)
+
+    return _normalize_stream_payload(value, iris_type)
+
+
+def _normalize_stream_payload(value: Any, iris_type: str) -> str | bytes | Any:
+    if is_binary_stream_type(iris_type):
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            return bytes(value)
+        if isinstance(value, str):
+            return value.encode("utf-8")
+    else:
+        if isinstance(value, bytes):
+            return value.decode("utf-8")
+    return value
+
+
+def _date_to_logical(value: Any) -> int:
+    if isinstance(value, datetime_module.datetime):
+        value = value.date()
+    if isinstance(value, datetime_module.date):
+        return (value - _IRIS_EPOCH).days
+    if isinstance(value, str):
+        return _date_to_logical(_parse_date_logical(value))
+    return int(value)
+
+
+def _time_to_logical(value: Any) -> int | str:
+    if isinstance(value, datetime_module.datetime):
+        value = value.timetz().replace(tzinfo=None)
+    if isinstance(value, datetime_module.time):
+        _reject_timezone_aware_time(value)
+        total_seconds = value.hour * 3600 + value.minute * 60 + value.second
+        if value.microsecond:
+            return f"{total_seconds}.{value.microsecond:06d}".rstrip("0").rstrip(".")
+        return total_seconds
+    if isinstance(value, str):
+        return _time_to_logical(_parse_time_logical(value))
+    return int(value) if float(value).is_integer() else str(value)
+
+
+def _timestamp_to_logical(value: Any) -> str:
+    if isinstance(value, datetime_module.date) and not isinstance(value, datetime_module.datetime):
+        value = datetime_module.datetime.combine(value, datetime_module.time())
+    if isinstance(value, datetime_module.datetime):
+        if value.tzinfo is not None and value.utcoffset() is not None:
+            raise ValueError("Timezone-aware datetime values are not supported for %TimeStamp fields")
+        text = value.strftime("%Y-%m-%d %H:%M:%S")
+        if value.microsecond:
+            text += f".{value.microsecond:06d}".rstrip("0")
+        return text
+    if isinstance(value, str):
+        return _timestamp_to_logical(_parse_timestamp_logical(value))
+    return str(value)
+
+
+def _parse_date_logical(value: Any) -> datetime_module.date:
+    text = str(value).strip().strip('"')
+    if _looks_like_int(text):
+        return _IRIS_EPOCH + datetime_module.timedelta(days=int(text))
+    if " " in text:
+        text = text.split(" ", 1)[0]
+    return datetime_module.date.fromisoformat(text)
+
+
+def _parse_time_logical(value: Any) -> datetime_module.time:
+    text = str(value).strip().strip('"')
+    if ":" in text:
+        if "." in text:
+            return datetime_module.time.fromisoformat(text)
+        if text.count(":") == 1:
+            text = f"{text}:00"
+        return datetime_module.time.fromisoformat(text)
+    seconds_decimal = Decimal(text)
+    whole_seconds = int(seconds_decimal)
+    microseconds = int((seconds_decimal - whole_seconds) * Decimal("1000000"))
+    hours, remainder = divmod(whole_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return datetime_module.time(hour=hours, minute=minutes, second=seconds, microsecond=microseconds)
+
+
+def _parse_timestamp_logical(value: Any) -> datetime_module.datetime:
+    text = str(value).strip().strip('"')
+    if "T" in text:
+        text = text.replace("T", " ", 1)
+    if len(text) == 10:
+        text = f"{text} 00:00:00"
+    return datetime_module.datetime.fromisoformat(text)
+
+
+def _reject_timezone_aware_time(value: datetime_module.time) -> None:
+    if value.tzinfo is not None and value.utcoffset() is not None:
+        raise ValueError("Timezone-aware time values are not supported for %Time fields")
+
+
+def _looks_like_int(value: str) -> bool:
+    if not value:
+        return False
+    if value[0] in {"-", "+"}:
+        return value[1:].isdigit()
+    return value.isdigit()

@@ -36,6 +36,23 @@ class FakeStream:
         return FakeStream(binary=self.binary, initial=self._value)
 
 
+class FakeIRISList:
+    def __init__(self, items: list[Any] | None = None) -> None:
+        self._items = list(items or [])
+
+    def append(self, value: Any) -> None:
+        self._items.append(value)
+
+    def size(self) -> int:
+        return len(self._items)
+
+    def get(self, index: int) -> Any:
+        return self._items[index - 1]
+
+    def __iter__(self):
+        return iter(self._items)
+
+
 class FakeAdapter:
     def __init__(self) -> None:
         self.schemas: dict[str, dict[str, Any]] = {}

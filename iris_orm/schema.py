@@ -243,6 +243,10 @@ def coerce_to_iris_logical(value: Any, iris_type: str) -> Any:
 def coerce_to_python(value: Any, iris_type: str) -> Any:
     if value is None:
         return None
+    if value == "":
+        if iris_type in {"%String", "%Stream.GlobalCharacter"}:
+            return ""
+        return None
     if is_stream_type(iris_type):
         return read_stream_value(value, iris_type)
     if iris_type == "%Boolean":
@@ -459,6 +463,14 @@ def is_stream_type(iris_type: str) -> bool:
 
 def is_binary_stream_type(iris_type: str) -> bool:
     return "binary" in str(iris_type or "").lower()
+
+
+def is_list_of_datatypes(iris_type: str) -> bool:
+    return str(iris_type or "").startswith("%ListOfDataTypes")
+
+
+def is_array_of_datatypes(iris_type: str) -> bool:
+    return str(iris_type or "").startswith("%ArrayOfDataTypes")
 
 
 def read_stream_value(value: Any, iris_type: str) -> str | bytes | None | Any:

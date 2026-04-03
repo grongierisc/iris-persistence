@@ -186,6 +186,7 @@ class IRISModel:
         _warn_deprecated_class_metadata(cls, meta_options)
 
         cls._apply_meta_options(meta_options)
+        cls._ensure_default_classname(meta_options)
         cls._iris_indexes = _normalize_indexes(getattr(cls, "_iris_indexes", []))
         cls._iris_parameters = {str(k): str(v) for k, v in dict(getattr(cls, "_iris_parameters", {})).items()}
         cls._iris_storage = StorageDefinition.from_dict(getattr(cls, "_iris_storage", None))
@@ -252,6 +253,14 @@ class IRISModel:
             elif meta_name == "storage":
                 value = StorageDefinition.from_dict(value)
             setattr(cls, iris_name, value)
+
+    @classmethod
+    def _ensure_default_classname(cls, meta_options: dict[str, Any]) -> None:
+        explicit_meta = "classname" in meta_options
+        explicit_legacy = "_iris_classname" in cls.__dict__
+        if explicit_meta or explicit_legacy:
+            return
+        cls._iris_classname = f"User.{cls.__name__}"
 
     @classmethod
     def _install_field_descriptors(cls) -> None:

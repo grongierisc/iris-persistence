@@ -17,7 +17,7 @@ from .schema import (
     python_type_to_iris,
     schema_equals,
 )
-from .storage import StorageDefinition
+from .storage import StorageDefinition, validate_storage_definition_dict
 
 _MODEL_REGISTRY: dict[str, type] = {}
 _ModelT = TypeVar("_ModelT", bound="IRISModel")
@@ -189,6 +189,7 @@ class IRISModel:
         cls._ensure_default_classname(meta_options)
         cls._iris_indexes = _normalize_indexes(getattr(cls, "_iris_indexes", []))
         cls._iris_parameters = {str(k): str(v) for k, v in dict(getattr(cls, "_iris_parameters", {})).items()}
+        validate_storage_definition_dict(getattr(cls, "_iris_storage", None))
         cls._iris_storage = StorageDefinition.from_dict(getattr(cls, "_iris_storage", None))
         cls._iris_bound = False
         cls._iris_bound_schema = None
@@ -251,6 +252,7 @@ class IRISModel:
             elif meta_name == "parameters":
                 value = {str(k): str(v) for k, v in dict(value).items()}
             elif meta_name == "storage":
+                validate_storage_definition_dict(value, source_name="Meta.storage")
                 value = StorageDefinition.from_dict(value)
             setattr(cls, iris_name, value)
 

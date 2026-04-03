@@ -368,18 +368,120 @@ def test_runtime_and_model_coercion_support_date_time_and_decimal() -> None:
         def ReadAll(self):
             return self.value
 
+    class DummyEmbeddedBinaryStream:
+        def __init__(self, value):
+            self.value = value
+            self.rewound = False
+
+        def Rewind(self):
+            self.rewound = True
+
+        def SizeGet(self):
+            return len(self.value)
+
+        def ReadSQL(self):
+            return self.value.decode("latin-1")
+
+        def Read(self, size=None):
+            if size is None:
+                raise RuntimeError("Method not found")
+            return self.value[:size].decode("latin-1")
+
     assert runtime_module._BaseRuntime._coerce_runtime_value(date(2024, 1, 2), "%Date") == 66841
     assert runtime_module._BaseRuntime._coerce_runtime_value(time(3, 4, 5, 600000), "%Time") == "11045.6"
     assert runtime_module._BaseRuntime._coerce_runtime_value(datetime(2024, 1, 2, 3, 4, 5, 600000), "%TimeStamp") == "2024-01-02 03:04:05.6"
     assert runtime_module._BaseRuntime._coerce_runtime_value(Decimal("12.340"), "%Decimal") == "12.340"
     assert runtime_module._BaseRuntime._coerce_runtime_value(b"\x00\x01", "%Stream.GlobalBinary") == b"\x00\x01"
+    assert runtime_module._BaseRuntime._coerce_runtime_value({"count": 2, "flag": True}, "%DynamicObject") == '{"count":2,"flag":true}'
+    assert runtime_module._BaseRuntime._coerce_runtime_value(["a", 1], "%DynamicArray") == '["a",1]'
 
     assert IRISModel._coerce_python_value("66841", "%Date") == date(2024, 1, 2)
     assert IRISModel._coerce_python_value("11045.6", "%Time") == time(3, 4, 5, 600000)
     assert IRISModel._coerce_python_value("2024-01-02 03:04:05.6", "%TimeStamp") == datetime(2024, 1, 2, 3, 4, 5, 600000)
     assert IRISModel._coerce_python_value("12.340", "%Decimal") == Decimal("12.340")
     assert IRISModel._coerce_python_value(DummyStream("abc"), "%Stream.GlobalCharacter") == "abc"
+    assert IRISModel._coerce_python_value(DummyEmbeddedBinaryStream(b"\x00\x01"), "%Stream.GlobalBinary") == b"\x00\x01"
+    assert IRISModel._coerce_python_value('{"count":2,"flag":true}', "%DynamicObject") == {"count": 2, "flag": True}
+    assert IRISModel._coerce_python_value('["a",1]', "%DynamicArray") == ["a", 1]
     assert IRISModel._coerce_python_value("", "%Float") is None
+
+    class DummyRemoteBinaryStream:
+        def invoke(self, method_name, *args):
+            if method_name == "ReadAll":
+                raise RuntimeError("method missing")
+            if method_name == "ReadSQL":
+                return "\x00\x01\xff"
+            return None
+
+        def invokeString(self, method_name, *args):
+            if method_name == "ReadAll":
+                raise RuntimeError("method missing")
+            if method_name == "ReadSQL":
+                return "\x00\x01\xff"
+            return ""
+
+    assert IRISModel._coerce_python_value(DummyRemoteBinaryStream(), "%Stream.GlobalBinary") == b"\x00\x01\xff"
+
+
+def test_dynamic_object_defaults_compile_to_json_literals() -> None:
+    class JsonDoc(IRISModel):
+        Meta: Annotated[dict, Field(default={"flag": True}, iris_type="%DynamicObject")]
+        Tags: Annotated[list, Field(default=["a", 1], iris_type="%DynamicArray")]
+
+        class Meta:
+            classname = "Demo.JsonDoc"
+
+    schema = SchemaCompiler().compile_model(JsonDoc)
+
+    assert schema.property_map["Meta"].default == '"{""flag"":true}"'
+    assert schema.property_map["Tags"].default == '"[""a"",1]"'
+    assert schema.property_map["Meta"].iris_type == "%DynamicObject"
+    assert schema.property_map["Tags"].iris_type == "%DynamicArray"
+
+
+def test_generic_dict_and_list_annotations_map_to_dynamic_types() -> None:
+    class JsonDoc(IRISModel):
+        Payload: dict[str, str]
+        Tags: list[str]
+
+        class Meta:
+            classname = "Demo.JsonDocGenerics"
+
+    schema = SchemaCompiler().compile_model(JsonDoc)
+
+    assert schema.property_map["Payload"].iris_type == "%DynamicObject"
+    assert schema.property_map["Tags"].iris_type == "%DynamicArray"
+
+
+def test_dynamic_object_properties_roundtrip_with_fake_adapter() -> None:
+    adapter = FakeAdapter()
+    preload_schema(
+        adapter,
+        {
+            "name": "Demo.JsonDoc",
+            "properties": {
+                "Meta": {"iris_type": "%DynamicObject"},
+                "Tags": {"iris_type": "%DynamicArray"},
+                "Title": {"iris_type": "%String", "required": True},
+            },
+        },
+    )
+    configure_default_runtime(runtime=adapter)
+
+    class JsonDoc(IRISModel):
+        Meta: Annotated[dict, Field(iris_type="%DynamicObject")]
+        Tags: Annotated[list, Field(iris_type="%DynamicArray")]
+        Title: Annotated[str, Field(required=True)]
+
+        class Meta:
+            classname = "Demo.JsonDoc"
+
+    row = JsonDoc(Title="Hello", Meta={"flag": True, "count": 2}, Tags=["a", 1]).save()
+    loaded = JsonDoc.get(row.pk)
+
+    assert loaded is not None
+    assert loaded.Meta == {"flag": True, "count": 2}
+    assert loaded.Tags == ["a", 1]
 
 
 def test_stream_properties_roundtrip_with_fake_adapter() -> None:
@@ -492,6 +594,70 @@ def test_base_runtime_stream_save_and_open_use_stream_objects() -> None:
     assert objects[1].Payload.ReadAll() == b"\x01\x02"
     assert objects[1].Payload.rewound is True
     assert opened == {"id": 1, "data": {"Body": "abc", "Payload": b"\x01\x02"}}
+
+
+def test_base_runtime_dynamic_json_save_and_open_use_dynamic_objects() -> None:
+    class DummyDynamicValue:
+        def __init__(self, json_text: str) -> None:
+            self.json_text = json_text
+
+        def _ToJSON(self) -> str:
+            return self.json_text
+
+    class DummyObject:
+        def __init__(self, obj_id=None) -> None:
+            self._obj_id = obj_id
+
+        def _Save(self):
+            if self._obj_id is None:
+                self._obj_id = 1
+            objects[self._obj_id] = self
+            return 1
+
+        def _Id(self):
+            return self._obj_id
+
+    class DummyPersistentClass:
+        def _New(self):
+            return DummyObject()
+
+        def _OpenId(self, obj_id):
+            return objects.get(obj_id, "")
+
+    class DummyDynamicClass:
+        def _FromJSON(self, json_text):
+            return DummyDynamicValue(json_text)
+
+    class DummyRuntime:
+        def cls(self, classname):
+            if classname == "Demo.JsonDoc":
+                return DummyPersistentClass()
+            if classname in {"%DynamicObject", "%DynamicArray"}:
+                return DummyDynamicClass()
+            raise AssertionError(classname)
+
+    class Harness(runtime_module._BaseRuntime):
+        def __init__(self) -> None:
+            self.runtime = DummyRuntime()
+
+        def load_schema(self, classname: str):
+            return {
+                "name": classname,
+                "properties": [
+                    {"name": "Meta", "iris_type": "%DynamicObject"},
+                    {"name": "Tags", "iris_type": "%DynamicArray"},
+                ],
+            }
+
+    objects = {}
+    runtime = Harness()
+
+    obj_id = runtime.save_object("Demo.JsonDoc", {"Meta": {"flag": True}, "Tags": ["a", 1]})
+    opened = runtime.open_object("Demo.JsonDoc", obj_id)
+
+    assert objects[1].Meta.json_text == '{"flag":true}'
+    assert objects[1].Tags.json_text == '["a",1]'
+    assert opened == {"id": 1, "data": {"Meta": {"flag": True}, "Tags": ["a", 1]}}
 
 
 def test_base_runtime_object_invoke_uses_embedded_percent_method_mapping() -> None:
@@ -1110,6 +1276,85 @@ def test_iris_object_runtime_iris_list_roundtrip() -> None:
     assert opened == {"id": obj_id, "data": {"Tags": ["a", "b", "c"]}}
 
 
+def test_iris_object_runtime_dynamic_json_roundtrip() -> None:
+    class FakeDynamicValue:
+        def __init__(self, json_text: str) -> None:
+            self.json_text = json_text
+
+        def invokeString(self, method_name, *args):
+            if method_name == "%ToJSON":
+                return self.json_text
+            raise AttributeError(method_name)
+
+    class FakeIRISObject:
+        def __init__(self, gateway, obj_id=None) -> None:
+            self.gateway = gateway
+            self.obj_id = obj_id
+            self.props: dict[str, object] = {}
+
+        def set(self, name, value):
+            self.props[name] = value
+
+        def get(self, name):
+            return self.props[name]
+
+        def getObject(self, name):
+            return self.props[name]
+
+        def invoke(self, method_name, *args):
+            if method_name == "%Save":
+                if self.obj_id is None:
+                    self.obj_id = self.gateway.next_id
+                    self.gateway.next_id += 1
+                self.gateway.objects[self.obj_id] = self
+                return 1
+            if method_name == "%Id":
+                return self.obj_id
+            raise AttributeError(method_name)
+
+    class FakeGateway:
+        def __init__(self) -> None:
+            self.objects: dict[int, FakeIRISObject] = {}
+            self.next_id = 1
+
+        def classMethodObject(self, classname, method_name, *args):
+            if method_name == "%New":
+                return FakeIRISObject(self)
+            if method_name == "%OpenId":
+                return self.objects.get(args[0], "")
+            if method_name == "%DeleteId":
+                self.objects.pop(args[0], None)
+                return 1
+            if method_name == "%FromJSON" and classname in {"%DynamicObject", "%DynamicArray"}:
+                return FakeDynamicValue(args[0])
+            raise AttributeError((classname, method_name))
+
+        def classMethodString(self, classname, method_name, *args):
+            return 1
+
+    class Harness(runtime_module._IRISObjectRuntimeBase):
+        def __init__(self) -> None:
+            self.runtime = FakeGateway()
+
+        def load_schema(self, classname: str):
+            return {
+                "name": classname,
+                "properties": [
+                    {"name": "Meta", "iris_type": "%DynamicObject"},
+                    {"name": "Tags", "iris_type": "%DynamicArray"},
+                ],
+            }
+
+    runtime = Harness()
+    obj_id = runtime.save_object("Demo.Article", {"Meta": {"flag": True}, "Tags": ["a", 1]})
+    stored = runtime.runtime.objects[obj_id]
+    opened = runtime.open_object("Demo.Article", obj_id)
+
+    assert stored.props["Meta"].json_text == '{"flag":true}'
+    assert stored.props["Tags"].json_text == '["a",1]'
+    assert opened == {"id": obj_id, "data": {"Meta": {"flag": True}, "Tags": ["a", 1]}}
+
+
 def test_proxy_instance_method_bridge_works() -> None:
     adapter = FakeAdapter()
     preload_schema(
@@ -1252,6 +1497,25 @@ def test_legacy_iris_mode_validation_raises_at_class_definition_time() -> None:
         class Product(IRISModel):
             _iris_classname = "Demo.InvalidLegacyProduct"
             _iris_mode = "Proxy"
+
+            Name: Annotated[str, Field(required=True)]
+
+
+def test_meta_storage_validation_raises_at_class_definition_time() -> None:
+    with pytest.raises(TypeError, match=r"Unknown storage keys for Meta\.storage: data_locatoin"):
+        class Product(IRISModel):
+            Name: Annotated[str, Field(required=True)]
+
+            class Meta:
+                classname = "Demo.InvalidStorageProduct"
+                storage = {"data_locatoin": "^Demo.ProductD"}
+
+
+def test_legacy_storage_validation_raises_at_class_definition_time() -> None:
+    with pytest.raises(TypeError, match=r"Unknown storage keys for _iris_storage: data_locatoin"):
+        class Product(IRISModel):
+            _iris_classname = "Demo.InvalidLegacyStorageProduct"
+            _iris_storage = {"data_locatoin": "^Demo.ProductD"}
 
             Name: Annotated[str, Field(required=True)]
 

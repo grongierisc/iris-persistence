@@ -238,6 +238,8 @@ def _annotation(iris_type: str) -> str:
         "%Date": "date",
         "%Time": "time",
         "%TimeStamp": "datetime",
+        "%DynamicObject": "dict",
+        "%DynamicArray": "list",
         "%Stream.GlobalBinary": "bytes",
     }
     return mapping.get(iris_type, "str")

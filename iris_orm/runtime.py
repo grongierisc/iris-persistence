@@ -7,11 +7,13 @@ from typing import Any
 from .schema import (
     SchemaClass,
     coerce_to_iris_logical,
+    is_dynamic_type,
     is_array_of_datatypes,
     is_list_of_datatypes,
     is_stream_type,
     match_classnames,
     normalize_superclasses,
+    read_dynamic_value,
     read_stream_value,
     SUPPORTED_PROPERTY_PARAMETERS,
 )
@@ -122,6 +124,14 @@ class _BaseRuntime:
 
     def _schema_save(self, obj: Any) -> Any:
         return self._object_invoke(obj, "%Save")
+
+    def _class_method_object(self, classname: str, method_name: str, *args: Any) -> Any:
+        target = self.runtime.cls(classname)
+        resolved_name = f"_{method_name[1:]}" if method_name.startswith("%") else method_name
+        method = getattr(target, resolved_name, None)
+        if not callable(method):
+            raise AttributeError(f"{classname}.{method_name}")
+        return method(*args)
 
     def _use_iris_list_for_datatypes(self) -> bool:
         return False
@@ -267,6 +277,9 @@ class _BaseRuntime:
             if is_stream_type(iris_type):
                 self._write_stream_property(obj, key, value, iris_type)
                 continue
+            if is_dynamic_type(iris_type):
+                self._write_dynamic_property(obj, key, value, iris_type)
+                continue
             if is_list_of_datatypes(iris_type) and self._use_iris_list_for_datatypes():
                 self._object_set(obj, key, None if value is None else self._iris_list_from_python(list(value)))
                 continue
@@ -296,15 +309,7 @@ class _BaseRuntime:
         data: dict[str, Any] = {}
         for prop in schema["properties"]:
             iris_type = str(prop.get("iris_type", "%String") or "%String")
-            if is_list_of_datatypes(iris_type) and self._use_iris_list_for_datatypes():
-                value = self._object_get(obj, prop["name"], iris_type)
-                value = None if value is None else self._python_from_iris_list(value)
-                data[prop["name"]] = value
-                continue
-            value = self._object_get(obj, prop["name"], iris_type)
-            if is_stream_type(iris_type):
-                value = read_stream_value(value, iris_type)
-            data[prop["name"]] = value
+            data[prop["name"]] = self._read_property_value(obj, prop["name"], iris_type)
         return {
             "id": obj_id,
             "data": data,
@@ -580,6 +585,24 @@ class _BaseRuntime:
         self._stream_call(stream, "Rewind")
         self._object_set(obj, prop_name, stream)
 
+    def _write_dynamic_property(self, obj: Any, prop_name: str, value: Any, iris_type: str) -> None:
+        if value is None:
+            self._object_set(obj, prop_name, None)
+            return
+        payload = self._coerce_runtime_value(value, iris_type)
+        self._object_set(obj, prop_name, self._class_method_object(iris_type, "%FromJSON", payload))
+
+    def _read_property_value(self, obj: Any, prop_name: str, iris_type: str) -> Any:
+        if is_list_of_datatypes(iris_type) and self._use_iris_list_for_datatypes():
+            value = self._object_get(obj, prop_name, iris_type)
+            return None if value is None else self._python_from_iris_list(value)
+        value = self._object_get(obj, prop_name, iris_type)
+        if is_stream_type(iris_type):
+            return read_stream_value(value, iris_type)
+        if is_dynamic_type(iris_type):
+            return read_dynamic_value(value)
+        return value
+
     def _new_stream_object(self, iris_type: str) -> Any:
         stream_class = self.runtime.cls(iris_type)
         constructor = getattr(stream_class, "_New", None)
@@ -770,10 +793,7 @@ class EmbeddedRuntime(_BaseRuntime):
             payload = {"id": obj_id}
             for field in fields:
                 iris_type = property_types.get(field, "%String")
-                value = self._object_get(obj, field, iris_type)
-                if is_stream_type(iris_type):
-                    value = read_stream_value(value, iris_type)
-                payload[field] = value
+                payload[field] = self._read_property_value(obj, field, iris_type)
             result.append(payload)
         return result
 
@@ -808,6 +828,9 @@ class _IRISObjectRuntimeBase(_BaseRuntime):
                 return caller(classname, method_name, *args)
         raise AttributeError(f"Runtime does not support class method dispatch for {classname}.{method_name}")
 
+    def _class_method_object(self, classname: str, method_name: str, *args: Any) -> Any:
+        return self._class_method(classname, method_name, *args)
+
     def _object_new(self, classname: str) -> Any:
         return self._class_method(classname, "%New")
 
@@ -818,7 +841,7 @@ class _IRISObjectRuntimeBase(_BaseRuntime):
         return self._class_method(classname, "%DeleteId", obj_id)
 
     def _object_get(self, obj: Any, prop_name: str, iris_type: str | None = None) -> Any:
-        if iris_type and is_stream_type(iris_type):
+        if iris_type and (is_stream_type(iris_type) or is_dynamic_type(iris_type)):
             getter = getattr(obj, "getObject", None)
             if callable(getter):
                 return getter(prop_name)

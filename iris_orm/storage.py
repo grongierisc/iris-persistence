@@ -8,6 +8,23 @@ def _string(value: Any) -> str:
     return "" if value in {None, ""} else str(value)
 
 
+def _unknown_storage_keys(payload: dict[str, Any], valid_keys: set[str]) -> list[str]:
+    return sorted(set(payload) - valid_keys)
+
+
+def validate_storage_definition_dict(
+    payload: "StorageDefinition | dict[str, Any] | None",
+    *,
+    source_name: str = "_iris_storage",
+) -> None:
+    if payload is None or isinstance(payload, StorageDefinition):
+        return
+    unexpected = _unknown_storage_keys(payload, _STORAGE_TOP_LEVEL_FIELDS)
+    if unexpected:
+        keys = ", ".join(unexpected)
+        raise TypeError(f"Unknown storage keys for {source_name}: {keys}")
+
+
 @dataclass(frozen=True)
 class StorageData:
     name: str
@@ -176,10 +193,7 @@ class StorageDefinition:
             return None
         if isinstance(payload, StorageDefinition):
             return payload
-        unexpected = sorted(set(payload) - set(cls._SCALAR_FIELDS) - {"data", "properties", "sql_maps"})
-        if unexpected:
-            keys = ", ".join(unexpected)
-            raise TypeError(f"Unknown storage keys: {keys}")
+        validate_storage_definition_dict(payload)
         scalars = {name: _string(payload.get(name, "Default" if name == "name" else "")) for name in cls._SCALAR_FIELDS}
         if not scalars["name"]:
             scalars["name"] = "Default"
@@ -205,3 +219,6 @@ class StorageDefinition:
         if self.sql_maps:
             payload["sql_maps"] = [item.to_dict() for item in self.sql_maps]
         return payload
+
+
+_STORAGE_TOP_LEVEL_FIELDS = set(StorageDefinition._SCALAR_FIELDS) | {"data", "properties", "sql_maps"}

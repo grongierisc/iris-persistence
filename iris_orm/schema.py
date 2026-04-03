@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import datetime as datetime_module
 import fnmatch
+import json
 from dataclasses import dataclass, field as dataclass_field
 from decimal import Decimal
 from pathlib import Path
@@ -18,6 +19,8 @@ PYTHON_TO_IRIS: dict[type, str] = {
     float: "%Float",
     bool: "%Boolean",
     bytes: "%Stream.GlobalBinary",
+    dict: "%DynamicObject",
+    list: "%DynamicArray",
     datetime_module.date: "%Date",
     datetime_module.time: "%Time",
     datetime_module.datetime: "%TimeStamp",
@@ -39,6 +42,8 @@ IRIS_TO_PYTHON: dict[str, type] = {
     "%TimeStamp": datetime_module.datetime,
     "%Stream.GlobalBinary": bytes,
     "%Stream.GlobalCharacter": str,
+    "%DynamicObject": dict,
+    "%DynamicArray": list,
 }
 
 SUPPORTED_PROPERTY_PARAMETERS: tuple[str, ...] = (
@@ -202,7 +207,10 @@ def normalize_superclasses(value: Any) -> tuple[str, ...]:
 def python_type_to_iris(annotation: Any) -> str:
     if isinstance(annotation, str):
         return annotation
-    if getattr(annotation, "__origin__", None) is None and annotation in PYTHON_TO_IRIS:
+    origin = getattr(annotation, "__origin__", None)
+    if origin in PYTHON_TO_IRIS:
+        return PYTHON_TO_IRIS[origin]
+    if origin is None and annotation in PYTHON_TO_IRIS:
         return PYTHON_TO_IRIS[annotation]
     return "%String"
 
@@ -214,6 +222,8 @@ def iris_type_to_python(iris_type: str) -> type:
 def coerce_to_iris_logical(value: Any, iris_type: str) -> Any:
     if value is None:
         return None
+    if is_dynamic_type(iris_type):
+        return serialize_dynamic_json(value)
     if is_stream_type(iris_type):
         if is_binary_stream_type(iris_type):
             if isinstance(value, bytearray):
@@ -247,6 +257,8 @@ def coerce_to_python(value: Any, iris_type: str) -> Any:
         if iris_type in {"%String", "%Stream.GlobalCharacter"}:
             return ""
         return None
+    if is_dynamic_type(iris_type):
+        return read_dynamic_value(value)
     if is_stream_type(iris_type):
         return read_stream_value(value, iris_type)
     if iris_type == "%Boolean":
@@ -281,7 +293,12 @@ def coerce_to_python(value: Any, iris_type: str) -> Any:
 
 
 def default_literal(value: Any, iris_type: str) -> str:
-    if value is None or value == "" or value == [] or value == {}:
+    if value is None or value == "":
+        return ""
+    if is_dynamic_type(iris_type):
+        escaped = serialize_dynamic_json(value).replace('"', '""')
+        return f'"{escaped}"'
+    if value == [] or value == {}:
         return ""
     if iris_type in {
         "%Boolean",
@@ -307,6 +324,8 @@ def default_literal(value: Any, iris_type: str) -> str:
 def python_default_source(default: str, iris_type: str) -> str | None:
     if default == "":
         return None
+    if is_dynamic_type(iris_type):
+        return repr(coerce_to_python(default, iris_type))
     if iris_type == "%Boolean":
         return "True" if default.strip().lower() in {"1", "true"} else "False"
     if iris_type in {"%Integer", "%SmallInt", "%BigInt"}:
@@ -340,6 +359,8 @@ def python_default_source(default: str, iris_type: str) -> str | None:
 def python_default_value(default: str, iris_type: str) -> Any:
     if default == "":
         return None
+    if is_dynamic_type(iris_type):
+        return coerce_to_python(default, iris_type)
     if iris_type in {
         "%Boolean",
         "%Integer",
@@ -473,6 +494,51 @@ def is_array_of_datatypes(iris_type: str) -> bool:
     return str(iris_type or "").startswith("%ArrayOfDataTypes")
 
 
+def is_dynamic_object_type(iris_type: str) -> bool:
+    return str(iris_type or "") == "%DynamicObject"
+
+
+def is_dynamic_array_type(iris_type: str) -> bool:
+    return str(iris_type or "") == "%DynamicArray"
+
+
+def is_dynamic_type(iris_type: str) -> bool:
+    return is_dynamic_object_type(iris_type) or is_dynamic_array_type(iris_type)
+
+
+def serialize_dynamic_json(value: Any) -> str:
+    return json.dumps(value, separators=(",", ":"), sort_keys=True)
+
+
+def read_dynamic_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return copy.deepcopy(value)
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        value = bytes(value).decode("utf-8")
+    if isinstance(value, str):
+        text = value
+        if len(text) >= 2 and text.startswith('"') and text.endswith('"'):
+            text = text[1:-1].replace('""', '"')
+        return json.loads(text)
+
+    for reader_name in ("_ToJSON", "ToJSON"):
+        reader = getattr(value, reader_name, None)
+        if callable(reader):
+            return json.loads(reader())
+
+    invoke_string = getattr(value, "invokeString", None)
+    if callable(invoke_string):
+        return json.loads(invoke_string("%ToJSON"))
+
+    invoke = getattr(value, "invoke", None)
+    if callable(invoke):
+        return json.loads(invoke("%ToJSON"))
+
+    return copy.deepcopy(value)
+
+
 def read_stream_value(value: Any, iris_type: str) -> str | bytes | None | Any:
     if value is None:
         return None
@@ -485,18 +551,88 @@ def read_stream_value(value: Any, iris_type: str) -> str | bytes | None | Any:
     for reader_name in ("ReadAll",):
         reader = getattr(value, reader_name, None)
         if callable(reader):
-            payload = reader()
-            return _normalize_stream_payload(payload, iris_type)
+            try:
+                payload = reader()
+                return _normalize_stream_payload(payload, iris_type)
+            except Exception:
+                pass
 
     invoke = getattr(value, "invoke", None)
     if callable(invoke):
-        payload = invoke("ReadAll")
-        return _normalize_stream_payload(payload, iris_type)
+        try:
+            payload = invoke("ReadAll")
+            return _normalize_stream_payload(payload, iris_type)
+        except Exception:
+            pass
 
     invoke_string = getattr(value, "invokeString", None)
     if callable(invoke_string):
-        payload = invoke_string("ReadAll")
-        return _normalize_stream_payload(payload, iris_type)
+        try:
+            payload = invoke_string("ReadAll")
+            return _normalize_stream_payload(payload, iris_type)
+        except Exception:
+            pass
+
+    read_sql = getattr(value, "ReadSQL", None)
+    if callable(read_sql):
+        try:
+            payload = read_sql()
+            return _normalize_stream_payload(payload, iris_type)
+        except Exception:
+            pass
+
+    if callable(invoke):
+        try:
+            payload = invoke("ReadSQL")
+            return _normalize_stream_payload(payload, iris_type)
+        except Exception:
+            pass
+
+    if callable(invoke_string):
+        try:
+            payload = invoke_string("ReadSQL")
+            return _normalize_stream_payload(payload, iris_type)
+        except Exception:
+            pass
+
+    read = getattr(value, "Read", None)
+    if callable(read):
+        size = None
+        size_get = getattr(value, "SizeGet", None)
+        if callable(size_get):
+            try:
+                size = int(size_get())
+            except Exception:
+                size = None
+        if size is None:
+            raw_size = getattr(value, "Size", None)
+            if raw_size not in {None, ""}:
+                try:
+                    size = int(raw_size)
+                except Exception:
+                    size = None
+        if size is not None:
+            try:
+                payload = read(size)
+                return _normalize_stream_payload(payload, iris_type)
+            except Exception:
+                pass
+        chunks: list[Any] = []
+        while True:
+            try:
+                payload = read()
+            except Exception:
+                break
+            if payload in {"", b"", None}:
+                break
+            chunks.append(payload)
+        if chunks:
+            if is_binary_stream_type(iris_type):
+                return b"".join(
+                    item if isinstance(item, bytes) else _normalize_stream_payload(item, iris_type)
+                    for item in chunks
+                )
+            return "".join(str(item) for item in chunks)
 
     return _normalize_stream_payload(value, iris_type)
 
@@ -506,7 +642,7 @@ def _normalize_stream_payload(value: Any, iris_type: str) -> str | bytes | Any:
         if isinstance(value, (bytes, bytearray, memoryview)):
             return bytes(value)
         if isinstance(value, str):
-            return value.encode("utf-8")
+            return value.encode("latin-1")
     else:
         if isinstance(value, bytes):
             return value.decode("utf-8")

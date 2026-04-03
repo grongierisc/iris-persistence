@@ -172,3 +172,23 @@ def test_scaffold_maps_stream_types_to_python_native_types(tmp_path: Path) -> No
 
     assert 'Body: Annotated[str, Field(iris_type="%Stream.GlobalCharacter")]' in source
     assert 'Payload: Annotated[bytes, Field(iris_type="%Stream.GlobalBinary")]' in source
+
+
+def test_scaffold_maps_dynamic_json_types_to_python_native_types(tmp_path: Path) -> None:
+    adapter = FakeAdapter()
+    preload_schema(
+        adapter,
+        {
+            "name": "Demo.JsonDoc",
+            "properties": {
+                "Meta": {"iris_type": "%DynamicObject"},
+                "Tags": {"iris_type": "%DynamicArray"},
+            },
+        },
+    )
+
+    paths = scaffold_from_iris("Demo.JsonDoc", tmp_path, conn=adapter)
+    source = paths[0].read_text(encoding="utf-8")
+
+    assert 'Meta: Annotated[dict, Field(iris_type="%DynamicObject")]' in source
+    assert 'Tags: Annotated[list, Field(iris_type="%DynamicArray")]' in source

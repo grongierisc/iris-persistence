@@ -21,7 +21,7 @@ from .storage import StorageDefinition, validate_storage_definition_dict
 
 _MODEL_REGISTRY: dict[str, type] = {}
 _ModelT = TypeVar("_ModelT", bound="IRISModel")
-_VALID_MODES = {"python", "additive", "proxy"}
+_VALID_MODES = {"replace", "extend", "observe"}
 _META_TO_IRIS_ATTRS = {
     "classname": "_iris_classname",
     "mode": "_iris_mode",
@@ -108,6 +108,16 @@ class Query(Generic[_ModelT]):
     def filter_eq(self, **kwargs: Any) -> "Query[_ModelT]":
         merged = dict(self.filters)
         merged.update(kwargs)
+        # Validate field names eagerly when the schema is already bound so the
+        # error points at the call site rather than `.all()`.
+        if self.model_class._iris_bound:
+            valid_fields = set(self.model_class._iris_bound_schema.property_map)
+            unknown = set(kwargs) - valid_fields
+            if unknown:
+                raise ValueError(
+                    f"Unknown field(s) for {self.model_class.__name__}: "
+                    + ", ".join(sorted(unknown))
+                )
         return Query(self.model_class, merged, self.order_field, self.limit_value, self.offset_value)
 
     def order_by(self, field: str) -> "Query[_ModelT]":
@@ -146,7 +156,7 @@ class Query(Generic[_ModelT]):
 class IRISModel:
     _iris_classname: ClassVar[str] = ""
     _iris_superclasses: ClassVar[str | list[str]] = "%Persistent"
-    _iris_mode: ClassVar[str] = "additive"
+    _iris_mode: ClassVar[str] = "extend"
     _iris_storage: ClassVar[StorageDefinition | dict[str, Any] | None] = None
     _iris_indexes: ClassVar[list[dict[str, Any]]] = []
     _iris_parameters: ClassVar[dict[str, str]] = {}
@@ -165,7 +175,7 @@ class IRISModel:
 
     def __init__(self, **kwargs: Any) -> None:
         model_class = type(self)
-        if model_class._normalized_mode() == "proxy" and not getattr(model_class, "_iris_bound", False):
+        if model_class._normalized_mode() == "observe" and not getattr(model_class, "_iris_bound", False):
             model_class._prepare()
         object.__setattr__(self, "_iris_id", kwargs.pop("id", None))
         object.__setattr__(self, "_iris_data", {})
@@ -179,6 +189,36 @@ class IRISModel:
     @property
     def pk(self) -> Any:
         return object.__getattribute__(self, "_iris_id")
+
+    @property
+    def is_new(self) -> bool:
+        """``True`` if this instance has not yet been saved to IRIS (no ``pk``)."""
+        return object.__getattribute__(self, "_iris_id") is None
+
+    def __repr__(self) -> str:
+        cls_name = type(self).__name__
+        pk = object.__getattribute__(self, "_iris_id")
+        data = object.__getattribute__(self, "_iris_data")
+        fields_str = ", ".join(f"{k}={v!r}" for k, v in data.items())
+        pk_str = f"pk={pk!r}, " if pk is not None else ""
+        return f"{cls_name}({pk_str}{fields_str})"
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, IRISModel):
+            return NotImplemented
+        if type(self) is not type(other):
+            return False
+        self_pk = object.__getattribute__(self, "_iris_id")
+        other_pk = object.__getattribute__(other, "_iris_id")
+        if self_pk is None or other_pk is None:
+            return self is other
+        return self_pk == other_pk
+
+    def __hash__(self) -> int:
+        pk = object.__getattribute__(self, "_iris_id")
+        if pk is None:
+            return id(self)
+        return hash((type(self), pk))
 
     @classmethod
     def _initialize_iris_subclass(cls) -> None:
@@ -302,19 +342,22 @@ class IRISModel:
 
     @classmethod
     def _normalized_mode(cls) -> str:
-        mode = str(getattr(cls, "_iris_mode", "additive") or "additive").strip()
-        if mode not in _VALID_MODES:
-            raise ValueError(f"Unsupported _iris_mode: {getattr(cls, '_iris_mode', None)!r}")
-        return mode
+        raw = str(getattr(cls, "_iris_mode", "extend") or "extend").strip()
+        if raw not in _VALID_MODES:
+            raise ValueError(
+                f"Unsupported _iris_mode: {raw!r}. "
+                f"Valid modes are: {', '.join(sorted(_VALID_MODES))}."
+            )
+        return raw
 
     @classmethod
     def _runtime(cls) -> Any:
         engine = getattr(cls, "_iris_engine", None)
         if engine is not None:
             if cls.__dict__.get("_iris_engine_runtime_for") is not engine:
-                from .runtime import IRISRuntime
+                from .runtime import _runtime_from_engine
 
-                cached = IRISRuntime(engine=engine)
+                cached = _runtime_from_engine(engine)
                 cls._iris_engine_runtime = cached  # type: ignore[attr-defined]
                 cls._iris_engine_runtime_for = engine  # type: ignore[attr-defined]
             return cls.__dict__["_iris_engine_runtime"]
@@ -339,22 +382,22 @@ class IRISModel:
         generation = cls._runtime_version()
         compiler = SchemaCompiler(runtime)
 
-        if mode == "proxy":
+        if mode == "observe":
             live = compiler.class_from_iris(classname)
             live_dict = live.to_dict()
             cached = getattr(cls, "_iris_prepared_state", None)
-            if cached == (generation, {"mode": "proxy", "schema": live_dict}):
+            if cached == (generation, {"mode": "observe", "schema": live_dict}):
                 return
             bind_schema(cls, live)
-            cls._iris_prepared_state = (generation, {"mode": "proxy", "schema": live_dict})
+            cls._iris_prepared_state = (generation, {"mode": "observe", "schema": live_dict})
             cls._install_native_class_proxies()
             return
 
         desired = SchemaCompiler().compile_model(cls)
-        if mode == "python":
+        if mode == "replace":
             desired_dict = desired.to_dict()
             cached = getattr(cls, "_iris_prepared_state", None)
-            if cached == (generation, {"mode": "python", "schema": desired_dict}):
+            if cached == (generation, {"mode": "replace", "schema": desired_dict}):
                 return
             try:
                 live = compiler.class_from_iris(classname)
@@ -363,7 +406,7 @@ class IRISModel:
             if live is None or not schema_equals(live, desired):
                 runtime.replace_class(desired)
             bind_schema(cls, desired)
-            cls._iris_prepared_state = (generation, {"mode": "python", "schema": desired_dict})
+            cls._iris_prepared_state = (generation, {"mode": "replace", "schema": desired_dict})
             cls._install_native_class_proxies()
             return
 
@@ -371,15 +414,15 @@ class IRISModel:
             live = compiler.class_from_iris(classname)
         except LookupError:
             live = None
-        additive = desired if live is None else merge_additive_schema(live, desired)
-        additive_dict = additive.to_dict()
+        extended = desired if live is None else merge_additive_schema(live, desired)
+        extended_dict = extended.to_dict()
         cached = getattr(cls, "_iris_prepared_state", None)
-        if cached == (generation, {"mode": "additive", "schema": additive_dict}):
+        if cached == (generation, {"mode": "extend", "schema": extended_dict}):
             return
-        if live is None or not schema_equals(live, additive):
-            runtime.replace_class(additive)
-        bind_schema(cls, additive)
-        cls._iris_prepared_state = (generation, {"mode": "additive", "schema": additive_dict})
+        if live is None or not schema_equals(live, extended):
+            runtime.replace_class(extended)
+        bind_schema(cls, extended)
+        cls._iris_prepared_state = (generation, {"mode": "extend", "schema": extended_dict})
         cls._install_native_class_proxies()
 
     @classmethod
@@ -395,9 +438,9 @@ class IRISModel:
         except LookupError:
             live = None
         mode = cls._normalized_mode()
-        if mode == "proxy" and live is not None:
+        if mode == "observe" and live is not None:
             desired = live
-        elif mode == "additive" and live is not None:
+        elif mode == "extend" and live is not None:
             desired = merge_additive_schema(live, compiled)
         else:
             desired = compiled
@@ -406,7 +449,7 @@ class IRISModel:
     @classmethod
     def sync(cls) -> SchemaPlan:
         plan = cls.plan()
-        if cls._normalized_mode() != "proxy":
+        if cls._normalized_mode() != "observe":
             cls._runtime().replace_class(plan.desired)
         bind_schema(cls, plan.desired)
         cls._iris_prepared_state = (cls._runtime_version(), {"mode": cls._normalized_mode(), "schema": plan.desired.to_dict()})

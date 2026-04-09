@@ -10,7 +10,7 @@ class Product(IRISModel):
 
     class Meta:
         classname = "Demo.ExampleProduct"
-        mode = "python"
+        mode = "replace"
         storage = StorageDefinition(
             data_location="^Demo.ExampleProductD",
             default_data="ExampleProductDefaultData",

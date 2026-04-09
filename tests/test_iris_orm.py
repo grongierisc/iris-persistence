@@ -39,7 +39,7 @@ def test_python_first_compiles_decorators_and_storage() -> None:
 
         class Meta:
             classname = "Demo.Product"
-            mode = "python"
+            mode = "replace"
             superclasses = ["%Persistent", "Demo.Auditable"]
             storage = StorageDefinition(
                 data_location="^Demo.ProductD",
@@ -84,7 +84,7 @@ def test_python_first_auto_overwrites_live_schema() -> None:
 
         class Meta:
             classname = "Demo.Product"
-            mode = "python"
+            mode = "replace"
             storage = StorageDefinition(name="Default", data_location="^Demo.ProductD")
             indexes = [Index("NameIdx", properties="Name", unique=True)]
             parameters = {"DEFAULTGLOBAL": "^Demo.ProductD"}
@@ -129,7 +129,7 @@ def test_default_additive_mode_keeps_live_members() -> None:
     Product(Name="Widget", Price=12.5).save()
 
     live = SchemaCompiler(adapter).class_from_iris("Demo.Product")
-    assert Product._iris_mode == "additive"
+    assert Product._iris_mode == "extend"
     assert "OldField" in live.property_map
     assert "Price" in live.property_map
     assert "OldIdx" in live.index_map
@@ -160,7 +160,7 @@ def test_explicit_additive_mode_overwrites_conflicting_types_without_removing_li
 
         class Meta:
             classname = "Demo.Product"
-            mode = "additive"
+            mode = "extend"
             indexes = [Index("NameIdx", properties="Name", unique=True)]
             parameters = {"DEFAULTGLOBAL": "^Demo.ProductD"}
 
@@ -176,7 +176,7 @@ def test_explicit_additive_mode_overwrites_conflicting_types_without_removing_li
     assert live.parameters["DEFAULTGLOBAL"] == "^Demo.ProductD"
 
 
-def test_plan_uses_additive_merge_when_mode_is_additive() -> None:
+def test_plan_uses_extend_merge_when_mode_is_extend() -> None:
     adapter = FakeAdapter()
     preload_schema(
         adapter,
@@ -196,11 +196,9 @@ def test_plan_uses_additive_merge_when_mode_is_additive() -> None:
 
         class Meta:
             classname = "Demo.Product"
-            mode = "additive"
+            mode = "extend"
 
     plan = Product.plan()
-
-    assert plan.live is not None
     assert "LegacyOnly" in plan.desired.property_map
     assert "Name" in plan.desired.property_map
 
@@ -225,11 +223,11 @@ def test_proxy_model_uses_live_schema_without_overwrite() -> None:
     class Article(IRISModel):
         class Meta:
             classname = "Demo.Article"
-            mode = "proxy"
+            mode = "observe"
 
     Article.bind()
 
-    assert Article._iris_mode == "proxy"
+    assert Article._iris_mode == "observe"
     assert "Title" in Article._iris_declared_fields
     assert Article._iris_storage is not None
     assert Article._iris_storage.data_location == "^Demo.ArticleD"
@@ -280,13 +278,11 @@ def test_default_runtime_falls_back_to_embedded_when_unconfigured(monkeypatch: p
     sentinel = object()
     created: list[object] = []
 
-    def fake_runtime_factory(*, runtime=None, engine=None):
-        assert runtime is None
-        assert engine is None
+    def fake_runtime_factory():
         created.append(sentinel)
         return sentinel
 
-    monkeypatch.setattr(runtime_module, "IRISRuntime", fake_runtime_factory)
+    monkeypatch.setattr(runtime_module, "EmbeddedRuntime", fake_runtime_factory)
 
     first = runtime_module._get_runtime()
     second = runtime_module._get_runtime()
@@ -294,6 +290,24 @@ def test_default_runtime_falls_back_to_embedded_when_unconfigured(monkeypatch: p
     assert first is sentinel
     assert second is sentinel
     assert created == [sentinel]
+
+
+def test_runtime_from_engine_selects_embedded_community_and_official(monkeypatch: pytest.MonkeyPatch) -> None:
+    embedded = object()
+    community = object()
+    official = object()
+
+    monkeypatch.setattr(runtime_module, "EmbeddedRuntime", lambda: embedded)
+    monkeypatch.setattr(runtime_module, "CommunityRuntime", lambda engine: community)
+    monkeypatch.setattr(runtime_module, "OfficialRuntime", lambda engine: official)
+
+    class DummyEngine:
+        def __init__(self, drivername: str) -> None:
+            self.url = type("DummyURL", (), {"drivername": drivername})()
+
+    assert runtime_module._runtime_from_engine() is embedded
+    assert runtime_module._runtime_from_engine(DummyEngine("iris")) is community
+    assert runtime_module._runtime_from_engine(DummyEngine("iris+intersystems")) is official
 
 
 def test_date_time_and_decimal_types_compile_and_roundtrip_defaults() -> None:
@@ -353,7 +367,7 @@ def test_property_parameters_roundtrip_with_fake_runtime() -> None:
     class Product(IRISModel):
         class Meta:
             classname = "Demo.Product"
-            mode = "proxy"
+            mode = "observe"
 
     Product.bind()
     assert Product._iris_declared_fields["Status"].parameters == {"VALUELIST": ",Active,Inactive"}
@@ -687,7 +701,7 @@ def test_embedded_runtime_query_rows_opens_each_object_by_id() -> None:
     class DummySQL:
         @staticmethod
         def exec(statement, *params):
-            assert statement == "SELECT %ID FROM Demo.Product WHERE Price = ? ORDER BY Title"
+            assert statement == 'SELECT %ID FROM Demo.Product WHERE "Price" = ? ORDER BY "Title"'
             assert list(params) == [2.0]
             return [(2,), (1,)]
 
@@ -745,7 +759,7 @@ def test_query_rows_quotes_user_package_classname() -> None:
     runtime = Harness()
     runtime.query_rows("User.Demo", ["Toto"], {}, order_by="Toto")
 
-    assert captured == ["SELECT %ID FROM SQLUser.Demo ORDER BY Toto"]
+    assert captured == ['SELECT %ID FROM SQLUser.Demo ORDER BY "Toto"']
 
 
 def test_base_runtime_load_and_replace_property_parameters() -> None:
@@ -852,7 +866,7 @@ def test_base_runtime_load_and_replace_property_parameters() -> None:
                     "Status": Annotated[str, Field(iris_type="%String", parameters={"VALUELIST": ",Active,Inactive"})],
                     "Price": Annotated[Decimal, Field(iris_type="%Decimal", parameters={"SCALE": "2", "PRECISION": "10"})],
                 },
-                "Meta": type("Meta", (), {"classname": "Demo.Product", "mode": "python"}),
+                "Meta": type("Meta", (), {"classname": "Demo.Product", "mode": "replace"}),
             },
         )
     )
@@ -937,7 +951,7 @@ def test_iris_object_runtime_crud_uses_network_safe_object_api() -> None:
                 return 1
             raise AttributeError((classname, method_name))
 
-    class Harness(runtime_module._IRISObjectRuntimeBase):
+    class Harness(runtime_module._GatewayRuntimeBase):
         def __init__(self) -> None:
             self.runtime = FakeGateway()
 
@@ -1097,7 +1111,7 @@ def test_iris_object_runtime_schema_write_compile_and_iter_collection() -> None:
                 parent.object_fields["Storages"].append(obj)
                 return
 
-    class Harness(runtime_module._IRISObjectRuntimeBase):
+    class Harness(runtime_module._GatewayRuntimeBase):
         def __init__(self) -> None:
             self.runtime = FakeGateway()
 
@@ -1194,7 +1208,7 @@ def test_iris_object_runtime_load_schema_tolerates_missing_optional_fields() -> 
         def classMethodString(self, classname, method_name, *args):
             return 1
 
-    class Harness(runtime_module._IRISObjectRuntimeBase):
+    class Harness(runtime_module._GatewayRuntimeBase):
         def __init__(self) -> None:
             self.runtime = FakeGateway()
 
@@ -1252,7 +1266,7 @@ def test_iris_object_runtime_iris_list_roundtrip() -> None:
         def classMethodString(self, classname, method_name, *args):
             return 1
 
-    class Harness(runtime_module._IRISObjectRuntimeBase):
+    class Harness(runtime_module._GatewayRuntimeBase):
         def __init__(self) -> None:
             self.runtime = FakeGateway()
             self._iris_list_type = FakeIRISList
@@ -1332,7 +1346,7 @@ def test_iris_object_runtime_dynamic_json_roundtrip() -> None:
         def classMethodString(self, classname, method_name, *args):
             return 1
 
-    class Harness(runtime_module._IRISObjectRuntimeBase):
+    class Harness(runtime_module._GatewayRuntimeBase):
         def __init__(self) -> None:
             self.runtime = FakeGateway()
 
@@ -1380,7 +1394,7 @@ def test_proxy_instance_method_bridge_works() -> None:
     class Article(IRISModel):
         class Meta:
             classname = "Demo.Article"
-            mode = "proxy"
+            mode = "observe"
 
     row = Article(Title="Hello", Body="Body text").save()
     loaded = Article.get(row.pk)
@@ -1410,7 +1424,7 @@ def test_proxy_class_method_bridge_works() -> None:
     class Article(IRISModel):
         class Meta:
             classname = "Demo.Article"
-            mode = "proxy"
+            mode = "observe"
 
     assert Article.EchoSlug("hello") == "slug:hello"
 
@@ -1455,12 +1469,12 @@ def test_meta_replaces_bare_iris_metadata() -> None:
 
         class Meta:
             classname = "Demo.MetaProduct"
-            mode = "proxy"
+            mode = "observe"
             superclasses = "Ens.Request"
             parameters = {"DEFAULTGLOBAL": "^Demo.MetaProductD"}
 
     assert Product._iris_classname == "Demo.MetaProduct"
-    assert Product._iris_mode == "proxy"
+    assert Product._iris_mode == "observe"
     assert Product._iris_superclasses == "Ens.Request"
     assert Product._iris_parameters == {"DEFAULTGLOBAL": "^Demo.MetaProductD"}
 

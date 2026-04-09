@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from .runtime import IRISRuntime
+from .runtime import EmbeddedRuntime
 from .schema import (
     SchemaClass,
     SchemaCompiler,
@@ -21,10 +21,10 @@ def scaffold_from_iris(
     pattern: str,
     output_root: str | Path,
     *,
-    style: str = "proxy",
+    style: str = "observe",
     conn: Any | None = None,
 ) -> list[Path]:
-    runtime = conn or IRISRuntime()
+    runtime = conn or EmbeddedRuntime()
     classnames = runtime.list_classes(pattern)
     classes = SchemaCompiler(runtime).catalog_from_iris(classnames)
     return [write_scaffold(item, output_root=output_root, style=style) for item in classes]
@@ -34,7 +34,7 @@ def scaffold_from_cls(
     cls_root: str | Path,
     output_root: str | Path,
     *,
-    style: str = "proxy",
+    style: str = "observe",
 ) -> list[Path]:
     root = Path(cls_root)
     classes = [parse_cls(path.read_text(encoding="utf-8"), source_path=str(path)) for path in sorted(root.rglob("*.cls"))]
@@ -166,7 +166,7 @@ def parse_storage_block(source: str) -> StorageDefinition | None:
     return StorageDefinition.from_dict({key: value for key, value in storage.items() if value != "" and value != [] and value is not None})
 
 
-def render_model(schema_class: SchemaClass, *, style: str = "proxy") -> str:
+def render_model(schema_class: SchemaClass, *, style: str = "observe") -> str:
     mode = normalize_style(style)
     imports = ["from typing import Annotated"]
     extra_imports: list[str] = []
@@ -213,7 +213,7 @@ def render_model(schema_class: SchemaClass, *, style: str = "proxy") -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_scaffold(schema_class: SchemaClass, *, output_root: str | Path, style: str = "proxy") -> Path:
+def write_scaffold(schema_class: SchemaClass, *, output_root: str | Path, style: str = "observe") -> Path:
     output_root = Path(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
     output_path = output_root / f"{schema_class.name.split('.')[-1].lower()}.py"
@@ -222,9 +222,9 @@ def write_scaffold(schema_class: SchemaClass, *, output_root: str | Path, style:
 
 
 def normalize_style(style: str) -> str:
-    normalized = str(style or "proxy").strip().lower()
-    if normalized not in {"proxy", "python"}:
-        raise ValueError(f"Unsupported scaffold style: {style!r}")
+    normalized = str(style or "observe").strip().lower()
+    if normalized not in {"observe", "replace", "extend"}:
+        raise ValueError(f"Unsupported scaffold style: {style!r}. Valid styles: 'observe', 'replace', 'extend'.")
     return normalized
 
 

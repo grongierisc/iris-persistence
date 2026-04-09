@@ -6,7 +6,7 @@ from iris_orm import IRISModel
 class Article(IRISModel):
     class Meta:
         classname = "Demo.Article"
-        mode = "proxy"
+        mode = "observe"
 
 
 def main() -> None:

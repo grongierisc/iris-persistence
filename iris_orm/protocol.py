@@ -12,7 +12,7 @@ class IRISRuntimeProtocol(Protocol):
     Mirrors the architecture of ``iris_global.GrefABC``: the Protocol is
     structural (no inheritance required).  Any object that implements all of
     these methods is accepted by ``iris_orm`` as a runtime backend, including
-    ``EmbeddedRuntime``, ``NetworkRuntime``, ``OfficialRuntime``, and the
+    ``EmbeddedRuntime``, ``CommunityRuntime``, ``OfficialRuntime``, and the
     ``FakeAdapter`` used in tests.
     """
 

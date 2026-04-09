@@ -190,6 +190,8 @@ iris_orm.configure(create_engine("iris://user:pass@host:1972/USER"))
 
 If you do not call `configure(...)` and a model has no `Meta.engine`, `iris_orm` falls back to the embedded Python runtime by default.
 
+Runtime backends are split into three flavors: `EmbeddedRuntime`, `CommunityRuntime` (for `iris://` / `intersystems_iris`), and `OfficialRuntime` (for `iris+intersystems://`).
+
 Or attach an engine directly to a model:
 
 ```python
@@ -263,3 +265,6 @@ Advanced but available:
 - `Model.plan()`
 - `Model.sync()`
 - `configure_default_runtime(...)`
+- `EmbeddedRuntime`
+- `CommunityRuntime`
+- `OfficialRuntime`

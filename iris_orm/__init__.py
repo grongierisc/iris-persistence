@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+from .exceptions import (
+    IRISCompileError,
+    IRISConcurrencyError,
+    IRISObjectNotFound,
+    IRISORMError,
+    IRISSchemaError,
+    IRISStatusError,
+    IRISValidationError,
+)
 from .fields import Field, FieldDefinition, Index, IndexDefinition, ParameterDefinition, field, index, parameter
 from .model import IRISMeta, IRISModel
 from .protocol import IRISRuntimeProtocol
 from .runtime import (
+    CommunityRuntime,
     EmbeddedRuntime,
-    IRISRuntime,
-    NetworkRuntime,
     OfficialRuntime,
     configure,
     configure_default_runtime,  # kept for backward compat; prefer configure()
@@ -17,7 +25,6 @@ from .storage import StorageData, StorageDefinition, StorageProperty, StorageSQL
 
 __all__ = [
     # Models
-    "IRISMeta",
     "IRISModel",
     # Fields
     "Field",
@@ -35,9 +42,8 @@ __all__ = [
     "StorageSQLMap",
     # Runtime — public surface
     "IRISRuntimeProtocol",
-    "IRISRuntime",
     "EmbeddedRuntime",
-    "NetworkRuntime",
+    "CommunityRuntime",
     "OfficialRuntime",
     "configure",
     "configure_default_runtime",
@@ -45,4 +51,12 @@ __all__ = [
     # Scaffold
     "scaffold_from_cls",
     "scaffold_from_iris",
+    # Exceptions
+    "IRISORMError",
+    "IRISStatusError",
+    "IRISObjectNotFound",
+    "IRISConcurrencyError",
+    "IRISValidationError",
+    "IRISCompileError",
+    "IRISSchemaError",
 ]

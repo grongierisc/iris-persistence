@@ -57,7 +57,7 @@ def test_scaffold_from_iris_proxy_keeps_storage_metadata(tmp_path: Path) -> None
     assert "from typing import Annotated" in source
     assert "StorageDefinition(" in source
     assert "class Meta:" in source
-    assert 'mode = "proxy"' in source
+    assert 'mode = "observe"' in source
     assert "parameters = {'DEFAULTGLOBAL': '^Demo.ArticleD'}" in source
     assert "indexes = [" in source
     assert "superclasses = ['%Persistent', 'Demo.Auditable']" in source
@@ -95,7 +95,7 @@ def test_scaffold_from_iris_python_renders_decorators_and_storage(tmp_path: Path
         },
     )
 
-    paths = scaffold_from_iris("Demo.*", tmp_path, style="python", conn=adapter)
+    paths = scaffold_from_iris("Demo.*", tmp_path, style="replace", conn=adapter)
     source = paths[0].read_text(encoding="utf-8")
     assert "class Meta:" in source
     assert "parameters = {'DEFAULTGLOBAL': '^Demo.ArticleD'}" in source
@@ -142,7 +142,7 @@ Storage Default
         encoding="utf-8",
     )
 
-    paths = scaffold_from_cls(cls_root, tmp_path / "generated", style="python")
+    paths = scaffold_from_cls(cls_root, tmp_path / "generated", style="replace")
     source = paths[0].read_text(encoding="utf-8")
     assert "class Meta:" in source
     assert "parameters = {'DEFAULTGLOBAL': '^Demo.ProductD'}" in source

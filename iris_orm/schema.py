@@ -413,7 +413,7 @@ class SchemaCompiler:
             indexes=indexes,
             parameters=parameters,
             storage=storage,
-            source={"kind": "python", "mode": getattr(model_class, "_iris_mode", "python")},
+            source={"kind": "python", "mode": getattr(model_class, "_iris_mode", "extend")},
         )
 
     def class_from_iris(self, classname: str) -> SchemaClass:
@@ -468,7 +468,7 @@ def merge_additive_schema(live: SchemaClass, desired: SchemaClass) -> SchemaClas
         indexes=tuple(indexes),
         parameters=parameters,
         storage=desired.storage if desired.storage is not None else live.storage,
-        source={"kind": "python", "mode": "additive"},
+        source={"kind": "python", "mode": "extend"},
     )
 
 

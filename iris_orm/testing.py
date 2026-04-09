@@ -185,6 +185,9 @@ class FakeAdapter:
     def rollback(self) -> None:
         pass
 
+    def close(self) -> None:
+        pass
+
 
 def preload_schema(adapter: FakeAdapter, payload: dict[str, Any]) -> None:
     properties = payload.get("properties", {})

@@ -24,7 +24,7 @@ class IRISRuntimeProtocol(Protocol):
         ...
 
     def list_classes(self, pattern: str) -> list[str]:
-        """Return sorted class names matching *pattern* (glob-style)."""
+        """Return sorted class names matching *pattern* (glob-style, e.g. ``"Demo.*"``)."""
         ...
 
     def replace_class(self, schema_class: SchemaClass) -> None:
@@ -55,8 +55,22 @@ class IRISRuntimeProtocol(Protocol):
         """Return the raw IRIS object for *obj_id*, or ``None``."""
         ...
 
+    def cls(self, classname: str) -> Any:
+        """Return a class-level proxy for *classname*, analogous to the embedded ``iris.cls()`` API.
+
+        On embedded runtimes returns the native ``iris.cls`` proxy directly.
+        On gateway runtimes returns a ``_ClassProxy`` that dispatches class-method
+        calls via the driver and wraps IRIS object results transparently.
+        """
+        ...
+
     def native_class(self, classname: str) -> Any:
-        """Return the raw IRIS class proxy for *classname*."""
+        """Return the class-level proxy for *classname* (equivalent to ``cls(classname)``).
+
+        Both embedded and gateway runtimes now return a uniform proxy: attribute/method
+        access dispatches to the corresponding IRIS class method, and IRIS object results
+        are automatically wrapped in a ``_NativeProxy``.
+        """
         ...
 
     def delete_object(self, classname: str, obj_id: Any) -> None:
@@ -107,4 +121,15 @@ class IRISRuntimeProtocol(Protocol):
 
     def rollback(self) -> None:
         """Roll back the current IRIS transaction (``TROLLBACK``)."""
+        ...
+
+    # --------------------------------------------------------------- lifecycle
+
+    def close(self) -> None:
+        """Release any resources held by this runtime (e.g. network connections).
+
+        Implementations that hold no resources (``EmbeddedRuntime``,
+        ``FakeAdapter``) should treat this as a no-op.
+        Gateway runtimes should close the underlying raw connection.
+        """
         ...

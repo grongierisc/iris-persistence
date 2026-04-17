@@ -7,7 +7,12 @@ from typing import Any
 from .protocol import IRISRuntimeProtocol
 from .schema import (
     SchemaClass,
+    SchemaProperty,
+    SchemaIndex,
+    SchemaPlan,
+    SchemaCompiler,
     coerce_to_iris_logical,
+    coerce_to_python,
     is_dynamic_type,
     is_array_of_datatypes,
     is_list_of_datatypes,
@@ -65,23 +70,29 @@ _STORAGE_SQL_MAP_FIELDS: list[tuple[str, str]] = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Internal base — shared ORM business logic
-# ---------------------------------------------------------------------------
+def _quote_sql_identifier(name: str) -> str:
+    if name.startswith("%"):
+        return str(name)
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def _quote_sql_classname(name: str) -> str:
+    parts = str(name).split(".", 1)
+    if len(parts) == 2:
+        schema_name, relation_name = parts
+    else:
+        schema_name, relation_name = "SQLUser", parts[0]
+    if schema_name == "User":
+        schema_name = "SQLUser"
+    return f"{schema_name}.{relation_name}"
+
 
 class _BaseRuntime:
-    """All ORM business logic lives here.
+    """All ORM business logic. Subclasses bind ``self.runtime`` to the IRIS native-API object."""
 
-    Subclasses set ``self.runtime`` to the IRIS native-API object and may
-    override ``sql()`` (and optionally ``compile()``) to route SQL through
-    a different transport (e.g. a SQLAlchemy raw connection).
-
-    This class is an internal implementation detail.  The public contract is
-    ``IRISRuntimeProtocol`` in ``iris_orm.protocol``.
-    """
-
-    # subclasses set this in __init__
     runtime: Any
+
+    # ------------------------------------------------------ object-level primitives
 
     def _object_new(self, classname: str) -> Any:
         return self._class_method_object(classname, "%New")
@@ -106,11 +117,12 @@ class _BaseRuntime:
         return method(*args)
 
     def _object_invoke_object(self, obj: Any, method_name: str, *args: Any) -> Any:
-        # Embedded: method calls return objects directly; delegate to _object_invoke.
         return self._object_invoke(obj, method_name, *args)
 
     def _wrap_native_object(self, obj: Any, classname: str) -> Any:
         return obj
+
+    # ------------------------------------------------------ schema-level primitives
 
     def _schema_new(self, classname: str) -> Any:
         return self._object_new(classname)
@@ -167,13 +179,17 @@ class _BaseRuntime:
             return [getter(i) for i in range(1, int(size()) + 1)]
         return list(value)
 
+    # ------------------------------------------------------ IRISRuntimeProtocol implementation
+
     def load_schema(self, classname: str) -> dict[str, Any] | None:
         class_def = self._schema_open("%Dictionary.ClassDefinition", classname)
         if not self.looks_like_iris_object(class_def):
             return None
         properties = []
         for prop in self._iter_collection(self._schema_get(class_def, "Properties", as_object=True)):
-            if bool(self._schema_get(prop, "Private")) or bool(self._schema_get(prop, "Internal")) or bool(self._schema_get(prop, "Relationship")):
+            if (bool(self._schema_get(prop, "Private"))
+                    or bool(self._schema_get(prop, "Internal"))
+                    or bool(self._schema_get(prop, "Relationship"))):
                 continue
             properties.append(
                 {
@@ -194,8 +210,6 @@ class _BaseRuntime:
         except Exception:
             pass
         if not idx_names:
-            # Fallback: relationship collection (works in gateway/test runtimes; returns
-            # None in embedded IRIS where Indexes is not exposed as a Python attribute)
             idx_names = [
                 str(self._schema_get(idx, "Name") or "")
                 for idx in self._iter_collection(self._schema_get(class_def, "Indexes", as_object=True))
@@ -320,12 +334,6 @@ class _BaseRuntime:
         return self._wrap_native_object(obj, classname)
 
     def cls(self, classname: str) -> Any:
-        """Return a class-level proxy for *classname*, analogous to the embedded ``iris.cls()`` API.
-
-        On the embedded runtime this returns the native ``iris.cls`` proxy directly.
-        On gateway runtimes it returns a ``_ClassProxy`` that dispatches class-method
-        calls via the driver and wraps IRIS object results in ``_NativeProxy``.
-        """
         return self.runtime.cls(classname)
 
     def native_class(self, classname: str) -> Any:
@@ -342,10 +350,7 @@ class _BaseRuntime:
         for prop in schema["properties"]:
             iris_type = str(prop.get("iris_type", "%String") or "%String")
             data[prop["name"]] = self._read_property_value(obj, prop["name"], iris_type)
-        return {
-            "id": obj_id,
-            "data": data,
-        }
+        return {"id": obj_id, "data": data}
 
     def delete_object(self, classname: str, obj_id: Any) -> None:
         self._check_status(self._object_delete_id(classname, obj_id))
@@ -359,18 +364,12 @@ class _BaseRuntime:
         limit: int | None = None,
         offset: int | None = None,
     ) -> list[dict[str, Any]]:
-        # Default/gateway path: SELECT all requested fields directly from SQL result
-        # columns. Stream and dynamic object types are returned as scalar values by
-        # the gateway driver, so there is no need to open each object individually.
-        # EmbeddedRuntime overrides this to open each object via the IRIS object API.
         select_fields = ["%ID"] + fields
-        sql = f"SELECT {', '.join(_quote_sql_identifier(field) for field in select_fields)} FROM {_quote_sql_classname(classname)}"
+        sql = f"SELECT {', '.join(_quote_sql_identifier(f) for f in select_fields)} FROM {_quote_sql_classname(classname)}"
         params: list[Any] = []
         if filters:
-            clauses = []
-            for key, value in filters.items():
-                clauses.append(f"{_quote_sql_identifier(key)} = ?")
-                params.append(value)
+            clauses = [f"{_quote_sql_identifier(key)} = ?" for key in filters]
+            params.extend(filters.values())
             sql += " WHERE " + " AND ".join(clauses)
         if order_by:
             sql += f" ORDER BY {_quote_sql_identifier(order_by)}"
@@ -382,8 +381,8 @@ class _BaseRuntime:
         result: list[dict[str, Any]] = []
         for row in rows:
             payload = {"id": row[0]}
-            for idx, field in enumerate(fields, start=1):
-                payload[field] = row[idx]
+            for idx, f in enumerate(fields, start=1):
+                payload[f] = row[idx]
             result.append(payload)
         return result
 
@@ -397,9 +396,6 @@ class _BaseRuntime:
         self._check_status(status, compile=True)
 
     def looks_like_iris_object(self, value: Any) -> bool:
-        # In IRIS, a missing/null object is represented as the empty string "".
-        # Do NOT change this to `is not None` alone — that would treat "" (IRIS null)
-        # as a valid object and cause silent failures in load_schema and open_object.
         return value is not None and value != ""
 
     def begin(self) -> None:
@@ -413,6 +409,8 @@ class _BaseRuntime:
 
     def close(self) -> None:
         pass
+
+    # ------------------------------------------------------ storage helpers
 
     def _delete_missing(self, classname: str, dictionary_class: str, expected: Any) -> None:
         try:
@@ -449,7 +447,7 @@ class _BaseRuntime:
 
     def _extract_storage(self, classname: str, storage_def: Any) -> StorageDefinition:
         storage_name = str(self._schema_get(storage_def, "Name") or "")
-        storage = {"name": storage_name}
+        storage: dict[str, Any] = {"name": storage_name}
         definition_rows = self.sql(
             "SELECT CounterLocation, DataLocation, DefaultData, Description, ExtentLocation, ExtentSize, "
             "IdExpression, IdFunction, IdLocation, IndexLocation, SqlChildSub, SqlIdExpression, "
@@ -477,7 +475,7 @@ class _BaseRuntime:
                     [f"{storage_id}||{data_name}"],
                 )
 
-                def _storage_value_sort_key(item: tuple[Any, ...]) -> tuple[int, str]:
+                def _sort_key(item: tuple[Any, ...]) -> tuple[int, str]:
                     text = str(item[0])
                     try:
                         return (0, f"{int(text):020d}")
@@ -489,13 +487,12 @@ class _BaseRuntime:
                         "name": data_name,
                         "structure": str(row[1] or ""),
                         "values": [
-                            {"name": str(value_row[0]), "value": str(value_row[1])}
-                            for value_row in sorted(values, key=_storage_value_sort_key)
+                            {"name": str(v[0]), "value": str(v[1])}
+                            for v in sorted(values, key=_sort_key)
                         ],
                     }
                 )
             storage["data"] = data_items
-
         property_rows = self.sql(
             "SELECT Name, AverageFieldSize, BiasQueriesAsOutlier, ChildBlockCount, ChildExtentSize, "
             "Histogram, OutlierSelectivity, Selectivity, StreamLocation "
@@ -503,16 +500,15 @@ class _BaseRuntime:
             [storage_id],
         )
         if property_rows:
-            properties: list[dict[str, Any]] = []
+            props: list[dict[str, Any]] = []
             for row in property_rows:
                 item: dict[str, Any] = {"name": str(row[0])}
                 for index, (key, _) in enumerate(_STORAGE_PROPERTY_FIELDS, start=1):
-                    value = row[index]
-                    if value not in {"", None}:
-                        item[key] = str(value)
-                properties.append(item)
-            storage["properties"] = properties
-
+                    v = row[index]
+                    if v not in {"", None}:
+                        item[key] = str(v)
+                props.append(item)
+            storage["properties"] = props
         sql_map_rows = self.sql(
             'SELECT Name, BlockCount, Condition, ConditionFields, ConditionalWithHostVars, "_Global", '
             "PopulationPct, PopulationType, RowReference, Structure, Type "
@@ -522,14 +518,17 @@ class _BaseRuntime:
         if sql_map_rows:
             sql_maps: list[dict[str, Any]] = []
             for row in sql_map_rows:
-                item: dict[str, Any] = {"name": str(row[0])}
+                item = {"name": str(row[0])}
                 for index, (key, _) in enumerate(_STORAGE_SQL_MAP_FIELDS, start=1):
-                    value = row[index]
-                    if value not in {"", None}:
-                        item[key] = str(value)
+                    v = row[index]
+                    if v not in {"", None}:
+                        item[key] = str(v)
                 sql_maps.append(item)
             storage["sql_maps"] = sql_maps
-        return StorageDefinition.from_dict({key: value for key, value in storage.items() if value != "" and value is not None}) or StorageDefinition(name=storage_name)
+        return (
+            StorageDefinition.from_dict({k: v for k, v in storage.items() if v != "" and v is not None})
+            or StorageDefinition(name=storage_name)
+        )
 
     def _replace_storage_children(self, storage_def: Any, storage: StorageDefinition) -> None:
         storage_name = str(storage.name or "Default")
@@ -537,17 +536,16 @@ class _BaseRuntime:
         classname = str(self._schema_get(parent, "Name") or "") if parent is not None else ""
         storage_id = f"{classname}||{storage_name}" if classname else ""
         if storage_id:
-            for sql, params in [
+            for stmt, params in [
                 ("DELETE FROM %Dictionary.StorageDataValueDefinition WHERE parent %STARTSWITH ?", [f"{storage_id}||"]),
                 ("DELETE FROM %Dictionary.StorageDataDefinition WHERE parent = ?", [storage_id]),
                 ("DELETE FROM %Dictionary.StoragePropertyDefinition WHERE parent = ?", [storage_id]),
                 ("DELETE FROM %Dictionary.StorageSQLMapDefinition WHERE parent = ?", [storage_id]),
             ]:
                 try:
-                    self.sql(sql, params)
+                    self.sql(stmt, params)
                 except Exception:
                     continue
-
         for item in storage.data:
             data_def = self._schema_new("%Dictionary.StorageDataDefinition")
             self._schema_set_parent(data_def, storage_def)
@@ -560,15 +558,13 @@ class _BaseRuntime:
                 self._schema_set(value_def, "Name", name)
                 self._schema_set(value_def, "Value", value)
                 self._check_status(self._schema_save(value_def), schema=True)
-
         for item in storage.properties:
-            property_def = self._schema_new("%Dictionary.StoragePropertyDefinition")
-            self._schema_set_parent(property_def, storage_def)
-            self._schema_set(property_def, "Name", item.name)
+            prop_def = self._schema_new("%Dictionary.StoragePropertyDefinition")
+            self._schema_set_parent(prop_def, storage_def)
+            self._schema_set(prop_def, "Name", item.name)
             for key, setter_name in _STORAGE_PROPERTY_FIELDS:
-                self._schema_set(property_def, setter_name, getattr(item, key))
-            self._check_status(self._schema_save(property_def), schema=True)
-
+                self._schema_set(prop_def, setter_name, getattr(item, key))
+            self._check_status(self._schema_save(prop_def), schema=True)
         for item in storage.sql_maps:
             sql_map_def = self._schema_new("%Dictionary.StorageSQLMapDefinition")
             self._schema_set_parent(sql_map_def, storage_def)
@@ -680,15 +676,9 @@ class _BaseRuntime:
             return invoke(method_name, *args)
         raise TypeError(f"Stream object does not support {method_name}()")
 
-    # -------------------------------------------------------------- property parameters
-    # These three primitives encapsulate how a runtime reads/writes/removes a single
-    # named entry from a %Dictionary.PropertyDefinition's Parameters collection.
-    # _BaseRuntime implements the embedded IRIS pattern (ParametersGetAt / ParametersSetAt).
-    # _GatewayRuntimeBase overrides them for the gateway object model.
+    # ------------------------------------------------------ property parameters
 
     def _prop_param_get(self, prop: Any, key: str) -> str | None:
-        """Return the value of property parameter *key*, or None if absent."""
-        # Embedded test fakes expose ParametersGetAt directly on the property object
         getter = getattr(prop, "ParametersGetAt", None)
         if callable(getter):
             try:
@@ -696,7 +686,6 @@ class _BaseRuntime:
                 return str(value) if value not in {"", None} else None
             except Exception:
                 return None
-        # Real embedded IRIS: parameters live in prop.Parameters (iris.%Collection.ArrayOfDT)
         collection = self._schema_get(prop, "Parameters", as_object=True)
         if collection is None:
             return None
@@ -710,7 +699,6 @@ class _BaseRuntime:
         return None
 
     def _prop_param_set(self, prop: Any, key: str, value: str) -> None:
-        """Write *value* for property parameter *key*."""
         setter = getattr(prop, "ParametersSetAt", None)
         if callable(setter):
             setter(value, key)
@@ -723,7 +711,6 @@ class _BaseRuntime:
             set_at(value, key)
 
     def _prop_param_remove(self, prop: Any, key: str) -> None:
-        """Remove property parameter *key* (no-op if absent)."""
         remover = getattr(prop, "ParametersRemoveAt", None)
         if callable(remover):
             try:
@@ -767,35 +754,9 @@ class _BaseRuntime:
             else:
                 self._prop_param_remove(prop_def, name)
 
-def _quote_sql_identifier(name: str) -> str:
-    # %ID is a special IRIS pseudo-column — must not be quoted
-    if name.startswith("%"):
-        return str(name)
-    # Double-quote to protect reserved words and mixed-case names
-    return '"' + str(name).replace('"', '""') + '"'
-
-
-def _quote_sql_classname(name: str) -> str:
-    parts = str(name).split(".", 1)
-    if len(parts) == 2:
-        schema_name, relation_name = parts
-    else:
-        schema_name, relation_name = "SQLUser", parts[0]
-    if schema_name == "User":
-        schema_name = "SQLUser"
-    return f"{schema_name}.{relation_name}"
-
-
-# ---------------------------------------------------------------------------
-# Concrete backend implementations
-# ---------------------------------------------------------------------------
 
 class EmbeddedRuntime(_BaseRuntime, IRISRuntimeProtocol):
-    """Backend for the embedded InterSystems IRIS Python runtime.
-
-    Uses the ``iris`` module imported directly. Pass a custom *iris_module* to
-    inject a mock in tests.
-    """
+    """Backend for the embedded InterSystems IRIS Python runtime (``iris`` module)."""
 
     def __init__(self, iris_module: Any | None = None) -> None:
         self.runtime = iris_module or importlib.import_module("iris")
@@ -809,17 +770,13 @@ class EmbeddedRuntime(_BaseRuntime, IRISRuntimeProtocol):
         limit: int | None = None,
         offset: int | None = None,
     ) -> list[dict[str, Any]]:
-        # Embedded path: SELECT only %ID from SQL, then open each IRIS object
-        # individually to read field values. This is necessary because stream
-        # and dynamic object types cannot be correctly represented as plain SQL
-        # columns in the embedded runtime — they must be read via the IRIS object API.
+        # Embedded: SELECT only %ID, then open each object individually so that
+        # stream/dynamic properties are read correctly via the IRIS object API.
         sql = f"SELECT {_quote_sql_identifier('%ID')} FROM {_quote_sql_classname(classname)}"
         params: list[Any] = []
         if filters:
-            clauses = []
-            for key, value in filters.items():
-                clauses.append(f"{_quote_sql_identifier(key)} = ?")
-                params.append(value)
+            clauses = [f"{_quote_sql_identifier(key)} = ?" for key in filters]
+            params.extend(filters.values())
             sql += " WHERE " + " AND ".join(clauses)
         if order_by:
             sql += f" ORDER BY {_quote_sql_identifier(order_by)}"
@@ -831,39 +788,36 @@ class EmbeddedRuntime(_BaseRuntime, IRISRuntimeProtocol):
         rows = self.sql(sql, params)
         result: list[dict[str, Any]] = []
         schema = self.load_schema(classname) or {"properties": []}
-        property_types = {item["name"]: item.get("iris_type", "%String") for item in schema.get("properties", [])}
+        property_types = {
+            item["name"]: item.get("iris_type", "%String") for item in schema.get("properties", [])
+        }
         for row in rows:
             obj_id = row[0]
             obj = self._object_open(classname, obj_id)
             if not self.looks_like_iris_object(obj):
                 continue
-            payload = {"id": obj_id}
-            for field in fields:
-                iris_type = property_types.get(field, "%String")
-                payload[field] = self._read_property_value(obj, field, iris_type)
+            payload: dict[str, Any] = {"id": obj_id}
+            for f in fields:
+                iris_type = property_types.get(f, "%String")
+                payload[f] = self._read_property_value(obj, f, iris_type)
             result.append(payload)
         return result
 
+
+# ---------------------------------------------------------------------------
+# Internal proxy classes (kept for test compatibility and _GatewayRuntimeBase)
+# Not part of the public API.
+# ---------------------------------------------------------------------------
+
 class _NativeProxy:
-    """A Python proxy wrapping a gateway IRISObject, behaving like an embedded ``iris.cls`` instance.
+    """Proxy wrapping a gateway IRISObject, behaving like an embedded ``iris.cls`` instance."""
 
-    - Attribute reads are forwarded to the IRIS property via the runtime's ``_object_get``.
-    - Attribute writes use ``_object_set``.
-    - Any name that cannot be resolved as a property is returned as a callable that
-      invokes the corresponding IRIS method.
-    - Names beginning with ``_`` always refer to Python-side attributes and are never
-      forwarded to IRIS.
-    """
-
-    __hash__: None = None  # mutable identity — instances are unhashable
+    __hash__: None = None
 
     def __init__(self, runtime: "_BaseRuntime", classname: str, obj: Any) -> None:
-        # Use object.__setattr__ to bypass our custom __setattr__ during construction.
         object.__setattr__(self, "_runtime", runtime)
         object.__setattr__(self, "_classname", classname)
         object.__setattr__(self, "_obj", obj)
-
-    # ------------------------------------------------------------------ dunder methods
 
     def __getattr__(self, name: str) -> Any:
         try:
@@ -886,7 +840,6 @@ class _NativeProxy:
             self._runtime._object_set(self._obj, name, value)
 
     def __bool__(self) -> bool:
-        # A proxy always wraps a live IRIS object reference — it is always truthy.
         return True
 
     def __eq__(self, other: object) -> bool:
@@ -914,30 +867,11 @@ class _NativeProxy:
         return f"<_NativeProxy {self._classname} id={obj_id!r}>"
 
     def __iter__(self) -> Any:
-        """Iterate over elements — useful when the underlying IRIS object is a collection."""
         yield from self._runtime._iter_collection(self._obj)
 
 
 class _ClassProxy:
-    """Class-level proxy for a gateway IRIS class, mirroring the embedded ``iris.cls(classname)`` API.
-
-    Attribute access returns a callable that dispatches to the corresponding IRIS
-    class method via the gateway runtime:
-
-    - Names starting with ``_`` map to ``%``-prefixed IRIS class methods
-      (e.g. ``._New()`` → ``%New``, ``._OpenId(id)`` → ``%OpenId``).
-    - Any other name calls the IRIS class method of that exact name.
-    - Results that look like IRIS objects are automatically wrapped in
-      ``_NativeProxy``; scalars and status codes are returned as-is.
-
-    Example::
-
-        cls = runtime.cls("Demo.Article")
-        obj = cls._New()            # wraps result in _NativeProxy
-        obj2 = cls._OpenId("1")     # same
-        cls._DeleteId("1")          # returns scalar status
-        cls.MyClassMethod(arg)      # any user-defined class method
-    """
+    """Class-level proxy for a gateway IRIS class, mirroring ``iris.cls(classname)``."""
 
     def __init__(self, runtime: "_BaseRuntime", classname: str) -> None:
         object.__setattr__(self, "_runtime", runtime)
@@ -951,7 +885,6 @@ class _ClassProxy:
         def _class_method_proxy(*args: Any) -> Any:
             unwrapped = tuple(_unwrap(a) for a in args)
             result = runtime._class_method_object(classname, iris_name, *unwrapped)
-            # Wrap IRISObject results in _NativeProxy; leave scalars (statuses, strings) as-is.
             if result is not None and result != "" and not isinstance(result, (bool, int, float, str)):
                 return _NativeProxy(runtime, classname, result)
             return result
@@ -965,27 +898,25 @@ class _ClassProxy:
 
 
 def _unwrap(value: Any) -> Any:
-    """Return the raw IRIS object reference inside a *_NativeProxy*, or *value* unchanged.
-
-    Use this when passing a proxy as an argument to a driver method call, which expects
-    the underlying IRISObject reference rather than the Python wrapper.
-    """
     if isinstance(value, _NativeProxy):
         return object.__getattribute__(value, "_obj")
     return value
 
 
 class _GatewayRuntimeBase(_BaseRuntime):
-    def __init__(self, engine: Any, iris_type: Any, iris_list_type: Any) -> None:
-        self._engine = engine
+    """Internal class kept for test compatibility. Not for production use."""
+
+    def __init__(self, engine: Any = None, iris_type: Any = None, iris_list_type: Any = None) -> None:
         self._iris_list_type = iris_list_type
-        self._native_raw_conn = engine.raw_connection()
-        self.runtime = iris_type(self._native_raw_conn.driver_connection)
+        if engine is not None and iris_type is not None:
+            self._native_raw_conn = engine.raw_connection()
+            self.runtime = iris_type(self._native_raw_conn.driver_connection)
+        else:
+            self.runtime = engine  # tests assign self.runtime directly
 
     def _class_method(self, classname: str, method_name: str, *args: Any) -> Any:
-        runtime = self.runtime
         for method in ("classMethodObject", "classMethodValue", "classMethodString"):
-            caller = getattr(runtime, method, None)
+            caller = getattr(self.runtime, method, None)
             if callable(caller):
                 return caller(classname, method_name, *args)
         raise AttributeError(f"Runtime does not support class method dispatch for {classname}.{method_name}")
@@ -1044,7 +975,6 @@ class _GatewayRuntimeBase(_BaseRuntime):
             return None
 
     def _schema_set(self, obj: Any, name: str, value: Any) -> None:
-        # IRIS does not understand Python booleans — coerce before writing.
         if isinstance(value, bool):
             value = 1 if value else 0
         self._object_set(obj, name, value)
@@ -1059,32 +989,18 @@ class _GatewayRuntimeBase(_BaseRuntime):
         return iris_list_type()
 
     def cls(self, classname: str) -> "_ClassProxy":
-        """Return a ``_ClassProxy`` for *classname*, mirroring the embedded ``iris.cls()`` API."""
         return _ClassProxy(self, classname)
 
     def _object_invoke_object(self, obj: Any, method_name: str, *args: Any) -> Any:
-        # Gateway: prefer invokeObject to return an IRIS object reference.
         invoker = getattr(obj, "invokeObject", None)
         if callable(invoker):
             return invoker(method_name, *args)
         return self._object_invoke(obj, method_name, *args)
 
-    def compile(self, classname: str) -> None:
-        # Use classMethodString specifically: Compile returns a status scalar, not an
-        # IRISObject, and classMethodObject may not be available on all gateway drivers.
-        caller = getattr(self.runtime, "classMethodString", None)
-        if callable(caller):
-            status = caller("%SYSTEM.OBJ", "Compile", classname, "ck")
-            self._check_status(status, compile=True)
-            return
-        super().compile(classname)
-
     def _prop_param_get(self, prop: Any, key: str) -> str | None:
-        """Read property parameter *key* via the gateway Parameters collection."""
         collection = self._schema_get(prop, "Parameters", as_object=True)
         if collection is None:
             return None
-        # Prefer direct GetAt (test fakes, embedded-like objects)
         get_at = getattr(collection, "GetAt", None)
         if callable(get_at):
             try:
@@ -1092,7 +1008,6 @@ class _GatewayRuntimeBase(_BaseRuntime):
                 return str(value) if value not in {"", None} else None
             except Exception:
                 return None
-        # Fallback for real IRISObject (invoke gateway)
         try:
             value = self._object_invoke(collection, "GetAt", key)
             return str(value) if value not in {"", None} else None
@@ -1100,7 +1015,6 @@ class _GatewayRuntimeBase(_BaseRuntime):
             return None
 
     def _prop_param_set(self, prop: Any, key: str, value: str) -> None:
-        """Write property parameter *key* via the gateway Parameters collection."""
         collection = self._schema_get(prop, "Parameters", as_object=True)
         if collection is None:
             return
@@ -1117,7 +1031,6 @@ class _GatewayRuntimeBase(_BaseRuntime):
             pass
 
     def _prop_param_remove(self, prop: Any, key: str) -> None:
-        """Remove property parameter *key* via the gateway Parameters collection."""
         collection = self._schema_get(prop, "Parameters", as_object=True)
         if collection is None:
             return
@@ -1133,10 +1046,15 @@ class _GatewayRuntimeBase(_BaseRuntime):
         except Exception:
             pass
 
+    def compile(self, classname: str) -> None:
+        caller = getattr(self.runtime, "classMethodString", None)
+        if callable(caller):
+            status = caller("%SYSTEM.OBJ", "Compile", classname, "ck")
+            self._check_status(status, compile=True)
+            return
+        super().compile(classname)
+
     def sql(self, statement: str, params: list[Any] | None = None) -> list[tuple[Any, ...]]:
-        # Reuse the persistent native connection rather than opening a new one per
-        # call — load_schema alone makes 5-10 SQL calls, and each open/close cycle
-        # adds significant overhead over a gateway (network) connection.
         cursor = self._native_raw_conn.cursor()
         cursor.execute(statement, params or [])
         return [tuple(row) for row in cursor.fetchall()]
@@ -1157,47 +1075,13 @@ class _GatewayRuntimeBase(_BaseRuntime):
             pass
 
 
-class CommunityRuntime(_GatewayRuntimeBase, IRISRuntimeProtocol):
-    """Backend for InterSystems IRIS accessed via the community
-    ``intersystems_iris`` (Python Gateway / native-API) driver.
-    """
-
-    def __init__(self, engine: Any) -> None:
-        from intersystems_iris import IRIS, IRISList  # type: ignore[import]
-
-        super().__init__(engine, IRIS, IRISList)
-
-
-class OfficialRuntime(_GatewayRuntimeBase, IRISRuntimeProtocol):
-    """Backend for InterSystems IRIS accessed via the official ``iris``
-    (``iris+intersystems``) driver.
-    """
-
-    def __init__(self, engine: Any) -> None:
-        from iris import IRIS, IRISList  # type: ignore[import]
-
-        super().__init__(engine, IRIS, IRISList)
-
-
-def _runtime_from_engine(engine: Any | None = None) -> IRISRuntimeProtocol:
-    drivername = getattr(getattr(engine, "url", None), "drivername", "") or ""
-    if engine is None or drivername in {"", "iris+emb"}:
-        return EmbeddedRuntime()
-    if drivername == "iris":
-        return CommunityRuntime(engine)
-    if drivername == "iris+intersystems":
-        return OfficialRuntime(engine)
-    raise ValueError(
-        f"Unsupported SQLAlchemy drivername: {drivername!r}. "
-        "Expected one of: 'iris+emb', 'iris', 'iris+intersystems'."
-    )
-
-
 # ---------------------------------------------------------------------------
-# Module-level default-runtime management (unchanged public API)
+# Module-level default-runtime management
 # ---------------------------------------------------------------------------
 
-_DEFAULT_RUNTIME: ContextVar[IRISRuntimeProtocol | None] = ContextVar("iris_orm_default_runtime", default=None)
+_DEFAULT_RUNTIME: ContextVar[IRISRuntimeProtocol | None] = ContextVar(
+    "iris_orm_default_runtime", default=None
+)
 _RUNTIME_GENERATION = 0
 
 
@@ -1213,57 +1097,101 @@ def _runtime_version() -> int:
     return _RUNTIME_GENERATION
 
 
-def configure_default_runtime(
-    *,
-    runtime: IRISRuntimeProtocol | None = None,
-    engine: Any | None = None,
-) -> IRISRuntimeProtocol:
-    """Set (or create) the process-wide default runtime.
-
-    Pass *runtime* to supply a pre-built backend implementing
-    ``IRISRuntimeProtocol``.
-    Pass *engine* to build a new backend from a SQLAlchemy engine.
-    When neither is given the existing default is kept (or a new
-    ``EmbeddedRuntime`` is created).
-    """
-    global _RUNTIME_GENERATION
-    if runtime is not None:
-        configured = runtime
-    elif engine is not None:
-        configured = _runtime_from_engine(engine)
-    else:
-        configured = _DEFAULT_RUNTIME.get() or EmbeddedRuntime()
-    _DEFAULT_RUNTIME.set(configured)
-    _RUNTIME_GENERATION += 1
-    return configured
-
-
 def reset_default_runtime() -> None:
     global _RUNTIME_GENERATION
     _DEFAULT_RUNTIME.set(None)
     _RUNTIME_GENERATION += 1
 
 
-def configure(
-    engine: Any | None = None,
+def configure_default_runtime(
+    conn: Any | None = None,
     *,
     runtime: IRISRuntimeProtocol | None = None,
+    engine: Any | None = None,
 ) -> IRISRuntimeProtocol:
-    """Primary public entry point for connecting ``iris_orm`` to IRIS.
+    """Deprecated. Use configure() instead."""
+    import warnings
+    warnings.warn(
+        "configure_default_runtime() is deprecated; use configure() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    if runtime is not None:
+        global _RUNTIME_GENERATION
+        _DEFAULT_RUNTIME.set(runtime)
+        _RUNTIME_GENERATION += 1
+        return runtime
+    return configure(conn)
 
-    Call this once at application start, before any model is used::
+
+def configure(
+    conn: Any | None = None,
+) -> IRISRuntimeProtocol:
+    """Primary entry point for connecting iris_orm to IRIS.
+
+    In embedded mode (running inside IRIS) no argument is needed::
 
         import iris_orm
-        from sqlalchemy import create_engine
+        iris_orm.configure()
 
-        iris_orm.configure(create_engine("iris://user:pass@host:1972/USER"))
+    For remote mode, pass the IRIS native-API connection object returned by
+    ``iris.createIRIS()``.  iris_orm calls ``iris.set_active_connection()`` so
+    that all subsequent ``iris.cls()`` calls are routed to that connection::
 
-    *engine* may also be passed as a keyword argument.  Pass *runtime* instead
-    to supply a fully constructed runtime backend (or a ``FakeAdapter`` in
-    tests)::
+        import iris, iris_orm
+        conn = iris.createIRIS(iris.createConnection(host, port, ns, user, pw))
+        iris_orm.configure(conn)
 
-        iris_orm.configure(runtime=FakeAdapter())
-
-    Returns the runtime backend that was registered as the default.
+    Returns the registered runtime backend.
     """
-    return configure_default_runtime(runtime=runtime, engine=engine)
+    global _RUNTIME_GENERATION
+    if conn is not None:
+        import iris as _iris_module  # type: ignore[import]
+        _iris_module.set_active_connection(conn)
+    runtime = EmbeddedRuntime()
+    _DEFAULT_RUNTIME.set(runtime)
+    _RUNTIME_GENERATION += 1
+    return runtime
+
+
+class CommunityRuntime(EmbeddedRuntime, IRISRuntimeProtocol):
+    """Deprecated. Use configure(conn) instead.  Kept for backward compatibility."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        import warnings
+        warnings.warn(
+            "CommunityRuntime is deprecated. Call iris.set_active_connection() then use "
+            "iris_orm.configure() without arguments.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        super().__init__()
+
+
+class OfficialRuntime(EmbeddedRuntime, IRISRuntimeProtocol):
+    """Deprecated. Use configure(conn) instead.  Kept for backward compatibility."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        import warnings
+        warnings.warn(
+            "OfficialRuntime is deprecated. Call iris.set_active_connection() then use "
+            "iris_orm.configure() without arguments.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        super().__init__()
+
+
+def _runtime_from_engine(engine: Any | None = None) -> IRISRuntimeProtocol:
+    """Internal factory kept for test compatibility. Prefer configure(conn)."""
+    drivername = getattr(getattr(engine, "url", None), "drivername", "") or ""
+    if engine is None or drivername in {"", "iris+emb"}:
+        return EmbeddedRuntime()
+    if drivername == "iris":
+        return CommunityRuntime(engine)
+    if drivername == "iris+intersystems":
+        return OfficialRuntime(engine)
+    raise ValueError(
+        f"Unsupported SQLAlchemy drivername: {drivername!r}. "
+        "Expected one of: 'iris+emb', 'iris', 'iris+intersystems'."
+    )

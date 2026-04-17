@@ -16,6 +16,11 @@ def _ensure_model_class(value: Any) -> type:
 
 @dataclass(init=False)
 class Field:
+    """Metadata for an IRIS ORM property.
+
+    Use as ``Annotated[str, Field(required=True)]`` or as a class-level default.
+    """
+
     required: bool
     default: Any
     has_default: bool
@@ -60,11 +65,14 @@ class Field:
         return clone
 
 
+# Alias used in type hints and ``__init__.py`` exports
 FieldDefinition = Field
 
 
 @dataclass
 class IndexDefinition:
+    """Descriptor for an IRIS index definition."""
+
     name: str
     properties: str
     unique: bool = False
@@ -88,6 +96,8 @@ class IndexDefinition:
 
 @dataclass
 class ParameterDefinition:
+    """Descriptor for an IRIS class parameter."""
+
     name: str
     value: str
 
@@ -102,6 +112,10 @@ class ParameterDefinition:
         return cls
 
 
+# Public short alias
+Index = IndexDefinition
+
+
 @overload
 def field(
     *,
@@ -111,8 +125,7 @@ def field(
     iris_type: Optional[str] = None,
     description: str = "",
     parameters: dict[str, Any] | None = None,
-) -> _FieldValue:
-    ...
+) -> _FieldValue: ...
 
 
 @overload
@@ -124,8 +137,7 @@ def field(
     iris_type: Optional[str] = None,
     description: str = "",
     parameters: dict[str, Any] | None = None,
-) -> Any:
-    ...
+) -> Any: ...
 
 
 def field(
@@ -137,6 +149,7 @@ def field(
     description: str = "",
     parameters: dict[str, Any] | None = None,
 ) -> Any:
+    """Deprecated: use ``Annotated[..., Field(...)]`` instead."""
     warnings.warn(
         "field(...) is deprecated; use Annotated[..., Field(...)] instead.",
         DeprecationWarning,
@@ -159,26 +172,20 @@ def index(
     unique: bool = False,
     primary_key: bool = False,
 ) -> IndexDefinition:
+    """Deprecated: use ``class Meta`` ``indexes`` instead."""
     warnings.warn(
         "index(...) is deprecated; use class Meta.indexes = [Index(...)] instead.",
         DeprecationWarning,
         stacklevel=2,
     )
-    return IndexDefinition(
-        name=name,
-        properties=properties,
-        unique=unique,
-        primary_key=primary_key,
-    )
+    return IndexDefinition(name=name, properties=properties, unique=unique, primary_key=primary_key)
 
 
 def parameter(name: str, value: Any) -> ParameterDefinition:
+    """Deprecated: use ``class Meta`` ``parameters`` instead."""
     warnings.warn(
         "parameter(...) is deprecated; use class Meta.parameters instead.",
         DeprecationWarning,
         stacklevel=2,
     )
     return ParameterDefinition(name=str(name), value=str(value))
-
-
-Index = IndexDefinition

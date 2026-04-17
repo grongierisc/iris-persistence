@@ -26,9 +26,7 @@ _META_TO_IRIS_ATTRS = {
     "classname": "_iris_classname",
     "mode": "_iris_mode",
     "superclasses": "_iris_superclasses",
-    "engine": "_iris_engine",
     "storage": "_iris_storage",
-    "namespace": "_iris_namespace",
     "indexes": "_iris_indexes",
     "parameters": "_iris_parameters",
 }
@@ -36,9 +34,7 @@ _DEPRECATED_CLASS_METADATA = {
     "_iris_classname",
     "_iris_mode",
     "_iris_superclasses",
-    "_iris_engine",
     "_iris_storage",
-    "_iris_namespace",
     "_iris_indexes",
     "_iris_parameters",
 }
@@ -160,8 +156,6 @@ class IRISModel:
     _iris_storage: ClassVar[StorageDefinition | dict[str, Any] | None] = None
     _iris_indexes: ClassVar[list[dict[str, Any]]] = []
     _iris_parameters: ClassVar[dict[str, str]] = {}
-    _iris_engine: ClassVar[Any] = None
-    _iris_namespace: ClassVar[str | None] = None
     _iris_declared_fields: ClassVar[dict[str, FieldDefinition]] = {}
     _iris_bound_schema: ClassVar[Any] = None
     _iris_bound: ClassVar[bool] = False
@@ -352,26 +346,12 @@ class IRISModel:
 
     @classmethod
     def _runtime(cls) -> Any:
-        engine = getattr(cls, "_iris_engine", None)
-        if engine is not None:
-            if cls.__dict__.get("_iris_engine_runtime_for") is not engine:
-                from .runtime import _runtime_from_engine
-
-                cached = _runtime_from_engine(engine)
-                cls._iris_engine_runtime = cached  # type: ignore[attr-defined]
-                cls._iris_engine_runtime_for = engine  # type: ignore[attr-defined]
-            return cls.__dict__["_iris_engine_runtime"]
         from .runtime import _get_runtime
-
         return _get_runtime()
 
     @classmethod
     def _runtime_version(cls) -> int:
-        engine = getattr(cls, "_iris_engine", None)
-        if engine is not None:
-            return id(engine)
         from .runtime import _runtime_version
-
         return _runtime_version()
 
     @classmethod

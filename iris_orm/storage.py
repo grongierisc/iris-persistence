@@ -8,6 +8,31 @@ def _string(value: Any) -> str:
     return "" if value in {None, ""} else str(value)
 
 
+_STORAGE_TOP_LEVEL_FIELDS: set[str] = {
+    "name",
+    "counter_location",
+    "data_location",
+    "default_data",
+    "description",
+    "extent_location",
+    "extent_size",
+    "id_expression",
+    "id_function",
+    "id_location",
+    "index_location",
+    "sql_child_sub",
+    "sql_id_expression",
+    "sql_row_id_name",
+    "sql_row_id_property",
+    "stream_location",
+    "type",
+    "version_location",
+    "data",
+    "properties",
+    "sql_maps",
+}
+
+
 def _unknown_storage_keys(payload: dict[str, Any], valid_keys: set[str]) -> list[str]:
     return sorted(set(payload) - valid_keys)
 
@@ -89,7 +114,7 @@ class StorageProperty:
         return cls(**data)
 
     def to_dict(self) -> dict[str, Any]:
-        payload = {"name": self.name}
+        payload: dict[str, Any] = {"name": self.name}
         for name in self._FIELD_NAMES:
             value = getattr(self, name)
             if value:
@@ -133,7 +158,7 @@ class StorageSQLMap:
         return cls(**data)
 
     def to_dict(self) -> dict[str, Any]:
-        payload = {"name": self.name}
+        payload: dict[str, Any] = {"name": self.name}
         for name in self._FIELD_NAMES:
             value = getattr(self, name)
             if not value:
@@ -197,21 +222,19 @@ class StorageDefinition:
         scalars = {name: _string(payload.get(name, "Default" if name == "name" else "")) for name in cls._SCALAR_FIELDS}
         if not scalars["name"]:
             scalars["name"] = "Default"
-        return cls(
-            **scalars,
-            data=tuple(StorageData.from_dict(item) for item in payload.get("data", []) or []),
-            properties=tuple(StorageProperty.from_dict(item) for item in payload.get("properties", []) or []),
-            sql_maps=tuple(StorageSQLMap.from_dict(item) for item in payload.get("sql_maps", []) or []),
-        )
+        data = tuple(StorageData.from_dict(item) for item in payload.get("data", []))
+        properties = tuple(StorageProperty.from_dict(item) for item in payload.get("properties", []))
+        sql_maps = tuple(StorageSQLMap.from_dict(item) for item in payload.get("sql_maps", []))
+        return cls(**scalars, data=data, properties=properties, sql_maps=sql_maps)
 
     def to_dict(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {"name": self.name}
+        payload: dict[str, Any] = {}
         for name in self._SCALAR_FIELDS:
-            if name == "name":
-                continue
             value = getattr(self, name)
             if value:
                 payload[name] = value
+        if not payload.get("name"):
+            payload["name"] = self.name or "Default"
         if self.data:
             payload["data"] = [item.to_dict() for item in self.data]
         if self.properties:
@@ -219,6 +242,3 @@ class StorageDefinition:
         if self.sql_maps:
             payload["sql_maps"] = [item.to_dict() for item in self.sql_maps]
         return payload
-
-
-_STORAGE_TOP_LEVEL_FIELDS = set(StorageDefinition._SCALAR_FIELDS) | {"data", "properties", "sql_maps"}

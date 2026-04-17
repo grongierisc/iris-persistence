@@ -7,78 +7,17 @@ if TYPE_CHECKING:
 
 
 class IRISRuntimeProtocol(Protocol):
-    """Protocol defining the interface for IRIS runtime backends.
+    """Protocol defining the interface for IRIS runtime backends."""
 
-    Mirrors the architecture of ``iris_global.GrefABC``: the Protocol is
-    structural (no inheritance required).  Any object that implements all of
-    these methods is accepted by ``iris_orm`` as a runtime backend, including
-    ``EmbeddedRuntime``, ``CommunityRuntime``, ``OfficialRuntime``, and the
-    ``FakeAdapter`` used in tests.
-    """
-
-    # ------------------------------------------------------------------ schema
-
-    def load_schema(self, classname: str) -> dict[str, Any] | None:
-        """Return the raw schema dict for *classname*, or ``None`` if it does
-        not exist in the IRIS dictionary."""
-        ...
-
-    def list_classes(self, pattern: str) -> list[str]:
-        """Return sorted class names matching *pattern* (glob-style, e.g. ``"Demo.*"``)."""
-        ...
-
-    def replace_class(self, schema_class: SchemaClass) -> None:
-        """Upsert an IRIS class definition from *schema_class* and compile it."""
-        ...
-
-    # ------------------------------------------------------------------ objects
-
-    def save_object(
-        self,
-        classname: str,
-        data: dict[str, Any],
-        obj_id: Any | None = None,
-    ) -> Any:
-        """Persist *data* as an instance of *classname*.
-
-        Returns the object ID (existing or newly assigned).
-        """
-        ...
-
-    def open_object(
-        self, classname: str, obj_id: Any
-    ) -> dict[str, Any] | None:
-        """Return ``{"id": …, "data": {…}}`` for *obj_id*, or ``None``."""
-        ...
-
-    def open_native_object(self, classname: str, obj_id: Any) -> Any | None:
-        """Return the raw IRIS object for *obj_id*, or ``None``."""
-        ...
-
-    def cls(self, classname: str) -> Any:
-        """Return a class-level proxy for *classname*, analogous to the embedded ``iris.cls()`` API.
-
-        On embedded runtimes returns the native ``iris.cls`` proxy directly.
-        On gateway runtimes returns a ``_ClassProxy`` that dispatches class-method
-        calls via the driver and wraps IRIS object results transparently.
-        """
-        ...
-
-    def native_class(self, classname: str) -> Any:
-        """Return the class-level proxy for *classname* (equivalent to ``cls(classname)``).
-
-        Both embedded and gateway runtimes now return a uniform proxy: attribute/method
-        access dispatches to the corresponding IRIS class method, and IRIS object results
-        are automatically wrapped in a ``_NativeProxy``.
-        """
-        ...
-
-    def delete_object(self, classname: str, obj_id: Any) -> None:
-        """Delete the object identified by *obj_id*."""
-        ...
-
-    # ------------------------------------------------------------------ queries
-
+    def load_schema(self, classname: str) -> dict[str, Any] | None: ...
+    def list_classes(self, pattern: str) -> list[str]: ...
+    def replace_class(self, schema_class: "SchemaClass") -> None: ...
+    def save_object(self, classname: str, data: dict[str, Any], obj_id: Any | None = None) -> Any: ...
+    def open_object(self, classname: str, obj_id: Any) -> dict[str, Any] | None: ...
+    def open_native_object(self, classname: str, obj_id: Any) -> Any | None: ...
+    def cls(self, classname: str) -> Any: ...
+    def native_class(self, classname: str) -> Any: ...
+    def delete_object(self, classname: str, obj_id: Any) -> None: ...
     def query_rows(
         self,
         classname: str,
@@ -87,49 +26,11 @@ class IRISRuntimeProtocol(Protocol):
         order_by: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
-    ) -> list[dict[str, Any]]:
-        """Return rows matching *filters* as ``[{"id": …, field: value, …}]``."""
-        ...
-
-    def sql(
-        self,
-        statement: str,
-        params: list[Any] | None = None,
-    ) -> list[tuple[Any, ...]]:
-        """Execute a raw SQL *statement* and return the result rows."""
-        ...
-
-    # ------------------------------------------------------------------ utility
-
-    def compile(self, classname: str) -> None:
-        """Compile *classname* in IRIS."""
-        ...
-
-    def looks_like_iris_object(self, value: Any) -> bool:
-        """Return ``True`` when *value* appears to be a valid IRIS object."""
-        ...
-
-    # --------------------------------------------------------------- transactions
-
-    def begin(self) -> None:
-        """Start an IRIS transaction (``TSTART``)."""
-        ...
-
-    def commit(self) -> None:
-        """Commit the current IRIS transaction (``TCOMMIT``)."""
-        ...
-
-    def rollback(self) -> None:
-        """Roll back the current IRIS transaction (``TROLLBACK``)."""
-        ...
-
-    # --------------------------------------------------------------- lifecycle
-
-    def close(self) -> None:
-        """Release any resources held by this runtime (e.g. network connections).
-
-        Implementations that hold no resources (``EmbeddedRuntime``,
-        ``FakeAdapter``) should treat this as a no-op.
-        Gateway runtimes should close the underlying raw connection.
-        """
-        ...
+    ) -> list[dict[str, Any]]: ...
+    def sql(self, statement: str, params: list[Any] | None = None) -> list[tuple[Any, ...]]: ...
+    def compile(self, classname: str) -> None: ...
+    def looks_like_iris_object(self, value: Any) -> bool: ...
+    def begin(self) -> None: ...
+    def commit(self) -> None: ...
+    def rollback(self) -> None: ...
+    def close(self) -> None: ...

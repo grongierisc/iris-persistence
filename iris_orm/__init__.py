@@ -13,11 +13,11 @@ from .fields import Field, FieldDefinition, Index, IndexDefinition, ParameterDef
 from .model import IRISMeta, IRISModel
 from .protocol import IRISRuntimeProtocol
 from .runtime import (
-    CommunityRuntime,
+    CommunityRuntime,  # deprecated; kept for backward compat
     EmbeddedRuntime,
-    OfficialRuntime,
+    OfficialRuntime,  # deprecated; kept for backward compat
     configure,
-    configure_default_runtime,  # kept for backward compat; prefer configure()
+    configure_default_runtime,  # deprecated; kept for backward compat
     reset_default_runtime,
 )
 from .scaffold import scaffold_from_cls, scaffold_from_iris

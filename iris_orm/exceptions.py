@@ -8,14 +8,7 @@ class IRISORMError(Exception):
 
 
 class IRISStatusError(IRISORMError):
-    """Wraps a raw IRIS ``%Status`` failure.
-
-    Attributes
-    ----------
-    status:
-        The raw ``%Status`` value returned by IRIS (may be a string, integer,
-        or an opaque IRIS object depending on the backend).
-    """
+    """Wraps a raw IRIS ``%Status`` failure."""
 
     def __init__(self, message: str, status: Any = None) -> None:
         super().__init__(message)
@@ -23,16 +16,7 @@ class IRISStatusError(IRISORMError):
 
 
 class IRISObjectNotFound(IRISStatusError, LookupError):
-    """Raised when ``get()`` / ``open_object()`` finds no record.
-
-    Extends both :class:`IRISStatusError` and :class:`LookupError` so
-    callers can catch either::
-
-        try:
-            product = Product.get(999)
-        except LookupError:
-            product = Product(Name="New")
-    """
+    """Raised when ``get()`` finds no record."""
 
 
 class IRISConcurrencyError(IRISStatusError):
@@ -40,8 +24,7 @@ class IRISConcurrencyError(IRISStatusError):
 
 
 class IRISValidationError(IRISStatusError):
-    """Raised when a required field is missing or a type mismatch occurs on
-    save."""
+    """Raised when a required field is missing or a type mismatch occurs on save."""
 
 
 class IRISCompileError(IRISStatusError):
@@ -49,5 +32,4 @@ class IRISCompileError(IRISStatusError):
 
 
 class IRISSchemaError(IRISStatusError):
-    """Raised when ``replace_class()`` or another schema-modification
-    operation fails."""
+    """Raised when a schema-modification operation fails."""

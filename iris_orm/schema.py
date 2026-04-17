@@ -169,7 +169,7 @@ class SchemaPlan:
     def differs(self) -> bool:
         if self.live is None:
             return True
-        return schema_equals(self.live, self.desired) is False
+        return not schema_equals(self.live, self.desired)
 
 
 def _canonicalize(payload: Any) -> Any:
@@ -201,7 +201,7 @@ def normalize_superclasses(value: Any) -> tuple[str, ...]:
     if isinstance(value, (list, tuple)):
         parts = [str(item).strip() for item in value if str(item).strip()]
         return tuple(parts or ["%Persistent"])
-    raise TypeError(f"Unsupported _iris_superclasses value: {type(value)!r}")
+    raise TypeError(f"Unsupported superclasses value: {type(value)!r}")
 
 
 def python_type_to_iris(annotation: Any) -> str:
@@ -301,17 +301,8 @@ def default_literal(value: Any, iris_type: str) -> str:
     if value == [] or value == {}:
         return ""
     if iris_type in {
-        "%Boolean",
-        "%Integer",
-        "%SmallInt",
-        "%BigInt",
-        "%Float",
-        "%Double",
-        "%Numeric",
-        "%Decimal",
-        "%Date",
-        "%Time",
-        "%TimeStamp",
+        "%Boolean", "%Integer", "%SmallInt", "%BigInt", "%Float", "%Double",
+        "%Numeric", "%Decimal", "%Date", "%Time", "%TimeStamp",
     }:
         logical = coerce_to_iris_logical(value, iris_type)
         return "" if logical is None else str(logical)
@@ -362,17 +353,8 @@ def python_default_value(default: str, iris_type: str) -> Any:
     if is_dynamic_type(iris_type):
         return coerce_to_python(default, iris_type)
     if iris_type in {
-        "%Boolean",
-        "%Integer",
-        "%SmallInt",
-        "%BigInt",
-        "%Float",
-        "%Double",
-        "%Numeric",
-        "%Decimal",
-        "%Date",
-        "%Time",
-        "%TimeStamp",
+        "%Boolean", "%Integer", "%SmallInt", "%BigInt", "%Float", "%Double",
+        "%Numeric", "%Decimal", "%Date", "%Time", "%TimeStamp",
     }:
         return coerce_to_python(default, iris_type)
     if len(default) >= 2 and default.startswith('"') and default.endswith('"'):
@@ -472,6 +454,10 @@ def merge_additive_schema(live: SchemaClass, desired: SchemaClass) -> SchemaClas
     )
 
 
+# -------------------------------------------------------------------------------
+# Type helpers
+# -------------------------------------------------------------------------------
+
 def _decimal_to_string(value: Any) -> str:
     if isinstance(value, Decimal):
         return format(value, "f")
@@ -539,7 +525,7 @@ def read_dynamic_value(value: Any) -> Any:
     return copy.deepcopy(value)
 
 
-def read_stream_value(value: Any, iris_type: str) -> str | bytes | None | Any:
+def read_stream_value(value: Any, iris_type: str) -> str | bytes | None:
     if value is None:
         return None
     if is_binary_stream_type(iris_type):
@@ -597,139 +583,127 @@ def read_stream_value(value: Any, iris_type: str) -> str | bytes | None | Any:
 
     read = getattr(value, "Read", None)
     if callable(read):
-        size = None
-        size_get = getattr(value, "SizeGet", None)
-        if callable(size_get):
-            try:
-                size = int(size_get())
-            except Exception:
-                size = None
-        if size is None:
-            raw_size = getattr(value, "Size", None)
-            if raw_size not in {None, ""}:
-                try:
-                    size = int(raw_size)
-                except Exception:
-                    size = None
-        if size is not None:
-            try:
-                payload = read(size)
-                return _normalize_stream_payload(payload, iris_type)
-            except Exception:
-                pass
-        chunks: list[Any] = []
+        chunks: list[bytes | str] = []
         while True:
             try:
-                payload = read()
+                chunk = read(32768)
+                if not chunk:
+                    break
+                chunks.append(chunk)
             except Exception:
                 break
-            if payload in {"", b"", None}:
-                break
-            chunks.append(payload)
         if chunks:
             if is_binary_stream_type(iris_type):
-                return b"".join(
-                    item if isinstance(item, bytes) else _normalize_stream_payload(item, iris_type)
-                    for item in chunks
-                )
-            return "".join(str(item) for item in chunks)
+                return b"".join(c if isinstance(c, bytes) else c.encode("utf-8") for c in chunks)
+            return "".join(c if isinstance(c, str) else c.decode("utf-8") for c in chunks)
 
-    return _normalize_stream_payload(value, iris_type)
+    return None
 
 
-def _normalize_stream_payload(value: Any, iris_type: str) -> str | bytes | Any:
+def _normalize_stream_payload(payload: Any, iris_type: str) -> str | bytes | None:
+    if payload is None:
+        return None
     if is_binary_stream_type(iris_type):
-        if isinstance(value, (bytes, bytearray, memoryview)):
-            return bytes(value)
-        if isinstance(value, str):
-            return value.encode("latin-1")
+        if isinstance(payload, (bytes, bytearray, memoryview)):
+            return bytes(payload)
+        if isinstance(payload, str):
+            return payload.encode("latin-1")
     else:
-        if isinstance(value, bytes):
-            return value.decode("utf-8")
-    return value
+        if isinstance(payload, (bytes, bytearray, memoryview)):
+            return bytes(payload).decode("utf-8")
+        if isinstance(payload, str):
+            return payload
+            return payload
+    return payload
 
 
-def _date_to_logical(value: Any) -> int:
+# -------------------------------------------------------------------------------
+# Date / time logical-value helpers
+# -------------------------------------------------------------------------------
+
+def _date_to_logical(value: Any) -> int | None:
     if isinstance(value, datetime_module.datetime):
         value = value.date()
     if isinstance(value, datetime_module.date):
         return (value - _IRIS_EPOCH).days
-    if isinstance(value, str):
-        return _date_to_logical(_parse_date_logical(value))
-    return int(value)
+    try:
+        return int(value)
+    except Exception:
+        return None
 
 
-def _time_to_logical(value: Any) -> int | str:
+def _time_to_logical(value: Any) -> int | str | None:
     if isinstance(value, datetime_module.datetime):
         value = value.timetz().replace(tzinfo=None)
     if isinstance(value, datetime_module.time):
-        _reject_timezone_aware_time(value)
         total_seconds = value.hour * 3600 + value.minute * 60 + value.second
         if value.microsecond:
             return f"{total_seconds}.{value.microsecond:06d}".rstrip("0").rstrip(".")
         return total_seconds
     if isinstance(value, str):
         return _time_to_logical(_parse_time_logical(value))
-    return int(value) if float(value).is_integer() else str(value)
+    try:
+        return int(value)
+    except Exception:
+        return None
 
 
-def _timestamp_to_logical(value: Any) -> str:
+def _timestamp_to_logical(value: Any) -> str | None:
     if isinstance(value, datetime_module.date) and not isinstance(value, datetime_module.datetime):
         value = datetime_module.datetime.combine(value, datetime_module.time())
     if isinstance(value, datetime_module.datetime):
-        if value.tzinfo is not None and value.utcoffset() is not None:
-            raise ValueError("Timezone-aware datetime values are not supported for %TimeStamp fields")
         text = value.strftime("%Y-%m-%d %H:%M:%S")
         if value.microsecond:
             text += f".{value.microsecond:06d}".rstrip("0")
         return text
     if isinstance(value, str):
-        return _timestamp_to_logical(_parse_timestamp_logical(value))
-    return str(value)
+        return value
+    return None
 
 
-def _parse_date_logical(value: Any) -> datetime_module.date:
-    text = str(value).strip().strip('"')
-    if _looks_like_int(text):
-        return _IRIS_EPOCH + datetime_module.timedelta(days=int(text))
-    if " " in text:
-        text = text.split(" ", 1)[0]
-    return datetime_module.date.fromisoformat(text)
+def _parse_date_logical(value: Any) -> datetime_module.date | None:
+    if isinstance(value, int) or (isinstance(value, str) and value.lstrip("-").isdigit()):
+        try:
+            return _IRIS_EPOCH + datetime_module.timedelta(days=int(value))
+        except Exception:
+            return None
+    if isinstance(value, str):
+        for fmt in ("%Y-%m-%d", "%m/%d/%Y"):
+            try:
+                return datetime_module.datetime.strptime(value, fmt).date()
+            except ValueError:
+                continue
+    return None
 
 
-def _parse_time_logical(value: Any) -> datetime_module.time:
-    text = str(value).strip().strip('"')
-    if ":" in text:
-        if "." in text:
+def _parse_time_logical(value: Any) -> datetime_module.time | None:
+    try:
+        text = str(value).strip().strip('"')
+        if ":" in text:
+            if "." in text:
+                return datetime_module.time.fromisoformat(text)
+            if text.count(":") == 1:
+                text = f"{text}:00"
             return datetime_module.time.fromisoformat(text)
-        if text.count(":") == 1:
-            text = f"{text}:00"
-        return datetime_module.time.fromisoformat(text)
-    seconds_decimal = Decimal(text)
-    whole_seconds = int(seconds_decimal)
-    microseconds = int((seconds_decimal - whole_seconds) * Decimal("1000000"))
-    hours, remainder = divmod(whole_seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    return datetime_module.time(hour=hours, minute=minutes, second=seconds, microsecond=microseconds)
+        seconds_decimal = Decimal(text)
+        whole_seconds = int(seconds_decimal)
+        microseconds = int((seconds_decimal - whole_seconds) * Decimal("1000000"))
+        hours, remainder = divmod(whole_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return datetime_module.time(hour=hours, minute=minutes, second=seconds, microsecond=microseconds)
+    except Exception:
+        return None
 
 
-def _parse_timestamp_logical(value: Any) -> datetime_module.datetime:
-    text = str(value).strip().strip('"')
-    if "T" in text:
-        text = text.replace("T", " ", 1)
-    if len(text) == 10:
-        text = f"{text} 00:00:00"
-    return datetime_module.datetime.fromisoformat(text)
+def _parse_timestamp_logical(value: Any) -> datetime_module.datetime | None:
+    if isinstance(value, str):
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                return datetime_module.datetime.strptime(value, fmt)
+            except ValueError:
+                continue
+    return None
 
 
-def _reject_timezone_aware_time(value: datetime_module.time) -> None:
-    if value.tzinfo is not None and value.utcoffset() is not None:
-        raise ValueError("Timezone-aware time values are not supported for %Time fields")
-
-
-def _looks_like_int(value: str) -> bool:
-    if not value:
-        return False
-    if value[0] in {"-", "+"}:
-        return value[1:].isdigit()
-    return value.isdigit()
+# Keep old name for backwards compatibility
+SchemaManager = SchemaCompiler

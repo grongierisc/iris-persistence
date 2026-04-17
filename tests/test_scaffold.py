@@ -66,10 +66,10 @@ def test_scaffold_from_iris_proxy_keeps_storage_metadata(tmp_path: Path) -> None
     assert "Title: Annotated[str, Field(required=True, maxlen=500, iris_type=\"%String\")]" in source
 
     module = _load_module(paths[0], "article_proxy")
-    assert module.Article._iris_storage.data_location == "^Demo.ArticleD"
-    assert module.Article._iris_storage.extent_size == "1"
-    assert module.Article._iris_storage.properties[0].name == "Title"
-    assert module.Article._iris_storage.sql_maps[0].name == "IDKEY"
+    assert module.Article._iris_state.storage.data_location == "^Demo.ArticleD"
+    assert module.Article._iris_state.storage.extent_size == "1"
+    assert module.Article._iris_state.storage.properties[0].name == "Title"
+    assert module.Article._iris_state.storage.sql_maps[0].name == "IDKEY"
 
 
 def test_scaffold_from_iris_python_renders_decorators_and_storage(tmp_path: Path) -> None:

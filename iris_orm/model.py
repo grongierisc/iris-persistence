@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import contextlib
 import copy
-from dataclasses import MISSING, dataclass
+import dataclasses
+from dataclasses import MISSING, dataclass, field as dataclass_field
 import warnings
 from typing import Annotated, Any, ClassVar, Generic, Self, TypeVar, get_args, get_origin, get_type_hints
 
@@ -19,26 +20,64 @@ from .schema import (
 )
 from .storage import StorageDefinition, validate_storage_definition_dict
 
+
+# ---------------------------------------------------------------------------
+# Per-subclass IRIS metadata consolidated into a single object
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _IrisClassState:
+    """All per-subclass IRIS metadata in one place."""
+
+    classname: str = ""
+    superclasses: str | list[str] = "%Persistent"
+    mode: str = "extend"
+    storage: StorageDefinition | dict[str, Any] | None = None
+    indexes: list[dict[str, Any]] = dataclass_field(default_factory=list)
+    parameters: dict[str, str] = dataclass_field(default_factory=dict)
+    declared_fields: dict[str, FieldDefinition] = dataclass_field(default_factory=dict)
+    bound_schema: Any = None
+    bound: bool = False
+    prepared_state: tuple[int, dict[str, Any]] | None = None
+    native_proxy_names: set[str] = dataclass_field(default_factory=set)
+    native_proxy_version: int | None = None
+
+
+# ---------------------------------------------------------------------------
+# Module-level constants
+# ---------------------------------------------------------------------------
+
 _MODEL_REGISTRY: dict[str, type] = {}
 _ModelT = TypeVar("_ModelT", bound="IRISModel")
 _VALID_MODES = {"replace", "extend", "observe"}
+
+# Maps Meta attribute name → _IrisClassState field name
 _META_TO_IRIS_ATTRS = {
-    "classname": "_iris_classname",
-    "mode": "_iris_mode",
-    "superclasses": "_iris_superclasses",
-    "storage": "_iris_storage",
-    "indexes": "_iris_indexes",
-    "parameters": "_iris_parameters",
-}
-_DEPRECATED_CLASS_METADATA = {
-    "_iris_classname",
-    "_iris_mode",
-    "_iris_superclasses",
-    "_iris_storage",
-    "_iris_indexes",
-    "_iris_parameters",
+    "classname": "classname",
+    "mode": "mode",
+    "superclasses": "superclasses",
+    "storage": "storage",
+    "indexes": "indexes",
+    "parameters": "parameters",
 }
 
+# Legacy direct class-level attribute names that map to _IrisClassState fields
+_LEGACY_ATTR_TO_STATE_FIELD: dict[str, str] = {
+    "_iris_classname": "classname",
+    "_iris_mode": "mode",
+    "_iris_superclasses": "superclasses",
+    "_iris_storage": "storage",
+    "_iris_indexes": "indexes",
+    "_iris_parameters": "parameters",
+}
+
+# Set of legacy direct-attribute names that trigger deprecation warnings
+_DEPRECATED_CLASS_METADATA = set(_LEGACY_ATTR_TO_STATE_FIELD)
+
+
+# ---------------------------------------------------------------------------
+# Descriptors
+# ---------------------------------------------------------------------------
 
 class _ModelFieldDescriptor:
     def __init__(self, name: str) -> None:
@@ -46,7 +85,7 @@ class _ModelFieldDescriptor:
 
     def __get__(self, instance: "IRISModel | None", owner: type["IRISModel"]) -> Any:
         if instance is None:
-            return owner._iris_declared_fields[self.name]
+            return owner._iris_state.declared_fields[self.name]
         return object.__getattribute__(instance, "_iris_data").get(self.name)
 
     def __set__(self, instance: "IRISModel", value: Any) -> None:
@@ -59,7 +98,7 @@ class _NativeClassAttributeProxy:
 
     def __get__(self, instance: Any, owner: type["IRISModel"]) -> Any:
         owner._prepare()
-        native_class = owner._runtime().native_class(owner._iris_classname)
+        native_class = owner._runtime().native_class(owner._iris_state.classname)
         native_attr = getattr(native_class, self.name)
         if callable(native_attr):
 
@@ -70,6 +109,10 @@ class _NativeClassAttributeProxy:
             return _class_method_proxy
         return native_attr
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _clone_field_definition(value: FieldDefinition) -> FieldDefinition:
     return value.copy()
@@ -93,6 +136,10 @@ def _split_annotated(annotation: Any) -> tuple[Any, FieldDefinition | None]:
     return annotation, None
 
 
+# ---------------------------------------------------------------------------
+# Query
+# ---------------------------------------------------------------------------
+
 @dataclass
 class Query(Generic[_ModelT]):
     model_class: type[_ModelT]
@@ -106,8 +153,8 @@ class Query(Generic[_ModelT]):
         merged.update(kwargs)
         # Validate field names eagerly when the schema is already bound so the
         # error points at the call site rather than `.all()`.
-        if self.model_class._iris_bound:
-            valid_fields = set(self.model_class._iris_bound_schema.property_map)
+        if self.model_class._iris_state.bound:
+            valid_fields = set(self.model_class._iris_state.bound_schema.property_map)
             unknown = set(kwargs) - valid_fields
             if unknown:
                 raise ValueError(
@@ -127,7 +174,7 @@ class Query(Generic[_ModelT]):
 
     def all(self) -> list[_ModelT]:
         self.model_class._prepare()
-        schema = self.model_class._iris_bound_schema
+        schema = self.model_class._iris_state.bound_schema
         valid_fields = set(schema.property_map)
         for key in self.filters:
             if key not in valid_fields:
@@ -135,7 +182,7 @@ class Query(Generic[_ModelT]):
         if self.order_field and self.order_field not in valid_fields:
             raise ValueError(f"Unknown order_by field for {self.model_class.__name__}: {self.order_field}")
         rows = self.model_class._runtime().query_rows(
-            self.model_class._iris_classname,
+            self.model_class._iris_state.classname,
             list(valid_fields),
             self.filters,
             order_by=self.order_field,
@@ -149,19 +196,12 @@ class Query(Generic[_ModelT]):
         return rows[0] if rows else None
 
 
+# ---------------------------------------------------------------------------
+# IRISModel
+# ---------------------------------------------------------------------------
+
 class IRISModel:
-    _iris_classname: ClassVar[str] = ""
-    _iris_superclasses: ClassVar[str | list[str]] = "%Persistent"
-    _iris_mode: ClassVar[str] = "extend"
-    _iris_storage: ClassVar[StorageDefinition | dict[str, Any] | None] = None
-    _iris_indexes: ClassVar[list[dict[str, Any]]] = []
-    _iris_parameters: ClassVar[dict[str, str]] = {}
-    _iris_declared_fields: ClassVar[dict[str, FieldDefinition]] = {}
-    _iris_bound_schema: ClassVar[Any] = None
-    _iris_bound: ClassVar[bool] = False
-    _iris_prepared_state: ClassVar[tuple[int, dict[str, Any]] | None] = None
-    _iris_native_proxy_names: ClassVar[set[str]] = set()
-    _iris_native_proxy_version: ClassVar[int | None] = None
+    _iris_state: ClassVar[_IrisClassState] = _IrisClassState()  # type: ignore[assignment]
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -169,11 +209,11 @@ class IRISModel:
 
     def __init__(self, **kwargs: Any) -> None:
         model_class = type(self)
-        if model_class._normalized_mode() == "observe" and not getattr(model_class, "_iris_bound", False):
+        if model_class._normalized_mode() == "observe" and not model_class._iris_state.bound:
             model_class._prepare()
         object.__setattr__(self, "_iris_id", kwargs.pop("id", None))
         object.__setattr__(self, "_iris_data", {})
-        for name, field_def in model_class._iris_declared_fields.items():
+        for name, field_def in model_class._iris_state.declared_fields.items():
             if not field_def.has_default:
                 continue
             object.__getattribute__(self, "_iris_data")[name] = copy.deepcopy(field_def.default)
@@ -219,24 +259,50 @@ class IRISModel:
         meta_options = _read_meta_options(cls)
         _warn_deprecated_class_metadata(cls, meta_options)
 
+        # Find nearest ancestor state to inherit configurable defaults from.
+        parent_state = next(
+            (base.__dict__["_iris_state"] for base in cls.__mro__[1:] if "_iris_state" in base.__dict__),
+            _IrisClassState(),
+        )
+        # Create a fresh state for this subclass, inheriting configurable fields
+        # from the parent but resetting all runtime-only state.
+        cls._iris_state = dataclasses.replace(
+            parent_state,
+            bound=False,
+            bound_schema=None,
+            prepared_state=None,
+            native_proxy_names=set(),
+            native_proxy_version=None,
+            # Deep-copy mutable collections to avoid aliasing with parent
+            indexes=list(parent_state.indexes),
+            parameters=dict(parent_state.parameters),
+            declared_fields={},  # rebuilt below from annotations
+        )
+
+        # Migrate any legacy direct-attribute definitions (e.g. _iris_classname = "User.Foo").
+        for legacy_name, state_field in _LEGACY_ATTR_TO_STATE_FIELD.items():
+            if legacy_name in cls.__dict__:
+                setattr(cls._iris_state, state_field, cls.__dict__[legacy_name])
+
         cls._apply_meta_options(meta_options)
         cls._ensure_default_classname(meta_options)
-        cls._iris_indexes = _normalize_indexes(getattr(cls, "_iris_indexes", []))
-        cls._iris_parameters = {str(k): str(v) for k, v in dict(getattr(cls, "_iris_parameters", {})).items()}
-        validate_storage_definition_dict(getattr(cls, "_iris_storage", None))
-        cls._iris_storage = StorageDefinition.from_dict(getattr(cls, "_iris_storage", None))
-        cls._iris_bound = False
-        cls._iris_bound_schema = None
-        cls._iris_prepared_state = None
-        cls._iris_native_proxy_names = set()
-        cls._iris_native_proxy_version = None
-        cls._iris_mode = cls._normalized_mode()
 
+        # Normalize mutable fields
+        cls._iris_state.indexes = _normalize_indexes(cls._iris_state.indexes)
+        cls._iris_state.parameters = {str(k): str(v) for k, v in dict(cls._iris_state.parameters).items()}
+        if not isinstance(cls._iris_state.storage, StorageDefinition):
+            validate_storage_definition_dict(cls._iris_state.storage)
+            cls._iris_state.storage = StorageDefinition.from_dict(cls._iris_state.storage)
+        cls._iris_state.mode = cls._normalized_mode()
+
+        # Build declared_fields by inheriting parent declared_fields then adding own annotations.
         declared_fields: dict[str, FieldDefinition] = {}
         for base in reversed(cls.__mro__[1:]):
-            inherited = getattr(base, "_iris_declared_fields", None)
-            if inherited:
-                declared_fields.update({name: _clone_field_definition(item) for name, item in inherited.items()})
+            base_state = base.__dict__.get("_iris_state")
+            if base_state is not None and base_state.declared_fields:
+                declared_fields.update(
+                    {name: _clone_field_definition(item) for name, item in base_state.declared_fields.items()}
+                )
 
         resolved = _safe_type_hints(cls)
         raw_annotations = dict(getattr(cls, "__annotations__", {}))
@@ -267,17 +333,17 @@ class IRISModel:
                 field_def.iris_type = python_type_to_iris(field_def.python_type)
             declared_fields[attr_name] = field_def
 
-        cls._iris_declared_fields = declared_fields
+        cls._iris_state.declared_fields = declared_fields
         cls._install_field_descriptors()
 
-        classname = str(getattr(cls, "_iris_classname", "") or "")
+        classname = str(cls._iris_state.classname or "")
         if classname:
             _MODEL_REGISTRY[classname] = cls
             cls._install_native_class_proxies()
 
     @classmethod
     def _apply_meta_options(cls, meta_options: dict[str, Any]) -> None:
-        for meta_name, iris_name in _META_TO_IRIS_ATTRS.items():
+        for meta_name, state_field in _META_TO_IRIS_ATTRS.items():
             if meta_name not in meta_options:
                 continue
             value = meta_options[meta_name]
@@ -288,24 +354,24 @@ class IRISModel:
             elif meta_name == "storage":
                 validate_storage_definition_dict(value, source_name="Meta.storage")
                 value = StorageDefinition.from_dict(value)
-            setattr(cls, iris_name, value)
+            setattr(cls._iris_state, state_field, value)
 
     @classmethod
     def _ensure_default_classname(cls, meta_options: dict[str, Any]) -> None:
         explicit_meta = "classname" in meta_options
         explicit_legacy = "_iris_classname" in cls.__dict__
-        if explicit_meta or explicit_legacy:
+        if explicit_meta or explicit_legacy or cls._iris_state.classname:
             return
-        cls._iris_classname = f"User.{cls.__name__}"
+        cls._iris_state.classname = f"User.{cls.__name__}"
 
     @classmethod
     def _install_field_descriptors(cls) -> None:
-        for name in cls._iris_declared_fields:
+        for name in cls._iris_state.declared_fields:
             setattr(cls, name, _ModelFieldDescriptor(name))
 
     @classmethod
     def _install_native_class_proxies(cls) -> None:
-        classname = str(getattr(cls, "_iris_classname", "") or "")
+        classname = str(cls._iris_state.classname or "")
         if not classname:
             return
         try:
@@ -315,13 +381,13 @@ class IRISModel:
         except Exception:
             return
 
-        if cls._iris_native_proxy_version == version and cls._iris_native_proxy_names:
+        if cls._iris_state.native_proxy_version == version and cls._iris_state.native_proxy_names:
             return
 
-        for name in cls._iris_native_proxy_names:
+        for name in cls._iris_state.native_proxy_names:
             if isinstance(cls.__dict__.get(name), _NativeClassAttributeProxy):
                 delattr(cls, name)
-        cls._iris_native_proxy_names = set()
+        cls._iris_state.native_proxy_names = set()
 
         for name in dir(native_class):
             if name.startswith("_") or hasattr(cls, name):
@@ -331,12 +397,12 @@ class IRISModel:
             except Exception:
                 continue
             setattr(cls, name, _NativeClassAttributeProxy(name))
-            cls._iris_native_proxy_names.add(name)
-        cls._iris_native_proxy_version = version
+            cls._iris_state.native_proxy_names.add(name)
+        cls._iris_state.native_proxy_version = version
 
     @classmethod
     def _normalized_mode(cls) -> str:
-        raw = str(getattr(cls, "_iris_mode", "extend") or "extend").strip()
+        raw = str(cls._iris_state.mode or "extend").strip()
         if raw not in _VALID_MODES:
             raise ValueError(
                 f"Unsupported _iris_mode: {raw!r}. "
@@ -356,7 +422,7 @@ class IRISModel:
 
     @classmethod
     def _prepare(cls) -> None:
-        classname = str(cls._iris_classname)
+        classname = str(cls._iris_state.classname)
         mode = cls._normalized_mode()
         runtime = cls._runtime()
         generation = cls._runtime_version()
@@ -365,28 +431,28 @@ class IRISModel:
         if mode == "observe":
             live = compiler.class_from_iris(classname)
             live_dict = live.to_dict()
-            cached = getattr(cls, "_iris_prepared_state", None)
+            cached = cls._iris_state.prepared_state
             if cached == (generation, {"mode": "observe", "schema": live_dict}):
                 return
             bind_schema(cls, live)
-            cls._iris_prepared_state = (generation, {"mode": "observe", "schema": live_dict})
+            cls._iris_state.prepared_state = (generation, {"mode": "observe", "schema": live_dict})
             cls._install_native_class_proxies()
             return
 
         desired = SchemaCompiler().compile_model(cls)
         if mode == "replace":
             desired_dict = desired.to_dict()
-            cached = getattr(cls, "_iris_prepared_state", None)
+            cached = cls._iris_state.prepared_state
             if cached == (generation, {"mode": "replace", "schema": desired_dict}):
                 return
             try:
                 live = compiler.class_from_iris(classname)
             except LookupError:
                 live = None
-            if live is None or not schema_equals(live, desired):
+            if live is None or not schema_equals(live, desired if desired.storage is not None else dataclasses.replace(desired, storage=live.storage)):
                 runtime.replace_class(desired)
             bind_schema(cls, desired)
-            cls._iris_prepared_state = (generation, {"mode": "replace", "schema": desired_dict})
+            cls._iris_state.prepared_state = (generation, {"mode": "replace", "schema": desired_dict})
             cls._install_native_class_proxies()
             return
 
@@ -396,13 +462,13 @@ class IRISModel:
             live = None
         extended = desired if live is None else merge_additive_schema(live, desired)
         extended_dict = extended.to_dict()
-        cached = getattr(cls, "_iris_prepared_state", None)
+        cached = cls._iris_state.prepared_state
         if cached == (generation, {"mode": "extend", "schema": extended_dict}):
             return
         if live is None or not schema_equals(live, extended):
             runtime.replace_class(extended)
         bind_schema(cls, extended)
-        cls._iris_prepared_state = (generation, {"mode": "extend", "schema": extended_dict})
+        cls._iris_state.prepared_state = (generation, {"mode": "extend", "schema": extended_dict})
         cls._install_native_class_proxies()
 
     @classmethod
@@ -414,7 +480,7 @@ class IRISModel:
     def plan(cls) -> SchemaPlan:
         compiled = SchemaCompiler().compile_model(cls)
         try:
-            live = SchemaCompiler(cls._runtime()).class_from_iris(cls._iris_classname)
+            live = SchemaCompiler(cls._runtime()).class_from_iris(cls._iris_state.classname)
         except LookupError:
             live = None
         mode = cls._normalized_mode()
@@ -432,14 +498,17 @@ class IRISModel:
         if cls._normalized_mode() != "observe":
             cls._runtime().replace_class(plan.desired)
         bind_schema(cls, plan.desired)
-        cls._iris_prepared_state = (cls._runtime_version(), {"mode": cls._normalized_mode(), "schema": plan.desired.to_dict()})
+        cls._iris_state.prepared_state = (
+            cls._runtime_version(),
+            {"mode": cls._normalized_mode(), "schema": plan.desired.to_dict()},
+        )
         cls._install_native_class_proxies()
         return plan
 
     @classmethod
     def get(cls, obj_id: Any) -> Self | None:
         cls._prepare()
-        row = cls._runtime().open_object(cls._iris_classname, obj_id)
+        row = cls._runtime().open_object(cls._iris_state.classname, obj_id)
         if row is None:
             return None
         return cls._instance_from_row({"id": row["id"], **row["data"]})
@@ -459,7 +528,9 @@ class IRISModel:
     def save(self) -> Self:
         model_class = type(self)
         model_class._prepare()
-        obj_id = model_class._runtime().save_object(model_class._iris_classname, dict(self._iris_data), self.pk)
+        obj_id = model_class._runtime().save_object(
+            model_class._iris_state.classname, dict(self._iris_data), self.pk
+        )
         object.__setattr__(self, "_iris_id", obj_id)
         return self
 
@@ -467,7 +538,7 @@ class IRISModel:
         model_class = type(self)
         model_class._prepare()
         if self.pk is not None:
-            model_class._runtime().delete_object(model_class._iris_classname, self.pk)
+            model_class._runtime().delete_object(model_class._iris_state.classname, self.pk)
 
     @classmethod
     def transaction(cls) -> contextlib.AbstractContextManager[None]:
@@ -482,7 +553,9 @@ class IRISModel:
         try:
             model_class = type(self)
             model_class._prepare()
-            native_obj = model_class._runtime().open_native_object(model_class._iris_classname, obj_id)
+            native_obj = model_class._runtime().open_native_object(
+                model_class._iris_state.classname, obj_id
+            )
             if native_obj is None:
                 raise AttributeError(name)
             native_attr = getattr(native_obj, name)
@@ -501,7 +574,7 @@ class IRISModel:
         if name.startswith("_"):
             object.__setattr__(self, name, value)
             return
-        declared = type(self)._iris_declared_fields
+        declared = type(self)._iris_state.declared_fields
         if name in declared:
             object.__getattribute__(self, "_iris_data")[name] = value
             return
@@ -510,7 +583,7 @@ class IRISModel:
     @classmethod
     def _instance_from_row(cls: type[Self], row: dict[str, Any]) -> Self:
         obj = cls()
-        schema = getattr(cls, "_iris_bound_schema", None)
+        schema = cls._iris_state.bound_schema
         converted: dict[str, Any] = {}
         for key, value in row.items():
             if key == "id":
@@ -528,6 +601,10 @@ class IRISModel:
     def _coerce_python_value(value: Any, iris_type: str) -> Any:
         return coerce_to_python(value, iris_type)
 
+
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
 
 @contextlib.contextmanager
 def _transaction_ctx(runtime: Any):  # type: ignore[return]
@@ -555,14 +632,19 @@ def bind_schema(model_class: type, schema_class: Any) -> type:
         field_def.has_default = prop.default != ""
         field_def.default = python_default_value(prop.default, prop.iris_type)
         existing[prop.name] = field_def
-    model_class._iris_declared_fields = existing  # type: ignore[attr-defined]
+    state = model_class._iris_state  # type: ignore[attr-defined]
+    state.declared_fields = existing
     model_class._install_field_descriptors()  # type: ignore[attr-defined]
-    model_class._iris_indexes = [item.to_dict() for item in schema_class.indexes]  # type: ignore[attr-defined]
-    model_class._iris_parameters = dict(schema_class.parameters)  # type: ignore[attr-defined]
-    model_class._iris_storage = copy.deepcopy(schema_class.storage)  # type: ignore[attr-defined]
-    model_class._iris_superclasses = list(schema_class.superclasses) if len(schema_class.superclasses) > 1 else schema_class.superclasses[0]  # type: ignore[attr-defined]
-    model_class._iris_bound_schema = schema_class  # type: ignore[attr-defined]
-    model_class._iris_bound = True  # type: ignore[attr-defined]
+    state.indexes = [item.to_dict() for item in schema_class.indexes]
+    state.parameters = dict(schema_class.parameters)
+    state.storage = copy.deepcopy(schema_class.storage)
+    state.superclasses = (
+        list(schema_class.superclasses)
+        if len(schema_class.superclasses) > 1
+        else schema_class.superclasses[0]
+    )
+    state.bound_schema = schema_class
+    state.bound = True
     return model_class
 
 
@@ -582,17 +664,14 @@ def _read_meta_options(cls: type) -> dict[str, Any]:
 
 
 def _warn_deprecated_class_metadata(cls: type, meta_options: dict[str, Any]) -> None:
-    deprecated = [
-        name
-        for name in _DEPRECATED_CLASS_METADATA
-        if name in cls.__dict__ and name not in {"_iris_bound", "_iris_bound_schema", "_iris_declared_fields", "_iris_prepared_state"}
-    ]
-    for name in sorted(deprecated):
-        meta_name = next((key for key, value in _META_TO_IRIS_ATTRS.items() if value == name), None)
-        if meta_name is not None and meta_name in meta_options:
+    for name in sorted(_DEPRECATED_CLASS_METADATA):
+        if name not in cls.__dict__:
             continue
+        state_field = _LEGACY_ATTR_TO_STATE_FIELD.get(name, name)
+        if state_field in meta_options:
+            continue  # Meta took precedence; no warning needed
         warnings.warn(
-            f"{cls.__name__}.{name} is deprecated; use class Meta.{meta_name} instead.",
+            f"{cls.__name__}.{name} is deprecated; use class Meta.{state_field} instead.",
             DeprecationWarning,
             stacklevel=3,
         )

@@ -153,8 +153,7 @@ class StorageSQLMap:
     def from_dict(cls, payload: dict[str, Any]) -> "StorageSQLMap":
         data = {"name": str(payload.get("name", "") or "")}
         for name in cls._FIELD_NAMES:
-            source_name = "global" if name == "global_" else name
-            data[name] = _string(payload.get(source_name, ""))
+            data[name] = _string(payload.get(name, ""))
         return cls(**data)
 
     def to_dict(self) -> dict[str, Any]:
@@ -163,7 +162,7 @@ class StorageSQLMap:
             value = getattr(self, name)
             if not value:
                 continue
-            payload["global" if name == "global_" else name] = value
+            payload[name] = value
         return payload
 
 

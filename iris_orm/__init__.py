@@ -13,11 +13,8 @@ from .fields import Field, FieldDefinition, Index, IndexDefinition, ParameterDef
 from .model import IRISMeta, IRISModel
 from .protocol import IRISRuntimeProtocol
 from .runtime import (
-    CommunityRuntime,  # deprecated; kept for backward compat
     EmbeddedRuntime,
-    OfficialRuntime,  # deprecated; kept for backward compat
     configure,
-    configure_default_runtime,  # deprecated; kept for backward compat
     reset_default_runtime,
 )
 from .scaffold import scaffold_from_cls, scaffold_from_iris
@@ -43,10 +40,7 @@ __all__ = [
     # Runtime — public surface
     "IRISRuntimeProtocol",
     "EmbeddedRuntime",
-    "CommunityRuntime",
-    "OfficialRuntime",
     "configure",
-    "configure_default_runtime",
     "reset_default_runtime",
     # Scaffold
     "scaffold_from_cls",

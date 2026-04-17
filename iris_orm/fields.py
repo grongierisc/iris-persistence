@@ -88,9 +88,13 @@ class IndexDefinition:
 
     def __call__(self, cls: _ModelClass) -> _ModelClass:
         cls = _ensure_model_class(cls)
-        current = list(getattr(cls, "_iris_indexes", []))
-        current.append(self.to_dict())
-        setattr(cls, "_iris_indexes", current)
+        state = getattr(cls, "_iris_state", None)
+        if state is not None:
+            state.indexes.append(self.to_dict())
+        else:
+            current = list(getattr(cls, "_iris_indexes", []))
+            current.append(self.to_dict())
+            setattr(cls, "_iris_indexes", current)
         return cls
 
 
@@ -106,9 +110,13 @@ class ParameterDefinition:
 
     def __call__(self, cls: _ModelClass) -> _ModelClass:
         cls = _ensure_model_class(cls)
-        current = dict(getattr(cls, "_iris_parameters", {}))
-        current[self.name] = self.value
-        setattr(cls, "_iris_parameters", current)
+        state = getattr(cls, "_iris_state", None)
+        if state is not None:
+            state.parameters[self.name] = self.value
+        else:
+            current = dict(getattr(cls, "_iris_parameters", {}))
+            current[self.name] = self.value
+            setattr(cls, "_iris_parameters", current)
         return cls
 
 

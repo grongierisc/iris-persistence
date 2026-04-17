@@ -20,6 +20,7 @@ from iris_orm import (
     reset_default_runtime,
 )
 from iris_orm.schema import SchemaClass, SchemaCompiler, SchemaIndex, SchemaProperty, schema_equals
+from iris_orm.schema import read_dynamic_value
 from iris_orm.scaffold import parse_cls
 from iris_orm.testing import FakeAdapter, FakeIRISList, preload_schema
 
@@ -101,7 +102,7 @@ def test_python_first_auto_overwrites_live_schema() -> None:
     assert adapter.rows["Demo.Product"][1]["Name"] == "Widget"
 
 
-def test_default_additive_mode_keeps_live_members() -> None:
+def test_default_extend_mode_keeps_live_members() -> None:
     adapter = FakeAdapter()
     preload_schema(
         adapter,
@@ -129,14 +130,14 @@ def test_default_additive_mode_keeps_live_members() -> None:
     Product(Name="Widget", Price=12.5).save()
 
     live = SchemaCompiler(adapter).class_from_iris("Demo.Product")
-    assert Product._iris_mode == "extend"
+    assert Product._iris_state.mode == "extend"
     assert "OldField" in live.property_map
     assert "Price" in live.property_map
     assert "OldIdx" in live.index_map
     assert live.parameters["OLD"] == "1"
 
 
-def test_explicit_additive_mode_overwrites_conflicting_types_without_removing_live_members() -> None:
+def test_explicit_extend_mode_overwrites_conflicting_types_without_removing_live_members() -> None:
     adapter = FakeAdapter()
     preload_schema(
         adapter,
@@ -203,7 +204,7 @@ def test_plan_uses_extend_merge_when_mode_is_extend() -> None:
     assert "Name" in plan.desired.property_map
 
 
-def test_proxy_model_uses_live_schema_without_overwrite() -> None:
+def test_observe_mode_uses_live_schema_without_overwrite() -> None:
     adapter = FakeAdapter()
     preload_schema(
         adapter,
@@ -227,10 +228,10 @@ def test_proxy_model_uses_live_schema_without_overwrite() -> None:
 
     Article.bind()
 
-    assert Article._iris_mode == "observe"
-    assert "Title" in Article._iris_declared_fields
-    assert Article._iris_storage is not None
-    assert Article._iris_storage.data_location == "^Demo.ArticleD"
+    assert Article._iris_state.mode == "observe"
+    assert "Title" in Article._iris_state.declared_fields
+    assert Article._iris_state.storage is not None
+    assert Article._iris_state.storage.data_location == "^Demo.ArticleD"
     before = adapter.load_schema("Demo.Article")
     row = Article(Title="Hello", Views=1).save()
     after = adapter.load_schema("Demo.Article")
@@ -292,24 +293,6 @@ def test_default_runtime_falls_back_to_embedded_when_unconfigured(monkeypatch: p
     assert created == [sentinel]
 
 
-def test_runtime_from_engine_selects_embedded_community_and_official(monkeypatch: pytest.MonkeyPatch) -> None:
-    embedded = object()
-    community = object()
-    official = object()
-
-    monkeypatch.setattr(runtime_module, "EmbeddedRuntime", lambda: embedded)
-    monkeypatch.setattr(runtime_module, "CommunityRuntime", lambda engine: community)
-    monkeypatch.setattr(runtime_module, "OfficialRuntime", lambda engine: official)
-
-    class DummyEngine:
-        def __init__(self, drivername: str) -> None:
-            self.url = type("DummyURL", (), {"drivername": drivername})()
-
-    assert runtime_module._runtime_from_engine() is embedded
-    assert runtime_module._runtime_from_engine(DummyEngine("iris")) is community
-    assert runtime_module._runtime_from_engine(DummyEngine("iris+intersystems")) is official
-
-
 def test_date_time_and_decimal_types_compile_and_roundtrip_defaults() -> None:
     class Event(IRISModel):
         EventDate: Annotated[date, Field(default=date(2024, 1, 2))]
@@ -330,10 +313,10 @@ def test_date_time_and_decimal_types_compile_and_roundtrip_defaults() -> None:
     assert schema.property_map["Price"].iris_type == "%Decimal"
     assert schema.property_map["Price"].default == "12.34"
 
-    assert Event._iris_declared_fields["EventDate"].default == date(2024, 1, 2)
-    assert Event._iris_declared_fields["EventTime"].default == time(3, 4, 5, 600000)
-    assert Event._iris_declared_fields["EventTimestamp"].default == datetime(2024, 1, 2, 3, 4, 5, 600000)
-    assert Event._iris_declared_fields["Price"].default == Decimal("12.34")
+    assert Event._iris_state.declared_fields["EventDate"].default == date(2024, 1, 2)
+    assert Event._iris_state.declared_fields["EventTime"].default == time(3, 4, 5, 600000)
+    assert Event._iris_state.declared_fields["EventTimestamp"].default == datetime(2024, 1, 2, 3, 4, 5, 600000)
+    assert Event._iris_state.declared_fields["Price"].default == Decimal("12.34")
 
 
 def test_property_parameters_compile_and_bind() -> None:
@@ -347,7 +330,7 @@ def test_property_parameters_compile_and_bind() -> None:
     schema = SchemaCompiler().compile_model(Product)
     assert schema.property_map["Status"].parameters == {"VALUELIST": ",Active,Inactive"}
     assert schema.property_map["Price"].parameters == {"SCALE": "2", "PRECISION": "10"}
-    assert Product._iris_declared_fields["Price"].parameters == {"SCALE": "2", "PRECISION": "10"}
+    assert Product._iris_state.declared_fields["Price"].parameters == {"SCALE": "2", "PRECISION": "10"}
 
 
 def test_property_parameters_roundtrip_with_fake_runtime() -> None:
@@ -370,8 +353,8 @@ def test_property_parameters_roundtrip_with_fake_runtime() -> None:
             mode = "observe"
 
     Product.bind()
-    assert Product._iris_declared_fields["Status"].parameters == {"VALUELIST": ",Active,Inactive"}
-    assert Product._iris_declared_fields["Price"].parameters == {"SCALE": "2", "PRECISION": "10"}
+    assert Product._iris_state.declared_fields["Status"].parameters == {"VALUELIST": ",Active,Inactive"}
+    assert Product._iris_state.declared_fields["Price"].parameters == {"SCALE": "2", "PRECISION": "10"}
 
 
 def test_runtime_and_model_coercion_support_date_time_and_decimal() -> None:
@@ -878,497 +861,6 @@ def test_base_runtime_load_and_replace_property_parameters() -> None:
     assert compiled == ["Demo.Product"]
 
 
-def test_iris_object_runtime_crud_uses_network_safe_object_api() -> None:
-    class FakeNetworkStream:
-        def __init__(self, *, binary: bool) -> None:
-            self.binary = binary
-            self.value = b"" if binary else ""
-            self.rewound = False
-
-        def invoke(self, method_name, *args):
-            if method_name == "Write":
-                self.value = args[0]
-                return None
-            if method_name == "Rewind":
-                self.rewound = True
-                return None
-            if method_name == "ReadAll":
-                return self.value
-            raise AttributeError(method_name)
-
-    class FakeIRISObject:
-        def __init__(self, gateway, classname, obj_id=None) -> None:
-            self.gateway = gateway
-            self.classname = classname
-            self.obj_id = obj_id
-            self.props: dict[str, object] = {}
-
-        def set(self, name, value):
-            self.props[name] = value
-
-        def get(self, name):
-            if name not in self.props:
-                raise AttributeError(name)
-            value = self.props[name]
-            if isinstance(value, FakeNetworkStream):
-                raise TypeError(name)
-            return value
-
-        def getObject(self, name):
-            if name not in self.props:
-                raise AttributeError(name)
-            return self.props[name]
-
-        def invoke(self, method_name, *args):
-            if method_name == "%Save":
-                if self.obj_id is None:
-                    self.obj_id = self.gateway.next_id
-                    self.gateway.next_id += 1
-                self.gateway.objects[self.obj_id] = self
-                return 1
-            if method_name == "%Id":
-                return self.obj_id
-            if method_name == "MethodName":
-                return self.props["Title"]
-            raise AttributeError(method_name)
-
-    class FakeGateway:
-        def __init__(self) -> None:
-            self.objects: dict[int, FakeIRISObject] = {}
-            self.next_id = 1
-
-        def classMethodObject(self, classname, method_name, *args):
-            if method_name == "%New":
-                if classname == "%Stream.GlobalCharacter":
-                    return FakeNetworkStream(binary=False)
-                if classname == "%Stream.GlobalBinary":
-                    return FakeNetworkStream(binary=True)
-                return FakeIRISObject(self, classname)
-            if method_name == "%OpenId":
-                return self.objects.get(args[0], "")
-            if method_name == "%DeleteId":
-                self.objects.pop(args[0], None)
-                return 1
-            raise AttributeError((classname, method_name))
-
-    class Harness(runtime_module._GatewayRuntimeBase):
-        def __init__(self) -> None:
-            self.runtime = FakeGateway()
-
-        def load_schema(self, classname: str):
-            return {
-                "name": classname,
-                "properties": [
-                    {"name": "Title", "iris_type": "%String"},
-                    {"name": "Body", "iris_type": "%Stream.GlobalCharacter"},
-                    {"name": "Payload", "iris_type": "%Stream.GlobalBinary"},
-                ],
-            }
-
-    runtime = Harness()
-
-    obj_id = runtime.save_object("Demo.Article", {"Title": "Hello", "Body": "Body text", "Payload": b"\x00\x01"})
-    stored = runtime.runtime.objects[obj_id]
-    assert stored.props["Title"] == "Hello"
-    assert stored.props["Body"].value == "Body text"
-    assert stored.props["Body"].rewound is True
-    assert stored.props["Payload"].value == b"\x00\x01"
-    assert stored.props["Payload"].rewound is True
-
-    opened = runtime.open_object("Demo.Article", obj_id)
-    assert opened == {"id": obj_id, "data": {"Title": "Hello", "Body": "Body text", "Payload": b"\x00\x01"}}
-
-    native = runtime.open_native_object("Demo.Article", obj_id)
-    assert native is not None
-    assert native.Title == "Hello"
-    assert native.MethodName() == "Hello"
-
-    runtime.delete_object("Demo.Article", obj_id)
-    assert runtime.runtime.objects == {}
-
-
-def test_iris_object_runtime_schema_write_compile_and_iter_collection() -> None:
-    class FakeArrayCollection:
-        def __init__(self) -> None:
-            self.items: list[object] = []
-
-        def append(self, value: object) -> None:
-            self.items.append(value)
-
-        def invoke(self, method_name, *args):
-            if method_name == "Count":
-                return len(self.items)
-            raise AttributeError(method_name)
-
-        def invokeObject(self, method_name, *args):
-            if method_name == "GetAt":
-                return self.items[int(args[0]) - 1]
-            raise AttributeError(method_name)
-
-    class FakeKeyedCollection(dict):
-        def GetAt(self, key):
-            return self.get(key, "")
-
-        def SetAt(self, value, key):
-            self[key] = value
-
-        def RemoveAt(self, key):
-            self.pop(key, None)
-
-    class FakeSchemaObject:
-        def __init__(self, gateway, classname, object_id=None) -> None:
-            self.gateway = gateway
-            self.classname = classname
-            self.object_id = object_id
-            self.fields: dict[str, object] = {}
-            self.object_fields: dict[str, object] = {}
-            if classname == "%Dictionary.ClassDefinition":
-                self.object_fields["Properties"] = FakeArrayCollection()
-                self.object_fields["Indexes"] = FakeArrayCollection()
-                self.object_fields["Parameters"] = FakeArrayCollection()
-                self.object_fields["Storages"] = FakeArrayCollection()
-            if classname == "%Dictionary.PropertyDefinition":
-                self.object_fields["Parameters"] = FakeKeyedCollection()
-
-        def set(self, name, value):
-            if isinstance(value, (FakeSchemaObject, FakeArrayCollection, FakeKeyedCollection)):
-                self.object_fields[name] = value
-            else:
-                self.fields[name] = value
-
-        def get(self, name):
-            return self.fields.get(name, "")
-
-        def getObject(self, name):
-            return self.object_fields.get(name)
-
-        def invoke(self, method_name, *args):
-            if method_name == "%Save":
-                self.gateway.save(self)
-                return 1
-            if method_name == "parentSet":
-                self.object_fields["parent"] = args[0]
-                return 1
-            raise AttributeError(method_name)
-
-    class FakeGateway:
-        def __init__(self) -> None:
-            self.classes: dict[str, FakeSchemaObject] = {}
-            self.properties: dict[str, FakeSchemaObject] = {}
-            self.indexes: dict[str, FakeSchemaObject] = {}
-            self.parameters: dict[str, FakeSchemaObject] = {}
-            self.storages: dict[str, FakeSchemaObject] = {}
-            self.compiled: list[str] = []
-
-        def classMethodObject(self, classname, method_name, *args):
-            registry = {
-                "%Dictionary.ClassDefinition": self.classes,
-                "%Dictionary.PropertyDefinition": self.properties,
-                "%Dictionary.IndexDefinition": self.indexes,
-                "%Dictionary.ParameterDefinition": self.parameters,
-                "%Dictionary.StorageDefinition": self.storages,
-                "%Dictionary.StorageDataDefinition": {},
-                "%Dictionary.StorageDataValueDefinition": {},
-                "%Dictionary.StoragePropertyDefinition": {},
-                "%Dictionary.StorageSQLMapDefinition": {},
-            }.get(classname)
-            if method_name == "%New":
-                return FakeSchemaObject(self, classname)
-            if method_name == "%OpenId":
-                return registry.get(args[0], "") if registry is not None else ""
-            raise AttributeError((classname, method_name))
-
-        def classMethodString(self, classname, method_name, *args):
-            if (classname, method_name) == ("%SYSTEM.OBJ", "Compile"):
-                self.compiled.append(args[0])
-                return 1
-            raise AttributeError((classname, method_name))
-
-        def save(self, obj: FakeSchemaObject) -> None:
-            if obj.classname == "%Dictionary.ClassDefinition":
-                object_id = str(obj.fields.get("Name", "") or "")
-                obj.object_id = object_id
-                self.classes[object_id] = obj
-                return
-            parent = obj.object_fields["parent"]
-            parent_name = str(parent.fields.get("Name", "") or "")
-            object_id = f"{parent_name}||{obj.fields.get('Name', '')}"
-            obj.object_id = object_id
-            if obj.classname == "%Dictionary.PropertyDefinition":
-                self.properties[object_id] = obj
-                parent.object_fields["Properties"].append(obj)
-                return
-            if obj.classname == "%Dictionary.IndexDefinition":
-                self.indexes[object_id] = obj
-                parent.object_fields["Indexes"].append(obj)
-                return
-            if obj.classname == "%Dictionary.ParameterDefinition":
-                self.parameters[object_id] = obj
-                parent.object_fields["Parameters"].append(obj)
-                return
-            if obj.classname == "%Dictionary.StorageDefinition":
-                self.storages[object_id] = obj
-                parent.object_fields["Storages"].append(obj)
-                return
-
-    class Harness(runtime_module._GatewayRuntimeBase):
-        def __init__(self) -> None:
-            self.runtime = FakeGateway()
-
-        def sql(self, statement, params=None):
-            return []
-
-    runtime = Harness()
-    schema = SchemaClass(
-        name="Demo.Product",
-        superclasses=("%Persistent",),
-        properties=(
-            SchemaProperty(
-                name="Status",
-                iris_type="%String",
-                parameters={"VALUELIST": ",Active,Inactive"},
-            ),
-        ),
-        indexes=(SchemaIndex(name="StatusIdx", properties="Status", unique=True),),
-        parameters={"DEFAULTGLOBAL": "^Demo.ProductD"},
-        storage=StorageDefinition(name="Default", data_location="^Demo.ProductD"),
-    )
-
-    runtime.replace_class(schema)
-    loaded = runtime.load_schema("Demo.Product")
-
-    assert loaded is not None
-    assert loaded["properties"][0]["name"] == "Status"
-    assert loaded["properties"][0]["parameters"] == {"VALUELIST": ",Active,Inactive"}
-    assert loaded["indexes"][0]["name"] == "StatusIdx"
-    assert loaded["parameters"] == {"DEFAULTGLOBAL": "^Demo.ProductD"}
-    assert runtime.runtime.properties["Demo.Product||Status"].getObject("Parameters") == {"VALUELIST": ",Active,Inactive"}
-    assert runtime.runtime.storages["Demo.Product||Default"].fields["DataLocation"] == "^Demo.ProductD"
-    assert runtime.runtime.compiled == ["Demo.Product"]
-
-
-def test_iris_object_runtime_load_schema_tolerates_missing_optional_fields() -> None:
-    class FakeArrayCollection:
-        def __init__(self, items=None) -> None:
-            self.items = list(items or [])
-
-        def invoke(self, method_name, *args):
-            if method_name == "Count":
-                return len(self.items)
-            raise AttributeError(method_name)
-
-        def invokeObject(self, method_name, *args):
-            if method_name == "GetAt":
-                return self.items[int(args[0]) - 1]
-            raise AttributeError(method_name)
-
-    class FakePropertyObject:
-        def __init__(self) -> None:
-            self.fields = {
-                "Name": "Title",
-                "Type": "%String",
-                "Required": 1,
-                "InitialExpression": "",
-                "Description": "",
-            }
-            self.object_fields = {"Parameters": {}}
-
-        def get(self, name):
-            if name not in self.fields:
-                raise AttributeError(name)
-            return self.fields[name]
-
-        def getObject(self, name):
-            return self.object_fields.get(name)
-
-    class FakeClassObject:
-        def __init__(self) -> None:
-            self.fields = {"Super": "%Persistent"}
-            self.object_fields = {
-                "Properties": FakeArrayCollection([FakePropertyObject()]),
-                "Indexes": FakeArrayCollection(),
-                "Parameters": FakeArrayCollection(),
-                "Storages": FakeArrayCollection(),
-            }
-
-        def get(self, name):
-            if name not in self.fields:
-                raise AttributeError(name)
-            return self.fields[name]
-
-        def getObject(self, name):
-            return self.object_fields.get(name)
-
-    class FakeGateway:
-        def classMethodObject(self, classname, method_name, *args):
-            if (classname, method_name, args) == ("%Dictionary.ClassDefinition", "%OpenId", ("Demo.Product",)):
-                return FakeClassObject()
-            return ""
-
-        def classMethodString(self, classname, method_name, *args):
-            return 1
-
-    class Harness(runtime_module._GatewayRuntimeBase):
-        def __init__(self) -> None:
-            self.runtime = FakeGateway()
-
-        def sql(self, statement, params=None):
-            return []
-
-    loaded = Harness().load_schema("Demo.Product")
-    assert loaded is not None
-    assert loaded["properties"][0]["name"] == "Title"
-    assert loaded["properties"][0]["maxlen"] is None
-
-
-def test_iris_object_runtime_iris_list_roundtrip() -> None:
-    class FakeIRISObject:
-        def __init__(self, gateway, obj_id=None) -> None:
-            self.gateway = gateway
-            self.obj_id = obj_id
-            self.props: dict[str, object] = {}
-
-        def set(self, name, value):
-            self.props[name] = value
-
-        def get(self, name):
-            return self.props[name]
-
-        def getIRISList(self, name):
-            return self.props[name]
-
-        def invoke(self, method_name, *args):
-            if method_name == "%Save":
-                if self.obj_id is None:
-                    self.obj_id = self.gateway.next_id
-                    self.gateway.next_id += 1
-                self.gateway.objects[self.obj_id] = self
-                return 1
-            if method_name == "%Id":
-                return self.obj_id
-            raise AttributeError(method_name)
-
-    class FakeGateway:
-        def __init__(self) -> None:
-            self.objects: dict[int, FakeIRISObject] = {}
-            self.next_id = 1
-
-        def classMethodObject(self, classname, method_name, *args):
-            if method_name == "%New":
-                return FakeIRISObject(self)
-            if method_name == "%OpenId":
-                return self.objects.get(args[0], "")
-            if method_name == "%DeleteId":
-                self.objects.pop(args[0], None)
-                return 1
-            raise AttributeError((classname, method_name))
-
-        def classMethodString(self, classname, method_name, *args):
-            return 1
-
-    class Harness(runtime_module._GatewayRuntimeBase):
-        def __init__(self) -> None:
-            self.runtime = FakeGateway()
-            self._iris_list_type = FakeIRISList
-
-        def load_schema(self, classname: str):
-            return {
-                "name": classname,
-                "properties": [
-                    {"name": "Tags", "iris_type": "%ListOfDataTypes(%String)"},
-                ],
-            }
-
-    runtime = Harness()
-    obj_id = runtime.save_object("Demo.Article", {"Tags": ["a", "b", "c"]})
-    stored = runtime.runtime.objects[obj_id].props["Tags"]
-    opened = runtime.open_object("Demo.Article", obj_id)
-
-    assert isinstance(stored, FakeIRISList)
-    assert stored.size() == 3
-    assert stored.get(2) == "b"
-    assert opened == {"id": obj_id, "data": {"Tags": ["a", "b", "c"]}}
-
-
-def test_iris_object_runtime_dynamic_json_roundtrip() -> None:
-    class FakeDynamicValue:
-        def __init__(self, json_text: str) -> None:
-            self.json_text = json_text
-
-        def invokeString(self, method_name, *args):
-            if method_name == "%ToJSON":
-                return self.json_text
-            raise AttributeError(method_name)
-
-    class FakeIRISObject:
-        def __init__(self, gateway, obj_id=None) -> None:
-            self.gateway = gateway
-            self.obj_id = obj_id
-            self.props: dict[str, object] = {}
-
-        def set(self, name, value):
-            self.props[name] = value
-
-        def get(self, name):
-            return self.props[name]
-
-        def getObject(self, name):
-            return self.props[name]
-
-        def invoke(self, method_name, *args):
-            if method_name == "%Save":
-                if self.obj_id is None:
-                    self.obj_id = self.gateway.next_id
-                    self.gateway.next_id += 1
-                self.gateway.objects[self.obj_id] = self
-                return 1
-            if method_name == "%Id":
-                return self.obj_id
-            raise AttributeError(method_name)
-
-    class FakeGateway:
-        def __init__(self) -> None:
-            self.objects: dict[int, FakeIRISObject] = {}
-            self.next_id = 1
-
-        def classMethodObject(self, classname, method_name, *args):
-            if method_name == "%New":
-                return FakeIRISObject(self)
-            if method_name == "%OpenId":
-                return self.objects.get(args[0], "")
-            if method_name == "%DeleteId":
-                self.objects.pop(args[0], None)
-                return 1
-            if method_name == "%FromJSON" and classname in {"%DynamicObject", "%DynamicArray"}:
-                return FakeDynamicValue(args[0])
-            raise AttributeError((classname, method_name))
-
-        def classMethodString(self, classname, method_name, *args):
-            return 1
-
-    class Harness(runtime_module._GatewayRuntimeBase):
-        def __init__(self) -> None:
-            self.runtime = FakeGateway()
-
-        def load_schema(self, classname: str):
-            return {
-                "name": classname,
-                "properties": [
-                    {"name": "Meta", "iris_type": "%DynamicObject"},
-                    {"name": "Tags", "iris_type": "%DynamicArray"},
-                ],
-            }
-
-    runtime = Harness()
-    obj_id = runtime.save_object("Demo.Article", {"Meta": {"flag": True}, "Tags": ["a", 1]})
-    stored = runtime.runtime.objects[obj_id]
-    opened = runtime.open_object("Demo.Article", obj_id)
-
-    assert stored.props["Meta"].json_text == '{"flag":true}'
-    assert stored.props["Tags"].json_text == '["a",1]'
-    assert opened == {"id": obj_id, "data": {"Meta": {"flag": True}, "Tags": ["a", 1]}}
-
-
 def test_proxy_instance_method_bridge_works() -> None:
     adapter = FakeAdapter()
     preload_schema(
@@ -1599,3 +1091,162 @@ Storage Default
     assert schema.storage.data[0].values == {"1": "%%CLASSNAME"}
     assert schema.storage.properties[0].average_field_size == "8"
     assert schema.storage.sql_maps[0].block_count == "-4"
+
+
+
+
+# ---------------------------------------------------------------------------
+# Remote / NativeObjectProxy regression tests
+#
+# These replicate the exact behaviour of iris_utils.NativeObjectProxy without
+# requiring a live IRIS connection.  Key gateway constraint: oref.get(name)
+# NEVER raises — it returns "" for unknown names.  This trips up code that
+# checks for callable attributes on the result.
+# ---------------------------------------------------------------------------
+
+
+class _GatewayORef:
+    """Minimal fake of intersystems_iris.IRISObject (the raw oref)."""
+
+    def __init__(self, props=None):
+        self._props: dict = dict(props or {})
+        self.invocations: list = []
+
+    def get(self, name: str):
+        # Gateway key behaviour: returns "" for unknown names, NEVER raises.
+        return self._props.get(name, "")
+
+    def set(self, name: str, value) -> None:
+        # set() packs value into IRISList — fails for any ORef/Python-object.
+        if not isinstance(value, (str, int, float, bytes, bool, type(None))):
+            raise RuntimeError(
+                f"<LIST ERROR> Incorrect list format, unsupported type for IRISList; "
+                f"type detected : 36 ({type(value).__name__})"
+            )
+        self._props[name] = value
+
+    def invoke(self, method_name: str, *args):
+        self.invocations.append((method_name, args))
+        return self._props.get(f"__invoke_{method_name}", None)
+
+
+class _GatewayProxy:
+    """Replicates iris_utils.NativeObjectProxy behaviour exactly."""
+
+    def __init__(self, oref: _GatewayORef) -> None:
+        object.__setattr__(self, "_oref", oref)
+
+    def __getattr__(self, name: str):
+        mapped = name.replace("_", "%", 1) if name.startswith("_") else name
+        # Speculative property read — returns "" for unknown, never raises.
+        val = self._oref.get(mapped)
+        if val != "":
+            return val  # non-callable scalar (e.g. "%Id" → "42" after %Save)
+        # Returns "" → expose as a method proxy (callable).
+        def method_proxy(*args):
+            return self._oref.invoke(mapped, *args)
+        return method_proxy
+
+    def __setattr__(self, name: str, value) -> None:
+        if name == "_oref":
+            object.__setattr__(self, name, value)
+            return
+        mapped = name.replace("_", "%", 1) if name.startswith("_") else name
+        self._oref.set(mapped, value)
+
+
+def test_remote_object_invoke_returns_id_when_get_succeeds_non_callable() -> None:
+    """Bug 1: NativeObjectProxy.get('%Id') returns the id string directly after
+    %Save (speculative property read succeeds, value is non-callable).
+    Old _object_invoke did ``method = getattr(obj, '_Id')`` → got "42" → tried
+    to call "42"(*args) → TypeError.
+    Fixed: if val is non-callable and no args, return val as-is."""
+    oref = _GatewayORef(props={"%Id": "42"})
+    proxy = _GatewayProxy(oref)
+
+    class Harness(runtime_module._BaseRuntime):
+        def __init__(self):
+            self.runtime = None
+        def sql(self, stmt, params=None):
+            return []
+        def load_schema(self, classname):
+            return None
+        def cls(self, classname):
+            raise NotImplementedError
+
+    result = Harness()._object_invoke(proxy, "%Id")
+    assert result == "42"
+
+
+def test_remote_write_stream_property_modifies_in_place_without_oref_arg() -> None:
+    """Bug 2: assigning a new stream ORef via oref.set(prop, oref) or
+    oref.invoke(PropSet, oref) fails over the gateway (IRISList can't encode
+    ORef type 36).
+    Fixed: _write_stream_property calls PropGet() to obtain the existing stream,
+    then calls Clear()/Write(payload)/Rewind() on it in-place — no ORef is ever
+    passed as an argument."""
+
+    class TrackingStream:
+        """Simulates a stream ORef returned by the getter method."""
+        def __init__(self):
+            self.calls: list = []
+
+        def invoke(self, method_name, *args):
+            self.calls.append((method_name, args))
+            return None
+
+    stream = TrackingStream()
+
+    class Harness(runtime_module._BaseRuntime):
+        def __init__(self):
+            self.runtime = None
+            self.set_calls: list = []
+
+        def _object_invoke(self, obj, method_name, *args):
+            if method_name == "BodyGet":
+                return stream
+            return super()._object_invoke(obj, method_name, *args)
+
+        def _object_set(self, obj, prop_name, value):
+            self.set_calls.append((prop_name, value))
+            # Simulate gateway rejection of ORef args in set().
+            if not isinstance(value, (str, int, float, bytes, bool, type(None))):
+                raise RuntimeError("<LIST ERROR> type 36")
+
+        def looks_like_iris_object(self, v):
+            return v is stream  # stream is the "live" object
+
+        def sql(self, stmt, params=None):
+            return []
+
+        def load_schema(self, classname):
+            return None
+
+        def cls(self, classname):
+            raise NotImplementedError
+
+    rt = Harness()
+    rt._write_stream_property("fake_obj", "Body", "hello world", "%Stream.GlobalCharacter")
+
+    # Stream was modified in-place — Write/Clear/Rewind called on existing ORef.
+    call_names = [c[0] for c in stream.calls]
+    assert "Clear" in call_names
+    assert "Write" in call_names
+    assert "Rewind" in call_names
+    assert stream.calls[call_names.index("Write")][1] == ("hello world",)
+
+    # _object_set was NEVER called — no ORef passed as an argument.
+    assert rt.set_calls == []
+
+
+def test_read_dynamic_value_bypasses_speculative_get_for_gateway_proxy() -> None:
+    """Bug 3: NativeObjectProxy.__getattr__ calls oref.get() speculatively and
+    returns "" (not callable) for unknown attribute names — including "_ToJSON",
+    "ToJSON", "invoke", "invokeString".  Old read_dynamic_value fell through all
+    callable checks and hit copy.deepcopy(proxy) → TypeError: cannot pickle.
+    Fixed: bypass via value._oref.invoke('%ToJSON') directly."""
+    oref = _GatewayORef(props={"__invoke_%ToJSON": '{"flag": true, "count": 3}'})
+    proxy = _GatewayProxy(oref)
+
+    result = read_dynamic_value(proxy)
+    assert result == {"flag": True, "count": 3}

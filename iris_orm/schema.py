@@ -367,8 +367,20 @@ class SchemaCompiler:
         self.adapter = adapter
 
     def compile_model(self, model_class: type) -> SchemaClass:
+        # Support both _iris_state-based models and plain dicts/stubs.
+        state = getattr(model_class, "_iris_state", None)
+        declared_fields: dict[str, Any] = state.declared_fields if state is not None else {}
+        raw_indexes = state.indexes if state is not None else []
+        raw_parameters = state.parameters if state is not None else {}
+        raw_storage = (
+            state.storage if state is not None else None
+        )
+        classname = state.classname if state is not None else ""
+        superclasses = state.superclasses if state is not None else "%Persistent"
+        mode = state.mode if state is not None else "extend"
+
         properties: list[SchemaProperty] = []
-        for name, field_def in sorted(getattr(model_class, "_iris_declared_fields", {}).items()):
+        for name, field_def in sorted(declared_fields.items()):
             python_type = getattr(field_def, "python_type", None)
             iris_type = str(field_def.iris_type or python_type_to_iris(python_type))
             properties.append(
@@ -384,18 +396,22 @@ class SchemaCompiler:
             )
         indexes = tuple(
             SchemaIndex.from_dict(item if isinstance(item, dict) else item.to_dict())
-            for item in getattr(model_class, "_iris_indexes", [])
+            for item in raw_indexes
         )
-        parameters = {str(k): str(v) for k, v in dict(getattr(model_class, "_iris_parameters", {})).items()}
-        storage = StorageDefinition.from_dict(getattr(model_class, "_iris_storage", None))
+        parameters = {str(k): str(v) for k, v in dict(raw_parameters).items()}
+        storage_obj = (
+            raw_storage
+            if isinstance(raw_storage, StorageDefinition)
+            else StorageDefinition.from_dict(raw_storage)
+        )
         return SchemaClass(
-            name=str(model_class._iris_classname),
-            superclasses=normalize_superclasses(getattr(model_class, "_iris_superclasses", "%Persistent")),
+            name=str(classname),
+            superclasses=normalize_superclasses(superclasses),
             properties=tuple(properties),
             indexes=indexes,
             parameters=parameters,
-            storage=storage,
-            source={"kind": "python", "mode": getattr(model_class, "_iris_mode", "extend")},
+            storage=storage_obj,
+            source={"kind": "python", "mode": str(mode)},
         )
 
     def class_from_iris(self, classname: str) -> SchemaClass:
@@ -424,21 +440,12 @@ def match_classnames(classnames: list[str], pattern: str) -> list[str]:
 
 
 def merge_additive_schema(live: SchemaClass, desired: SchemaClass) -> SchemaClass:
-    property_names = {item.name for item in live.properties}
-    properties = list(live.properties)
-    for item in desired.properties:
-        if item.name in property_names:
-            properties = [item if current.name == item.name else current for current in properties]
-        else:
-            properties.append(item)
+    # O(N) merge: build ordered dicts keyed by name, update live entries with desired.
+    prop_map: dict[str, SchemaProperty] = {p.name: p for p in live.properties}
+    prop_map.update((p.name, p) for p in desired.properties)
 
-    index_names = {item.name for item in live.indexes}
-    indexes = list(live.indexes)
-    for item in desired.indexes:
-        if item.name in index_names:
-            indexes = [item if current.name == item.name else current for current in indexes]
-        else:
-            indexes.append(item)
+    idx_map: dict[str, SchemaIndex] = {i.name: i for i in live.indexes}
+    idx_map.update((i.name, i) for i in desired.indexes)
 
     parameters = dict(live.parameters)
     parameters.update(desired.parameters)
@@ -446,8 +453,8 @@ def merge_additive_schema(live: SchemaClass, desired: SchemaClass) -> SchemaClas
     return SchemaClass(
         name=desired.name,
         superclasses=desired.superclasses,
-        properties=tuple(properties),
-        indexes=tuple(indexes),
+        properties=tuple(prop_map.values()),
+        indexes=tuple(idx_map.values()),
         parameters=parameters,
         storage=desired.storage if desired.storage is not None else live.storage,
         source={"kind": "python", "mode": "extend"},
@@ -455,14 +462,126 @@ def merge_additive_schema(live: SchemaClass, desired: SchemaClass) -> SchemaClas
 
 
 # -------------------------------------------------------------------------------
-# Type helpers
+# _TypeCoercer: private date/time/decimal helpers grouped by concern
 # -------------------------------------------------------------------------------
 
-def _decimal_to_string(value: Any) -> str:
-    if isinstance(value, Decimal):
-        return format(value, "f")
-    return format(Decimal(str(value)), "f")
+class _TypeCoercer:
+    """Groups private type-coercion helpers. Use the module-level aliases below."""
 
+    @staticmethod
+    def _decimal_to_string(value: Any) -> str:
+        if isinstance(value, Decimal):
+            return format(value, "f")
+        return format(Decimal(str(value)), "f")
+
+    @staticmethod
+    def _date_to_logical(value: Any) -> int | None:
+        if isinstance(value, datetime_module.datetime):
+            value = value.date()
+        if isinstance(value, datetime_module.date):
+            return (value - _IRIS_EPOCH).days
+        try:
+            return int(value)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _time_to_logical(value: Any) -> int | str | None:
+        if isinstance(value, datetime_module.datetime):
+            value = value.timetz().replace(tzinfo=None)
+        if isinstance(value, datetime_module.time):
+            total_seconds = value.hour * 3600 + value.minute * 60 + value.second
+            if value.microsecond:
+                return f"{total_seconds}.{value.microsecond:06d}".rstrip("0").rstrip(".")
+            return total_seconds
+        if isinstance(value, str):
+            return _TypeCoercer._time_to_logical(_TypeCoercer._parse_time_logical(value))
+        try:
+            return int(value)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _timestamp_to_logical(value: Any) -> str | None:
+        if isinstance(value, datetime_module.date) and not isinstance(value, datetime_module.datetime):
+            value = datetime_module.datetime.combine(value, datetime_module.time())
+        if isinstance(value, datetime_module.datetime):
+            text = value.strftime("%Y-%m-%d %H:%M:%S")
+            if value.microsecond:
+                text += f".{value.microsecond:06d}".rstrip("0")
+            return text
+        if isinstance(value, str):
+            return value
+        return None
+
+    @staticmethod
+    def _parse_date_logical(value: Any) -> datetime_module.date | None:
+        if isinstance(value, int) or (isinstance(value, str) and value.lstrip("-").isdigit()):
+            try:
+                return _IRIS_EPOCH + datetime_module.timedelta(days=int(value))
+            except Exception:
+                return None
+        if isinstance(value, str):
+            for fmt in ("%Y-%m-%d", "%m/%d/%Y"):
+                try:
+                    return datetime_module.datetime.strptime(value, fmt).date()
+                except ValueError:
+                    continue
+        return None
+
+    @staticmethod
+    def _parse_time_logical(value: Any) -> datetime_module.time | None:
+        try:
+            text = str(value).strip().strip('"')
+            if ":" in text:
+                if "." in text:
+                    return datetime_module.time.fromisoformat(text)
+                if text.count(":") == 1:
+                    text = f"{text}:00"
+                return datetime_module.time.fromisoformat(text)
+            seconds_decimal = Decimal(text)
+            whole_seconds = int(seconds_decimal)
+            microseconds = int((seconds_decimal - whole_seconds) * Decimal("1000000"))
+            hours, remainder = divmod(whole_seconds, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            return datetime_module.time(hour=hours, minute=minutes, second=seconds, microsecond=microseconds)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _parse_timestamp_logical(value: Any) -> datetime_module.datetime | None:
+        if isinstance(value, str):
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+                try:
+                    return datetime_module.datetime.strptime(value, fmt)
+                except ValueError:
+                    continue
+        return None
+
+
+# Module-level aliases so existing callers don't need to change
+_decimal_to_string = _TypeCoercer._decimal_to_string
+_date_to_logical = _TypeCoercer._date_to_logical
+_time_to_logical = _TypeCoercer._time_to_logical
+_timestamp_to_logical = _TypeCoercer._timestamp_to_logical
+_parse_date_logical = _TypeCoercer._parse_date_logical
+_parse_time_logical = _TypeCoercer._parse_time_logical
+_parse_timestamp_logical = _TypeCoercer._parse_timestamp_logical
+
+
+def _to_int(value: Any) -> int | None:
+    """Convert a value to int, returning None if absent or not parseable."""
+    if value in {None, ""}:
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+# -------------------------------------------------------------------------------
+# Type-check helpers (module-level)
+# -------------------------------------------------------------------------------
 
 def is_stream_type(iris_type: str) -> bool:
     return str(iris_type or "").startswith("%Stream.")
@@ -496,214 +615,152 @@ def serialize_dynamic_json(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True)
 
 
-def read_dynamic_value(value: Any) -> Any:
-    if value is None:
-        return None
-    if isinstance(value, (dict, list)):
-        return copy.deepcopy(value)
-    if isinstance(value, (bytes, bytearray, memoryview)):
-        value = bytes(value).decode("utf-8")
-    if isinstance(value, str):
-        text = value
-        if len(text) >= 2 and text.startswith('"') and text.endswith('"'):
-            text = text[1:-1].replace('""', '"')
-        return json.loads(text)
+# -------------------------------------------------------------------------------
+# _StreamReader: IRIS object → Python value, with graceful fallback chains
+# -------------------------------------------------------------------------------
 
-    for reader_name in ("_ToJSON", "ToJSON"):
-        reader = getattr(value, reader_name, None)
-        if callable(reader):
-            return json.loads(reader())
+class _StreamReader:
+    """Groups dynamic-object and stream-reading helpers.  Use the module-level re-exports below."""
 
-    invoke_string = getattr(value, "invokeString", None)
-    if callable(invoke_string):
-        return json.loads(invoke_string("%ToJSON"))
-
-    invoke = getattr(value, "invoke", None)
-    if callable(invoke):
-        return json.loads(invoke("%ToJSON"))
-
-    return copy.deepcopy(value)
-
-
-def read_stream_value(value: Any, iris_type: str) -> str | bytes | None:
-    if value is None:
-        return None
-    if is_binary_stream_type(iris_type):
+    @staticmethod
+    def read_dynamic_value(value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, (dict, list)):
+            return copy.deepcopy(value)
         if isinstance(value, (bytes, bytearray, memoryview)):
-            return bytes(value)
-    elif isinstance(value, str):
-        return value
+            value = bytes(value).decode("utf-8")
+        if isinstance(value, str):
+            text = value
+            if len(text) >= 2 and text.startswith('"') and text.endswith('"'):
+                text = text[1:-1].replace('""', '"')
+            return json.loads(text)
 
-    for reader_name in ("ReadAll",):
-        reader = getattr(value, reader_name, None)
-        if callable(reader):
+        for reader_name in ("_ToJSON", "ToJSON"):
+            reader = getattr(value, reader_name, None)
+            if callable(reader):
+                return json.loads(reader())
+
+        invoke_string = getattr(value, "invokeString", None)
+        if callable(invoke_string):
+            return json.loads(invoke_string("%ToJSON"))
+
+        invoke = getattr(value, "invoke", None)
+        if callable(invoke):
+            return json.loads(invoke("%ToJSON"))
+
+        # NativeObjectProxy (remote/gateway) intercepts attribute access via a
+        # speculative oref.get() that returns "" for unknown names — making the
+        # checks above yield non-callables.  Bypass by hitting _oref.invoke directly.
+        oref = getattr(value, "_oref", None)
+        if oref is not None:
+            direct_invoke = getattr(oref, "invoke", None)
+            if callable(direct_invoke):
+                try:
+                    result = direct_invoke("%ToJSON")
+                    if isinstance(result, str):
+                        return json.loads(result)
+                except Exception:
+                    pass
+
+        return copy.deepcopy(value)
+
+    @staticmethod
+    def read_stream_value(value: Any, iris_type: str) -> str | bytes | None:
+        if value is None:
+            return None
+        if is_binary_stream_type(iris_type):
+            if isinstance(value, (bytes, bytearray, memoryview)):
+                return bytes(value)
+        elif isinstance(value, str):
+            return value
+
+        for reader_name in ("ReadAll",):
+            reader = getattr(value, reader_name, None)
+            if callable(reader):
+                try:
+                    payload = reader()
+                    return _StreamReader._normalize_stream_payload(payload, iris_type)
+                except Exception:
+                    pass
+
+        invoke = getattr(value, "invoke", None)
+        if callable(invoke):
             try:
-                payload = reader()
-                return _normalize_stream_payload(payload, iris_type)
+                payload = invoke("ReadAll")
+                return _StreamReader._normalize_stream_payload(payload, iris_type)
             except Exception:
                 pass
 
-    invoke = getattr(value, "invoke", None)
-    if callable(invoke):
-        try:
-            payload = invoke("ReadAll")
-            return _normalize_stream_payload(payload, iris_type)
-        except Exception:
-            pass
-
-    invoke_string = getattr(value, "invokeString", None)
-    if callable(invoke_string):
-        try:
-            payload = invoke_string("ReadAll")
-            return _normalize_stream_payload(payload, iris_type)
-        except Exception:
-            pass
-
-    read_sql = getattr(value, "ReadSQL", None)
-    if callable(read_sql):
-        try:
-            payload = read_sql()
-            return _normalize_stream_payload(payload, iris_type)
-        except Exception:
-            pass
-
-    if callable(invoke):
-        try:
-            payload = invoke("ReadSQL")
-            return _normalize_stream_payload(payload, iris_type)
-        except Exception:
-            pass
-
-    if callable(invoke_string):
-        try:
-            payload = invoke_string("ReadSQL")
-            return _normalize_stream_payload(payload, iris_type)
-        except Exception:
-            pass
-
-    read = getattr(value, "Read", None)
-    if callable(read):
-        chunks: list[bytes | str] = []
-        while True:
+        invoke_string = getattr(value, "invokeString", None)
+        if callable(invoke_string):
             try:
-                chunk = read(32768)
-                if not chunk:
-                    break
-                chunks.append(chunk)
+                payload = invoke_string("ReadAll")
+                return _StreamReader._normalize_stream_payload(payload, iris_type)
             except Exception:
-                break
-        if chunks:
-            if is_binary_stream_type(iris_type):
-                return b"".join(c if isinstance(c, bytes) else c.encode("utf-8") for c in chunks)
-            return "".join(c if isinstance(c, str) else c.decode("utf-8") for c in chunks)
+                pass
 
-    return None
+        read_sql = getattr(value, "ReadSQL", None)
+        if callable(read_sql):
+            try:
+                payload = read_sql()
+                return _StreamReader._normalize_stream_payload(payload, iris_type)
+            except Exception:
+                pass
 
+        if callable(invoke):
+            try:
+                payload = invoke("ReadSQL")
+                return _StreamReader._normalize_stream_payload(payload, iris_type)
+            except Exception:
+                pass
 
-def _normalize_stream_payload(payload: Any, iris_type: str) -> str | bytes | None:
-    if payload is None:
-        return None
-    if is_binary_stream_type(iris_type):
-        if isinstance(payload, (bytes, bytearray, memoryview)):
-            return bytes(payload)
-        if isinstance(payload, str):
-            return payload.encode("latin-1")
-    else:
-        if isinstance(payload, (bytes, bytearray, memoryview)):
-            return bytes(payload).decode("utf-8")
-        if isinstance(payload, str):
-            return payload
-            return payload
-    return payload
+        if callable(invoke_string):
+            try:
+                payload = invoke_string("ReadSQL")
+                return _StreamReader._normalize_stream_payload(payload, iris_type)
+            except Exception:
+                pass
 
+        read = getattr(value, "Read", None)
+        if callable(read):
+            chunks: list[bytes | str] = []
+            while True:
+                try:
+                    chunk = read(32768)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                except Exception:
+                    break
+            if chunks:
+                if is_binary_stream_type(iris_type):
+                    return b"".join(c if isinstance(c, bytes) else c.encode("utf-8") for c in chunks)
+                return "".join(c if isinstance(c, str) else c.decode("utf-8") for c in chunks)
 
-# -------------------------------------------------------------------------------
-# Date / time logical-value helpers
-# -------------------------------------------------------------------------------
-
-def _date_to_logical(value: Any) -> int | None:
-    if isinstance(value, datetime_module.datetime):
-        value = value.date()
-    if isinstance(value, datetime_module.date):
-        return (value - _IRIS_EPOCH).days
-    try:
-        return int(value)
-    except Exception:
-        return None
-
-
-def _time_to_logical(value: Any) -> int | str | None:
-    if isinstance(value, datetime_module.datetime):
-        value = value.timetz().replace(tzinfo=None)
-    if isinstance(value, datetime_module.time):
-        total_seconds = value.hour * 3600 + value.minute * 60 + value.second
-        if value.microsecond:
-            return f"{total_seconds}.{value.microsecond:06d}".rstrip("0").rstrip(".")
-        return total_seconds
-    if isinstance(value, str):
-        return _time_to_logical(_parse_time_logical(value))
-    try:
-        return int(value)
-    except Exception:
         return None
 
-
-def _timestamp_to_logical(value: Any) -> str | None:
-    if isinstance(value, datetime_module.date) and not isinstance(value, datetime_module.datetime):
-        value = datetime_module.datetime.combine(value, datetime_module.time())
-    if isinstance(value, datetime_module.datetime):
-        text = value.strftime("%Y-%m-%d %H:%M:%S")
-        if value.microsecond:
-            text += f".{value.microsecond:06d}".rstrip("0")
-        return text
-    if isinstance(value, str):
-        return value
-    return None
-
-
-def _parse_date_logical(value: Any) -> datetime_module.date | None:
-    if isinstance(value, int) or (isinstance(value, str) and value.lstrip("-").isdigit()):
-        try:
-            return _IRIS_EPOCH + datetime_module.timedelta(days=int(value))
-        except Exception:
+    @staticmethod
+    def _normalize_stream_payload(payload: Any, iris_type: str) -> str | bytes | None:
+        if payload is None:
             return None
-    if isinstance(value, str):
-        for fmt in ("%Y-%m-%d", "%m/%d/%Y"):
-            try:
-                return datetime_module.datetime.strptime(value, fmt).date()
-            except ValueError:
-                continue
-    return None
+        if is_binary_stream_type(iris_type):
+            if isinstance(payload, (bytes, bytearray, memoryview)):
+                return bytes(payload)
+            if isinstance(payload, str):
+                return payload.encode("latin-1")
+        else:
+            if isinstance(payload, (bytes, bytearray, memoryview)):
+                return bytes(payload).decode("utf-8")
+            if isinstance(payload, str):
+                return payload
+        return payload
 
 
-def _parse_time_logical(value: Any) -> datetime_module.time | None:
-    try:
-        text = str(value).strip().strip('"')
-        if ":" in text:
-            if "." in text:
-                return datetime_module.time.fromisoformat(text)
-            if text.count(":") == 1:
-                text = f"{text}:00"
-            return datetime_module.time.fromisoformat(text)
-        seconds_decimal = Decimal(text)
-        whole_seconds = int(seconds_decimal)
-        microseconds = int((seconds_decimal - whole_seconds) * Decimal("1000000"))
-        hours, remainder = divmod(whole_seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        return datetime_module.time(hour=hours, minute=minutes, second=seconds, microsecond=microseconds)
-    except Exception:
-        return None
+# Module-level re-exports for backward compat and convenience
+read_dynamic_value = _StreamReader.read_dynamic_value
+read_stream_value = _StreamReader.read_stream_value
+_normalize_stream_payload = _StreamReader._normalize_stream_payload
 
 
-def _parse_timestamp_logical(value: Any) -> datetime_module.datetime | None:
-    if isinstance(value, str):
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
-            try:
-                return datetime_module.datetime.strptime(value, fmt)
-            except ValueError:
-                continue
-    return None
 
-
-# Keep old name for backwards compatibility
-SchemaManager = SchemaCompiler

@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "iris_orm"
+version = "0.1.0"
+description = "A small mapper for InterSystems IRIS with a Python-first model class"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "iris-embedded-python-wrapper",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["iris_orm"]

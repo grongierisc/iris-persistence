@@ -50,7 +50,6 @@ class QuerySet:
             if obj is not None:
                 results.append(obj)
                 
-        # Return DBAPI results
         return results
 
 def save_model(instance: TModel) -> None:
@@ -60,57 +59,20 @@ def save_model(instance: TModel) -> None:
     if instance._pk:
         iris_obj = runtime.get_object(classname, instance._pk)
     else:
-        iris_obj = runtime.call_classmethod(classname, "_New")
+        iris_obj = runtime.create_object(classname)
         
     for field_name in instance._fields:
         if hasattr(instance, field_name):
             val = getattr(instance, field_name)
-            
-            # Handle structured data for native embedded execution or un-wrapped proxy
-            if isinstance(val, (bytes, bytearray)):
-                current_prop = getattr(iris_obj, field_name, None)
-                if hasattr(current_prop, "Write"):
-                    current_prop.Clear()
-                    current_prop.Write(val)
-                else:
-                    setattr(iris_obj, field_name, val)
-            elif isinstance(val, dict):
-                import json
-                try:
-                    dyn_obj = runtime.call_classmethod("%Library.DynamicObject", "_FromJSON", json.dumps(val))
-                    setattr(iris_obj, field_name, dyn_obj)
-                except Exception:
-                    setattr(iris_obj, field_name, val)
-            elif isinstance(val, list):
-                import json
-                try:
-                    dyn_arr = runtime.call_classmethod("%Library.DynamicArray", "_FromJSON", json.dumps(val))
-                    setattr(iris_obj, field_name, dyn_arr)
-                except Exception:
-                    setattr(iris_obj, field_name, val)
-            else:
-                setattr(iris_obj, field_name, val)
+            # Delegate wrapping/setting to the adapter
+            runtime.inject_iris_value(iris_obj, field_name, val)
             
     st = runtime.save_object(iris_obj)
     
-    # In native python, successful save returns 1, failure returns 0 and error msg
-    if isinstance(st, int) and st == 0:
-        raise RuntimeError(f"Save failed")
-    elif isinstance(st, str) and st.startswith("0 "):
-        raise RuntimeError(f"Save failed: {st}")
-    elif hasattr(st, "IsOK") and not st.IsOK():
+    if not runtime.is_ok(st):
         raise RuntimeError(f"Save failed: {st}")
     
-    # After save, we should get the ID
-    try:
-        pk = iris_obj._Id()
-    except AttributeError:
-        # Fallback
-        try:
-            pk = iris_obj.Id()
-        except AttributeError:
-            pk = getattr(iris_obj, "%Id")() if hasattr(iris_obj, "%Id") else None
-            
+    pk = runtime.get_object_id(iris_obj)
     if pk:
         instance._pk = str(pk)
 
@@ -123,42 +85,8 @@ def get_model(cls: Type[TModel], pk: str) -> Optional[TModel]:
         
     params = {}
     for field_name in cls._fields:
-        if hasattr(iris_obj, field_name):
-            val = getattr(iris_obj, field_name)
-            
-            # Fallback for embedded python: Detect IRIS DynamicObjects or Streams.
-            iris_class = None
-            if hasattr(val, "_ClassName"):
-                try:
-                    iris_class = val._ClassName(1)
-                except Exception:
-                    pass
-            else:
-                iris_class = type(val).__name__
-                
-            if iris_class in ("%Library.DynamicObject", "%Library.DynamicArray"):
-                import json
-                try:
-                    s = runtime.call_classmethod("%Stream.GlobalCharacter", "_New")
-                    val._ToJSON(s)
-                    s.Rewind()
-                    val = json.loads(s.Read())
-                except Exception:
-                    pass
-            elif iris_class in ("%Stream.GlobalBinary", "%Stream.GlobalCharacter", "%Stream.FileBinary", "%Stream.FileCharacter"):
-                try:
-                    val.Rewind()
-                    size_val = getattr(val, "Size", 0)
-                    size = size_val() if callable(size_val) else size_val
-                    content = val.Read(size) if size and size > 0 else b""
-                    
-                    if isinstance(content, str) and "Binary" in iris_class:
-                        content = content.encode('latin1')
-                        
-                    val = content
-                except Exception:
-                    pass
-            params[field_name] = val
+        val = runtime.get_property(iris_obj, field_name)
+        params[field_name] = runtime.extract_python_value(val)
             
     instance = cls(**params)
     instance._pk = pk

@@ -7,13 +7,11 @@
 - `IRISModel`
 - `Annotated[..., Field(...)]` field declarations
 - `class Meta` for model configuration
-- additive, python, and proxy ownership modes
+- `extend`, `replace`, and `observe` schema sync modes
 - scaffold from live IRIS
 - scaffold from exported `.cls`
 - typed `StorageDefinition` metadata
 - `iris_orm.testing.FakeAdapter` for unit tests
-
-Compatibility shims still exist for `field(...)`, `@index(...)`, `@parameter(...)`, and bare `_iris_*` attributes, but they now emit `DeprecationWarning`.
 
 ## Quick Start
 
@@ -22,7 +20,16 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from iris_orm import Field, IRISModel, Index, StorageDefinition
+import iris_orm
+from iris_orm import Field, IRISModel, Index
+
+# Embedded Python (running inside IRIS) — no argument needed.
+iris_orm.configure()
+
+# Remote connection — pass the iris native-API object.
+# import iris
+# conn = iris.connect(host, port, ns, user, pw)
+# iris_orm.configure(conn)
 
 
 class Product(IRISModel):
@@ -32,17 +39,12 @@ class Product(IRISModel):
 
     class Meta:
         classname = "Demo.Product"
-        mode = "python"
-        storage = StorageDefinition(
-            data_location="^Demo.ProductD",
-            default_data="ProductDefaultData",
-            type="%Storage.Persistent",
-        )
+        mode = "replace"
         indexes = [Index("NameIdx", properties="Name", unique=True)]
-        parameters = {"DEFAULTGLOBAL": "^Demo.ProductD"}
 
 
-product = Product(Name="Widget", Price=12.5, InStock=True).save()
+product = Product(Name="Widget", Price=12.5, InStock=True)
+product.save()
 same = Product.get(product.pk)
 rows = Product.where(Name="Widget").order_by("Name").all()
 ```
@@ -69,29 +71,18 @@ Model configuration lives in an optional inner `Meta` class:
 ```python
 class Meta:
     classname = "Demo.Article"
-    mode = "additive"
+    mode = "extend"             # "extend" | "replace" | "observe" (default: "extend")
     superclasses = "%Persistent"
-    engine = some_sqlalchemy_engine
     storage = StorageDefinition(data_location="^Demo.ArticleD")
     indexes = [Index("TitleIdx", properties="Title", unique=True)]
     parameters = {"DEFAULTGLOBAL": "^Demo.ArticleD"}
 ```
 
-`Meta` fields map to the internal `_iris_*` attributes:
-
-- `classname` -> `_iris_classname`
-- `mode` -> `_iris_mode`
-- `superclasses` -> `_iris_superclasses`
-- `engine` -> `_iris_engine`
-- `storage` -> `_iris_storage`
-- `indexes` -> `_iris_indexes`
-- `parameters` -> `_iris_parameters`
-
 ## Ownership Modes
 
-### Additive
+### extend (default)
 
-`"additive"` is the default and the safe starting point.
+Python and IRIS share ownership. Safe starting point for brownfield classes.
 
 ```python
 class Product(IRISModel):
@@ -99,47 +90,47 @@ class Product(IRISModel):
 
     class Meta:
         classname = "Demo.Product"
+        # mode = "extend"  ← default, can be omitted
 ```
 
 Behavior:
 
 - Python adds missing properties, indexes, parameters, and storage metadata
 - existing IRIS-only members are kept
-- conflicts are overwritten from Python
+- Python-declared fields overwrite IRIS fields with the same name
 
-### Python
+### replace
 
-`"python"` is the destructive mode.
+Python is fully authoritative. Use for greenfield classes owned entirely by Python.
 
 ```python
 class Meta:
     classname = "Demo.Product"
-    mode = "python"
+    mode = "replace"
 ```
 
 Behavior:
 
-- Python declarations are authoritative
-- first real use auto-syncs the class to IRIS
-- extra IRIS properties, indexes, parameters, and storage settings are removed or overwritten
+- IRIS class is kept in sync with the Python model on every first use
+- properties, indexes, parameters, and storage not declared in Python are removed from IRIS
+- recompile is skipped when the schema has not changed
 
-### Proxy
+### observe
 
-`"proxy"` binds to an existing IRIS class without changing its schema.
+IRIS is authoritative. Use to bind to existing classes without touching their schema.
 
 ```python
 class Article(IRISModel):
     class Meta:
         classname = "Demo.Article"
-        mode = "proxy"
+        mode = "observe"
 ```
 
 Behavior:
 
-- IRIS stays authoritative
-- schema is loaded from IRIS
-- Python gets typed fields for CRUD and queries
-- no schema overwrite happens
+- schema is loaded from IRIS on first use; Python fields are inferred from it
+- no schema write or compile ever happens
+- typed CRUD and queries work the same as the other modes
 
 ## Storage Metadata
 
@@ -154,7 +145,7 @@ class Product(IRISModel):
 
     class Meta:
         classname = "Demo.Product"
-        mode = "python"
+        mode = "replace"
         storage = StorageDefinition(
             data_location="^Demo.ProductD",
             default_data="ProductDefaultData",
@@ -179,39 +170,37 @@ Plain dicts are still accepted for backward compatibility, but `StorageDefinitio
 
 ## Runtime Configuration
 
-Use `configure(...)` to register the runtime for the current execution context:
+`iris_orm` uses the `iris` module (from InterSystems) as its single unified runtime for both embedded and remote access.
+
+**Embedded Python** (running inside IRIS — no argument needed):
 
 ```python
 import iris_orm
-from sqlalchemy import create_engine
-
-iris_orm.configure(create_engine("iris://user:pass@host:1972/USER"))
+iris_orm.configure()
 ```
 
-If you do not call `configure(...)` and a model has no `Meta.engine`, `iris_orm` falls back to the embedded Python runtime by default.
-
-Runtime backends are split into three flavors: `EmbeddedRuntime`, `CommunityRuntime` (for `iris://` / `intersystems_iris`), and `OfficialRuntime` (for `iris+intersystems://`).
-
-Or attach an engine directly to a model:
+**Remote** (running externally via the Native API):
 
 ```python
-class Meta:
-    classname = "Demo.Product"
-    engine = create_engine("iris://user:pass@host:1972/USER")
+import iris
+import iris_orm
+
+conn = iris.connect(host, port, namespace, user, password)
+iris_orm.configure(conn)
 ```
 
-`configure_default_runtime(...)` remains available as a compatibility alias.
+If `configure()` is never called, `iris_orm` falls back to the embedded runtime automatically on first use.
 
 ## Testing
 
 `FakeAdapter` moved into the package so downstream projects can test models without a live IRIS instance.
 
 ```python
-from iris_orm import IRISModel, configure
-from iris_orm.testing import FakeAdapter
+from iris_orm.testing import FakeAdapter, preload_schema
+from iris_orm.runtime import configure_default_runtime
 
-runtime = FakeAdapter()
-configure(runtime=runtime)
+adapter = FakeAdapter()
+configure_default_runtime(runtime=adapter)
 ```
 
 ## Scaffold
@@ -242,9 +231,9 @@ Scaffold rules:
 
 Runnable examples:
 
-- [examples/python_first.py](/Users/grongier/git/iris-persistence/examples/python_first.py)
-- [examples/proxy.py](/Users/grongier/git/iris-persistence/examples/proxy.py)
-- [examples/scaffold.py](/Users/grongier/git/iris-persistence/examples/scaffold.py)
+- [examples/python_first.py](examples/python_first.py)
+- [examples/proxy.py](examples/proxy.py)
+- [examples/scaffold.py](examples/scaffold.py)
 
 ## Public API
 
@@ -260,11 +249,8 @@ Runnable examples:
 - `scaffold_from_cls`
 - `iris_orm.testing.FakeAdapter`
 
-Advanced but available:
+Advanced:
 
 - `Model.plan()`
-- `Model.sync()`
-- `configure_default_runtime(...)`
-- `EmbeddedRuntime`
-- `CommunityRuntime`
-- `OfficialRuntime`
+- `Model.sync_schema()`
+- `iris_orm.testing.preload_schema`

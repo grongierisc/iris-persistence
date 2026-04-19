@@ -14,6 +14,8 @@ class Product(IRISModel):
     Name: Annotated[str, Field(required=True, maxlen=200)]
     Price: Annotated[float, Field(default=0.0)]
     InStock: Annotated[bool, Field(default=True)]
+    Docs: dict[str, str]
+    Thumbnail: bytes
 
     class Meta:
         classname = "Demo.Product"
@@ -21,7 +23,7 @@ class Product(IRISModel):
         indexes = [Index("NameIdx", properties="Name", unique=True)]
 
 def test_save_and_get():
-    p = Product(Name="Widget", Price=12.5, InStock=True)
+    p = Product(Name="Widget", Price=12.5, InStock=True, Docs={"key": "value"}, Thumbnail=b"bytes")
     p.save()
     
     assert p.pk is not None
@@ -31,6 +33,8 @@ def test_save_and_get():
     assert p2.Name == "Widget"
     assert p2.Price == 12.5
     assert p2.InStock is True
+    assert p2.Docs == {"key": "value"}
+    assert p2.Thumbnail == b"bytes"
 
 def test_query_all():
     p1 = Product(Name="A", Price=1)

@@ -53,26 +53,19 @@ def sync_schema(model_cls: Type[Any]) -> None:
     if exists:
         cd = runtime.get_object("%Dictionary.ClassDefinition", classname)
     else:
-        cd = runtime.call_classmethod("%Dictionary.ClassDefinition", "_New", classname)
+        cd = runtime.create_object("%Dictionary.ClassDefinition")
+        runtime.set_property(cd, "Name", classname)
         
-    if hasattr(cd, "_oref"):
-        cd._oref.set("Super", superclasses)
-    else:
-        cd.Super = superclasses
+    runtime.set_property(cd, "Super", superclasses)
         
-    props_oref_list = getattr(cd, "_oref", cd).get("Properties") if hasattr(cd, "_oref") else cd.Properties
+    props_oref_list = runtime.get_property(cd, "Properties")
     existing_props = {}
     
-    if hasattr(props_oref_list, "invoke"):
-        count = props_oref_list.invoke("Count")
-        for i in range(1, count + 1):
-            prop = props_oref_list.invoke("GetAt", i)
-            prop_name = prop._oref.get("Name") if hasattr(prop, "_oref") else prop.Name
-            existing_props[prop_name] = prop
-    else:
-        for i in range(1, props_oref_list.Count() + 1):
-            prop = props_oref_list.GetAt(i)
-            existing_props[prop.Name] = prop
+    count = runtime.invoke_method(props_oref_list, "Count")
+    for i in range(1, count + 1):
+        prop = runtime.invoke_method(props_oref_list, "GetAt", i)
+        prop_name = runtime.get_property(prop, "Name")
+        existing_props[prop_name] = prop
             
     fields = getattr(model_cls, "_fields", {})
     hints = get_type_hints(model_cls, include_extras=True)
@@ -88,23 +81,17 @@ def sync_schema(model_cls: Type[Any]) -> None:
             continue
             
         prop_id = f"{classname}:{field_name}"    
-        prop = runtime.call_classmethod("%Dictionary.PropertyDefinition", "_New", prop_id)
-        
-        if hasattr(prop, "_oref"):
-            prop._oref.set("Type", iris_type)
-            if getattr(field_meta, "required", False):
-                prop._oref.set("Required", 1)
-            props_oref_list.invoke("Insert", prop._oref)
-        else:
-            prop.Type = iris_type
-            if getattr(field_meta, "required", False):
-                prop.Required = 1
-            props_oref_list.Insert(prop)
+        prop = runtime.create_object("%Dictionary.PropertyDefinition")
+        runtime.set_property(prop, "Name", field_name)
+        runtime.set_property(prop, "parent", classname)
             
-    if hasattr(cd, "_oref"):
-        st = cd._oref.invoke("%Save")
-    else:
-        st = cd._Save()
-        print("SAVE STATUS:", st)
+        runtime.set_property(prop, "Type", iris_type)
+        if getattr(field_meta, "required", False):
+            runtime.set_property(prop, "Required", True)
+            
+        runtime.invoke_method(props_oref_list, "Insert", prop)
+            
+    st = runtime.save_object(cd)
+    print("SAVE STATUS:", st)
         
     st_comp = runtime.call_classmethod("%SYSTEM.OBJ", "Compile", classname, "fc")

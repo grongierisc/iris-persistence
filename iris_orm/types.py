@@ -4,13 +4,15 @@ Types and definitions for iris_orm schema layout.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field as dataclass_field
-from typing import Any, Optional, Union, Tuple, Dict
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
+from typing import Any, Dict, Optional, Tuple
 
 
 @dataclass
 class Field:
     """Metadata definition for a model field."""
+
     required: bool = False
     default: Any = None
     maxlen: Optional[int] = None
@@ -23,6 +25,7 @@ class Field:
 @dataclass
 class Index:
     """Index definition."""
+
     name: str
     properties: str
     unique: bool = False

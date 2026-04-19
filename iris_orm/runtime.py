@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 from typing import Any, Protocol
+
 
 class RuntimeAdapter(Protocol):
     def call_classmethod(self, class_name: str, method_name: str, *args: Any) -> Any: ...
@@ -16,13 +19,16 @@ class RuntimeAdapter(Protocol):
     def extract_python_value(self, val: Any) -> Any: ...
     def inject_iris_value(self, obj: Any, field_name: str, val: Any) -> None: ...
 
+
 _active_runtime: RuntimeAdapter | None = None
+
 
 def get_runtime() -> RuntimeAdapter:
     global _active_runtime
     if _active_runtime is None:
         try:
             import iris
+
             iris.runtime.configure()
             mode = getattr(iris.runtime, "mode", "embedded")
             if mode == "native":
@@ -33,16 +39,18 @@ def get_runtime() -> RuntimeAdapter:
             raise RuntimeError("iris_orm not configured and `iris` module is unavailable.")
     return _active_runtime
 
+
 def configure_default_runtime(runtime: RuntimeAdapter) -> None:
     global _active_runtime
     _active_runtime = runtime
+
 
 def configure(native_connection=None) -> None:
     try:
         import iris
     except ImportError:
         raise ImportError("Failed to import the `iris` package.")
-    
+
     if native_connection:
         iris.runtime.configure(mode="native", native_connection=native_connection)
         configure_default_runtime(NativeProxyAdapter())
@@ -54,20 +62,11 @@ def configure(native_connection=None) -> None:
         else:
             configure_default_runtime(EmbeddedAdapter())
 
+
 class BaseIRISAdapter:
-    def _coerce_temporal_value(self, val: Any) -> Any:
-        import datetime
-
-        if isinstance(val, datetime.datetime):
-            return val.isoformat(sep=" ")
-        if isinstance(val, datetime.date):
-            return val.isoformat()
-        if isinstance(val, datetime.time):
-            return val.isoformat()
-        return val
-
     def _cls(self, class_name: str):
         import iris
+
         return iris.cls(class_name)
 
     def call_classmethod(self, class_name: str, method_name: str, *args: Any) -> Any:
@@ -76,7 +75,7 @@ class BaseIRISAdapter:
             return getattr(cls_ref, method_name)(*args)
         else:
             return getattr(cls_ref, method_name)()
-            
+
     def create_object(self, class_name: str) -> Any:
         return self.call_classmethod(class_name, "_New")
 
@@ -94,6 +93,7 @@ class BaseIRISAdapter:
 
     def get_dbapi_connection(self) -> Any:
         import iris
+
         return iris.dbapi.connect(mode="auto")
 
     def invoke_method(self, obj: Any, method_name: str, *args: Any) -> Any:
@@ -111,9 +111,10 @@ class BaseIRISAdapter:
                 pass
         else:
             iris_class = type(val).__name__
-            
+
         if iris_class in ("%Library.DynamicObject", "%Library.DynamicArray"):
             import json
+
             try:
                 s = self.call_classmethod("%Stream.GlobalCharacter", "_New")
                 val._ToJSON(s)
@@ -121,7 +122,12 @@ class BaseIRISAdapter:
                 val = json.loads(s.Read())
             except Exception:
                 pass
-        elif iris_class in ("%Stream.GlobalBinary", "%Stream.GlobalCharacter", "%Stream.FileBinary", "%Stream.FileCharacter"):
+        elif iris_class in (
+            "%Stream.GlobalBinary",
+            "%Stream.GlobalCharacter",
+            "%Stream.FileBinary",
+            "%Stream.FileCharacter",
+        ):
             try:
                 val.Rewind()
                 size_val = getattr(val, "Size", 0)
@@ -142,36 +148,42 @@ class BaseIRISAdapter:
                 current_prop.Write(val)
             else:
                 self.set_property(obj, field_name, val)
-        elif val is not None and self._coerce_temporal_value(val) is not val:
-            self.set_property(obj, field_name, self._coerce_temporal_value(val))
         elif isinstance(val, dict):
             import json
+
             try:
-                dyn_obj = self.call_classmethod("%Library.DynamicObject", "_FromJSON", json.dumps(val))
+                dyn_obj = self.call_classmethod(
+                    "%Library.DynamicObject", "_FromJSON", json.dumps(val)
+                )
                 self.set_property(obj, field_name, dyn_obj)
             except Exception:
                 self.set_property(obj, field_name, val)
         elif isinstance(val, list):
             import json
+
             try:
-                dyn_arr = self.call_classmethod("%Library.DynamicArray", "_FromJSON", json.dumps(val))
+                dyn_arr = self.call_classmethod(
+                    "%Library.DynamicArray", "_FromJSON", json.dumps(val)
+                )
                 self.set_property(obj, field_name, dyn_arr)
             except Exception:
                 self.set_property(obj, field_name, val)
         else:
             self.set_property(obj, field_name, val)
 
+
 class NativeProxyAdapter(BaseIRISAdapter):
     def inject_iris_value(self, obj: Any, field_name: str, val: Any) -> None:
         import json
+
         oref = obj._oref if hasattr(obj, "_oref") else obj
         db = obj._db if hasattr(obj, "_db") else None
-        
+
         if db is None:
             return super().inject_iris_value(obj, field_name, val)
-            
+
         use_core_methods = hasattr(oref, "invoke")
-            
+
         if isinstance(val, (bytes, bytearray)):
             try:
                 stream_oref = oref.get(field_name) if use_core_methods else db.get(oref, field_name)
@@ -185,8 +197,10 @@ class NativeProxyAdapter(BaseIRISAdapter):
                 self.set_property(obj, field_name, val)
         elif isinstance(val, dict):
             try:
-                dyn_obj = db.classMethodValue("%Library.DynamicObject", "%FromJSON", json.dumps(val))
-                    
+                dyn_obj = db.classMethodValue(
+                    "%Library.DynamicObject", "%FromJSON", json.dumps(val)
+                )
+
                 if use_core_methods:
                     oref.set(field_name, dyn_obj)
                 else:
@@ -196,7 +210,7 @@ class NativeProxyAdapter(BaseIRISAdapter):
         elif isinstance(val, list):
             try:
                 dyn_obj = db.classMethodValue("%Library.DynamicArray", "%FromJSON", json.dumps(val))
-                    
+
                 if use_core_methods:
                     oref.set(field_name, dyn_obj)
                 else:
@@ -215,17 +229,20 @@ class NativeProxyAdapter(BaseIRISAdapter):
     def get_object_id(self, obj: Any) -> str:
         try:
             val = obj._Id()
-            if val: return str(val)
+            if val:
+                return str(val)
         except AttributeError:
             pass
         try:
             val = obj.Id()
-            if val: return str(val)
+            if val:
+                return str(val)
         except AttributeError:
             pass
         if hasattr(obj, "%Id"):
             val = getattr(obj, "%Id")()
-            if val: return str(val)
+            if val:
+                return str(val)
         return None
 
     def is_ok(self, status: Any) -> bool:
@@ -234,6 +251,7 @@ class NativeProxyAdapter(BaseIRISAdapter):
         if isinstance(status, int) and status == 1:
             return True
         return False
+
 
 class EmbeddedAdapter(BaseIRISAdapter):
     def set_property(self, obj: Any, prop_name: str, value: Any) -> None:
@@ -247,19 +265,22 @@ class EmbeddedAdapter(BaseIRISAdapter):
     def get_object_id(self, obj: Any) -> str:
         try:
             val = obj._Id()
-            if val: return str(val)
+            if val:
+                return str(val)
         except AttributeError:
             pass
         try:
             val = obj.Id()
-            if val: return str(val)
+            if val:
+                return str(val)
         except AttributeError:
             pass
         if hasattr(obj, "%Id"):
             val = getattr(obj, "%Id")()
-            if val: return str(val)
+            if val:
+                return str(val)
         return None
-        
+
     def is_ok(self, status: Any) -> bool:
         if isinstance(status, int):
             return status != 0

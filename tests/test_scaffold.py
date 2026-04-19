@@ -5,6 +5,8 @@ import sys
 import uuid
 from pathlib import Path
 
+import pytest
+
 import iris_orm.scaffold as scaffold_module
 
 
@@ -35,7 +37,10 @@ class _StubCursor:
         self._rows = []
 
     def execute(self, sql, params=()):
-        self._rows = list(self._rows_by_query.get((sql, tuple(params)), []))
+        result = self._rows_by_query.get((sql, tuple(params)), [])
+        if isinstance(result, Exception):
+            raise result
+        self._rows = list(result)
 
     def fetchall(self):
         return list(self._rows)
@@ -78,7 +83,10 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
             ("Demo.StubFixture", "%Persistent"),
         ],
         (
-            "SELECT Name, Type, Required, InitialExpression, Parameters FROM %Dictionary.CompiledProperty WHERE parent = ?",
+            (
+                "SELECT Name, Type, Required, InitialExpression, Parameters "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
             ("Demo.StubFixture",),
         ): [
             ("Title", "%Library.String", 1, None, _iris_dict({"MAXLEN": "120"})),
@@ -102,7 +110,10 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
             ("IDKEY", "ID", 1),
         ],
         (
-            "SELECT Name, DataLocation, DefaultData, Type FROM %Dictionary.CompiledStorage WHERE parent = ?",
+            (
+                "SELECT Name, DataLocation, DefaultData, Type "
+                "FROM %Dictionary.CompiledStorage WHERE parent = ?"
+            ),
             ("Demo.StubFixture",),
         ): [
             ("Default", "^Demo.StubFixtureD", "StubDefaultData", "%Storage.Persistent"),
@@ -127,7 +138,10 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
             ("Demo.StubFixture||Default||Payload",),
         ): [],
         (
-            "SELECT Name, AverageFieldSize FROM %Dictionary.CompiledStorageProperty WHERE parent = ?",
+            (
+                "SELECT Name, AverageFieldSize "
+                "FROM %Dictionary.CompiledStorageProperty WHERE parent = ?"
+            ),
             ("Demo.StubFixture||Default",),
         ): [
             ("Title", "10"),
@@ -143,8 +157,11 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
 
     monkeypatch.setattr(scaffold_module, "get_runtime", lambda: _StubRuntime(rows_by_query))
 
-    generated_files = scaffold_module.scaffold_from_iris("Demo.*", str(tmp_path), extract_meta=True)
-    assert generated_files == [str(tmp_path / "stubfixture.py")]
+    result = scaffold_module.scaffold_from_iris(
+        "Demo.*", str(tmp_path), extract_meta=True, return_result=True
+    )
+    assert result.files == [str(tmp_path / "stubfixture.py")]
+    assert result.warnings == []
 
     module = _load_module(tmp_path / "stubfixture.py")
     StubFixture = module.StubFixture
@@ -182,3 +199,53 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
     generated_text = (tmp_path / "stubfixture.py").read_text(encoding="utf-8")
     assert "StorageData(" in generated_text
     assert "values={}" in generated_text
+
+
+def test_scaffold_from_iris_reports_metadata_warnings(monkeypatch, tmp_path: Path):
+    rows_by_query = {
+        (
+            "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name LIKE ?",
+            ("Demo.%",),
+        ): [
+            ("Demo.WarnFixture", "%Persistent"),
+        ],
+        (
+            (
+                "SELECT Name, Type, Required, InitialExpression, Parameters "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
+            ("Demo.WarnFixture",),
+        ): [
+            ("Title", "%Library.String", 1, None, None),
+        ],
+        (
+            "SELECT Name, Default FROM %Dictionary.CompiledParameter WHERE parent = ?",
+            ("Demo.WarnFixture",),
+        ): RuntimeError("parameter lookup failed"),
+        (
+            "SELECT Name, Properties, _Unique FROM %Dictionary.CompiledIndex WHERE parent = ?",
+            ("Demo.WarnFixture",),
+        ): [],
+        (
+            (
+                "SELECT Name, DataLocation, DefaultData, Type "
+                "FROM %Dictionary.CompiledStorage WHERE parent = ?"
+            ),
+            ("Demo.WarnFixture",),
+        ): [],
+    }
+
+    monkeypatch.setattr(scaffold_module, "get_runtime", lambda: _StubRuntime(rows_by_query))
+
+    with pytest.warns(RuntimeWarning, match="Failed to scaffold parameters"):
+        result = scaffold_module.scaffold_from_iris(
+            "Demo.*", str(tmp_path), extract_meta=True, return_result=True
+        )
+
+    assert result.files == [str(tmp_path / "warnfixture.py")]
+    assert len(result.warnings) == 1
+    assert result.warnings[0].code == "parameters"
+    assert result.warnings[0].classname == "Demo.WarnFixture"
+
+    module = _load_module(tmp_path / "warnfixture.py")
+    assert module.WarnFixture._parameters == {}

@@ -1,14 +1,18 @@
+from __future__ import annotations
+
+import warnings as py_warnings
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Any
+from typing import Any
 
 from iris_orm.runtime import get_runtime
-from iris_orm.types import StorageDefinition, StorageData, StorageProperty, StorageSQLMap
+
 
 def _map_iris_type_to_python(iris_type: str) -> str:
     """Map an IRIS type to a Python type string for the generated class."""
     if not iris_type:
         return "Any"
-    
+
     mapping = {
         "%Library.String": "str",
         "%Library.Integer": "int",
@@ -26,203 +30,452 @@ def _map_iris_type_to_python(iris_type: str) -> str:
         "%Library.Time": "datetime.time",
         "%Library.TimeStamp": "datetime.datetime",
     }
-    
+
     return mapping.get(iris_type, "str")
 
-def _parse_iris_list(s: Any) -> List[Any]:
-    if not isinstance(s, (bytes, str)): 
+
+def _parse_iris_list(value: Any) -> list[Any]:
+    if not isinstance(value, (bytes, str)):
         return []
-    i = 0
-    res = []
-    while i < len(s):
-        l = s[i] if isinstance(s, bytes) else ord(s[i])
-        if l == 0: 
+    items = []
+    index = 0
+    while index < len(value):
+        length = value[index] if isinstance(value, bytes) else ord(value[index])
+        if length == 0:
             break
-        val = s[i+2:i+l]
-        res.append(val)
-        i += l
-    return res
+        items.append(value[index + 2 : index + length])
+        index += length
+    return items
 
-def _parse_iris_dict(s: Any) -> dict:
-    res = {}
-    for item in _parse_iris_list(s):
-        kv = _parse_iris_list(item)
-        if len(kv) == 2:
-            key = kv[0].decode('utf-8') if isinstance(kv[0], bytes) else str(kv[0])
-            val = kv[1].decode('utf-8') if isinstance(kv[1], bytes) else str(kv[1])
-            res[key] = val
-    return res
 
-def scaffold_from_iris(pattern: str, output_dir: str, mode: str = "observe", extract_meta: bool = False) -> List[str]:
+def _parse_iris_dict(value: Any) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for item in _parse_iris_list(value):
+        key_value = _parse_iris_list(item)
+        if len(key_value) != 2:
+            continue
+        key = key_value[0].decode("utf-8") if isinstance(key_value[0], bytes) else str(key_value[0])
+        raw_value = (
+            key_value[1].decode("utf-8") if isinstance(key_value[1], bytes) else str(key_value[1])
+        )
+        parsed[key] = raw_value
+    return parsed
+
+
+def _sort_storage_key(item: tuple[str, str]) -> tuple[int, Any]:
+    key = item[0]
+    if key.isdigit():
+        return (0, int(key))
+    return (1, key)
+
+
+@dataclass(frozen=True)
+class ScaffoldWarning:
+    code: str
+    message: str
+    classname: str | None = None
+
+
+@dataclass
+class ScaffoldResult:
+    files: list[str]
+    warnings: list[ScaffoldWarning]
+
+
+@dataclass(frozen=True)
+class _CompiledClass:
+    name: str
+    superclasses: str | None
+
+
+@dataclass(frozen=True)
+class _CompiledProperty:
+    name: str
+    python_type: str
+    required: bool
+    default: str | None
+    maxlen: str | None
+
+
+@dataclass(frozen=True)
+class _CompiledParameter:
+    name: str
+    default: str
+
+
+@dataclass(frozen=True)
+class _CompiledIndex:
+    name: str
+    properties: str
+    unique: bool
+
+
+@dataclass(frozen=True)
+class _CompiledStorage:
+    name: str
+    data_location: str | None
+    default_data: str | None
+    storage_type: str | None
+
+
+@dataclass(frozen=True)
+class _CompiledStorageData:
+    name: str
+    structure: str | None
+    values: dict[str, str]
+
+
+@dataclass(frozen=True)
+class _CompiledStorageProperty:
+    name: str
+    average_field_size: str | None
+
+
+@dataclass(frozen=True)
+class _CompiledStorageSQLMap:
+    name: str
+    block_count: str | None
+
+
+class _CompiledDictionaryReader:
+    """Thin reader for the %Dictionary compiled metadata used by scaffolding."""
+
+    def __init__(self, conn: Any):
+        self._conn = conn
+        self._cursor = conn.cursor()
+
+    def close(self) -> None:
+        self._cursor.close()
+        self._conn.close()
+
+    def _fetchall(self, sql: str, params: tuple[Any, ...]) -> list[tuple[Any, ...]]:
+        self._cursor.execute(sql, params)
+        return list(self._cursor.fetchall())
+
+    def _fetchone(self, sql: str, params: tuple[Any, ...]) -> tuple[Any, ...] | None:
+        self._cursor.execute(sql, params)
+        return self._cursor.fetchone()
+
+    def list_classes(self, pattern: str) -> list[_CompiledClass]:
+        rows = self._fetchall(
+            "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name LIKE ?",
+            (pattern,),
+        )
+        return sorted(
+            (_CompiledClass(name=row[0], superclasses=row[1]) for row in rows),
+            key=lambda item: item.name,
+        )
+
+    def list_properties(self, classname: str) -> list[_CompiledProperty]:
+        rows = self._fetchall(
+            (
+                "SELECT Name, Type, Required, InitialExpression, Parameters "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
+            (classname,),
+        )
+        properties = []
+        for prop_name, prop_type, required, init_exp, params_raw in rows:
+            if str(prop_name).startswith("%"):
+                continue
+            parsed_params = _parse_iris_dict(params_raw) if params_raw else {}
+            properties.append(
+                _CompiledProperty(
+                    name=prop_name,
+                    python_type=_map_iris_type_to_python(prop_type),
+                    required=bool(required) and str(required) != "0",
+                    default=init_exp if init_exp != '""' and init_exp else None,
+                    maxlen=parsed_params.get("MAXLEN"),
+                )
+            )
+        return sorted(properties, key=lambda item: item.name)
+
+    def list_parameters(self, classname: str) -> list[_CompiledParameter]:
+        rows = self._fetchall(
+            "SELECT Name, Default FROM %Dictionary.CompiledParameter WHERE parent = ?",
+            (classname,),
+        )
+        params = []
+        for name, default in rows:
+            if str(name).startswith("%") or name == "GUID":
+                continue
+            params.append(_CompiledParameter(name=name, default=str(default)))
+        return sorted(params, key=lambda item: item.name)
+
+    def list_indexes(self, classname: str) -> list[_CompiledIndex]:
+        rows = self._fetchall(
+            "SELECT Name, Properties, _Unique FROM %Dictionary.CompiledIndex WHERE parent = ?",
+            (classname,),
+        )
+        indexes = []
+        for name, properties, is_unique in rows:
+            if str(name).startswith("%") or name in ("IDKEY", "$Product"):
+                continue
+            unique = is_unique == 1 or is_unique == "1" or str(is_unique).lower() == "true"
+            indexes.append(_CompiledIndex(name=name, properties=properties, unique=unique))
+        return sorted(indexes, key=lambda item: item.name)
+
+    def get_storage(self, classname: str) -> _CompiledStorage | None:
+        row = self._fetchone(
+            (
+                "SELECT Name, DataLocation, DefaultData, Type "
+                "FROM %Dictionary.CompiledStorage WHERE parent = ?"
+            ),
+            (classname,),
+        )
+        if row is None:
+            return None
+        return _CompiledStorage(
+            name=row[0], data_location=row[1], default_data=row[2], storage_type=row[3]
+        )
+
+    def list_storage_data(self, storage_parent: str) -> list[_CompiledStorageData]:
+        rows = self._fetchall(
+            "SELECT Name, Structure FROM %Dictionary.CompiledStorageData WHERE parent = ?",
+            (storage_parent,),
+        )
+        data_rows = []
+        for name, structure in rows:
+            values_parent = f"{storage_parent}||{name}"
+            value_rows = self._fetchall(
+                "SELECT Name, Value FROM %Dictionary.CompiledStorageDataValue WHERE parent = ?",
+                (values_parent,),
+            )
+            values = dict(
+                sorted(((str(key), str(val)) for key, val in value_rows), key=_sort_storage_key)
+            )
+            data_rows.append(_CompiledStorageData(name=name, structure=structure, values=values))
+        return sorted(data_rows, key=lambda item: item.name)
+
+    def list_storage_properties(self, storage_parent: str) -> list[_CompiledStorageProperty]:
+        rows = self._fetchall(
+            (
+                "SELECT Name, AverageFieldSize "
+                "FROM %Dictionary.CompiledStorageProperty WHERE parent = ?"
+            ),
+            (storage_parent,),
+        )
+        properties = [
+            _CompiledStorageProperty(name=name, average_field_size=str(avg))
+            for name, avg in rows
+            if not str(name).startswith("%")
+        ]
+        return sorted(properties, key=lambda item: item.name)
+
+    def list_storage_sql_maps(self, storage_parent: str) -> list[_CompiledStorageSQLMap]:
+        rows = self._fetchall(
+            "SELECT Name, BlockCount FROM %Dictionary.CompiledStorageSQLMap WHERE parent = ?",
+            (storage_parent,),
+        )
+        return sorted(
+            (
+                _CompiledStorageSQLMap(name=name, block_count=str(block_count))
+                for name, block_count in rows
+            ),
+            key=lambda item: item.name,
+        )
+
+
+def _default_literal(default: str | None) -> tuple[str | None, str | None]:
+    if default is None:
+        return (None, None)
+    if default == "1":
+        return ("default=True", "True")
+    if default == "0":
+        return ("default=False", "False")
+    if default.startswith('"') and default.endswith('"'):
+        return (f"default={default}", default)
+    return (f"default={default}", default)
+
+
+def _render_model(
+    class_info: _CompiledClass,
+    properties: list[_CompiledProperty],
+    mode: str,
+    parameters: list[_CompiledParameter],
+    indexes: list[_CompiledIndex],
+    storage: _CompiledStorage | None,
+    storage_data: list[_CompiledStorageData],
+    storage_properties: list[_CompiledStorageProperty],
+    storage_sql_maps: list[_CompiledStorageSQLMap],
+) -> str:
+    lines = [
+        "from __future__ import annotations",
+        "",
+        "import datetime",
+        "from typing import Annotated, Any",
+        "",
+        (
+            "from iris_orm import Field, IRISModel, Index, StorageDefinition, "
+            "StorageData, StorageProperty, StorageSQLMap"
+        ),
+        "",
+        f"class {class_info.name.split('.')[-1]}(IRISModel):",
+    ]
+
+    if not properties:
+        lines.append("    pass")
+    else:
+        for prop in properties:
+            field_args = [f"required={'True' if prop.required else 'False'}"]
+            if prop.maxlen:
+                field_args.append(f"maxlen={prop.maxlen}")
+            default_arg, default_value = _default_literal(prop.default)
+            if default_arg:
+                field_args.append(default_arg)
+            field_str = ", ".join(field_args)
+            if prop.required:
+                suffix = f" = {default_value}" if default_value is not None else ""
+                lines.append(
+                    f"    {prop.name}: Annotated[{prop.python_type}, Field({field_str})]{suffix}"
+                )
+            else:
+                suffix = f" = {default_value}" if default_value is not None else " = None"
+                lines.append(
+                    f"    {prop.name}: "
+                    f"Annotated[{prop.python_type} | None, Field({field_str})]{suffix}"
+                )
+
+    lines.extend(
+        [
+            "",
+            "    class Meta:",
+            f'        classname = "{class_info.name}"',
+            f'        mode = "{mode}"',
+        ]
+    )
+    if class_info.superclasses:
+        lines.append(f'        superclasses = "{class_info.superclasses}"')
+    if parameters:
+        lines.append("        parameters = {")
+        lines.extend(f'            "{param.name}": "{param.default}",' for param in parameters)
+        lines.append("        }")
+    if indexes:
+        lines.append("        indexes = [")
+        lines.extend(
+            "            "
+            f'Index("{index.name}", properties="{index.properties}", '
+            f'unique={"True" if index.unique else "False"}),'
+            for index in indexes
+        )
+        lines.append("        ]")
+    if storage:
+        lines.append("        storage = StorageDefinition(")
+        if storage.data_location:
+            lines.append(f'            data_location="{storage.data_location}",')
+        if storage.default_data:
+            lines.append(f'            default_data="{storage.default_data}",')
+        if storage.storage_type:
+            lines.append(f'            type="{storage.storage_type}",')
+        if storage_data:
+            lines.append("            data=(")
+            for item in storage_data:
+                lines.append("                StorageData(")
+                lines.append(f'                    name="{item.name}",')
+                if item.structure:
+                    lines.append(f'                    structure="{item.structure}",')
+                lines.append(f"                    values={item.values!r},")
+                lines.append("                ),")
+            lines.append("            ),")
+        if storage_properties:
+            lines.append("            properties=(")
+            for item in storage_properties:
+                lines.append(
+                    "                "
+                    f'StorageProperty(name="{item.name}", '
+                    f'average_field_size="{item.average_field_size}"),'
+                )
+            lines.append("            ),")
+        if storage_sql_maps:
+            lines.append("            sql_maps=(")
+            for item in storage_sql_maps:
+                lines.append(
+                    "                "
+                    f'StorageSQLMap(name="{item.name}", '
+                    f'block_count="{item.block_count}"),'
+                )
+            lines.append("            ),")
+        lines.append("        )")
+
+    return "\n".join(lines) + "\n"
+
+
+def _record_warning(result: ScaffoldResult, code: str, classname: str, exc: Exception) -> None:
+    message = f"Failed to scaffold {code} for {classname}: {exc}"
+    result.warnings.append(ScaffoldWarning(code=code, message=message, classname=classname))
+    py_warnings.warn(message, RuntimeWarning, stacklevel=2)
+
+
+def scaffold_from_iris(
+    pattern: str,
+    output_dir: str,
+    mode: str = "observe",
+    extract_meta: bool = False,
+    return_result: bool = False,
+) -> list[str] | ScaffoldResult:
     """Scaffold typed models from live IRIS classes."""
     runtime = get_runtime()
     conn = runtime.get_dbapi_connection()
+    reader = _CompiledDictionaryReader(conn)
+    result = ScaffoldResult(files=[], warnings=[])
 
     if "*" in pattern:
         pattern = pattern.replace("*", "%")
 
-    out_path = Path(output_dir)
-    out_path.mkdir(parents=True, exist_ok=True)
-    generated_files = []
-    cursor = conn.cursor()
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
 
     try:
-        cursor.execute("SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name LIKE ?", [pattern])
-        classes = cursor.fetchall()
+        for class_info in reader.list_classes(pattern):
+            properties = reader.list_properties(class_info.name)
 
-        for cls_name, super_cls in classes:
-            cursor.execute(
-                "SELECT Name, Type, Required, InitialExpression, Parameters FROM %Dictionary.CompiledProperty WHERE parent = ?",
-                [cls_name]
+            parameters: list[_CompiledParameter] = []
+            indexes: list[_CompiledIndex] = []
+            storage: _CompiledStorage | None = None
+            storage_data: list[_CompiledStorageData] = []
+            storage_properties: list[_CompiledStorageProperty] = []
+            storage_sql_maps: list[_CompiledStorageSQLMap] = []
+
+            if extract_meta:
+                try:
+                    parameters = reader.list_parameters(class_info.name)
+                except Exception as exc:
+                    _record_warning(result, "parameters", class_info.name, exc)
+                try:
+                    indexes = reader.list_indexes(class_info.name)
+                except Exception as exc:
+                    _record_warning(result, "indexes", class_info.name, exc)
+                try:
+                    storage = reader.get_storage(class_info.name)
+                    if storage:
+                        storage_parent = f"{class_info.name}||{storage.name}"
+                        storage_data = reader.list_storage_data(storage_parent)
+                        storage_properties = reader.list_storage_properties(storage_parent)
+                        storage_sql_maps = reader.list_storage_sql_maps(storage_parent)
+                except Exception as exc:
+                    _record_warning(result, "storage", class_info.name, exc)
+
+            module_path = output_path / f"{class_info.name.split('.')[-1].lower()}.py"
+            module_text = _render_model(
+                class_info=class_info,
+                properties=properties,
+                mode=mode,
+                parameters=parameters,
+                indexes=indexes,
+                storage=storage,
+                storage_data=storage_data,
+                storage_properties=storage_properties,
+                storage_sql_maps=storage_sql_maps,
             )
-
-            props = []
-            for prop_name, prop_type, required, init_exp, params_raw in cursor:
-                if prop_name.startswith("%"):
-                    continue
-
-                parsed_params = _parse_iris_dict(params_raw) if params_raw else {}
-
-                props.append({
-                    "name": prop_name,
-                    "type": _map_iris_type_to_python(prop_type),
-                    "required": bool(required) and str(required) != "0",
-                    "default": init_exp if init_exp != '""' and init_exp else None,
-                    "maxlen": parsed_params.get("MAXLEN", None)
-                })
-
-            file_name = cls_name.split(".")[-1].lower() + ".py"
-            file_path = out_path / file_name
-
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write("from __future__ import annotations\n\n")
-                f.write("import datetime\n")
-                f.write("from typing import Annotated, Any\n\n")
-                f.write("from iris_orm import Field, IRISModel, Index, StorageDefinition, StorageData, StorageProperty, StorageSQLMap\n\n")
-
-                f.write(f"class {cls_name.split('.')[-1]}(IRISModel):\n")
-                if not props:
-                    f.write("    pass\n")
-                else:
-                    for prop in props:
-                        req_str = "True" if prop["required"] else "False"
-                        field_args = [f"required={req_str}"]
-                        if prop.get("maxlen"):
-                            field_args.append(f"maxlen={prop['maxlen']}")
-
-                        default_python_value = None
-                        if prop.get("default") is not None:
-                            if prop["default"] == "1":
-                                field_args.append("default=True")
-                                default_python_value = "True"
-                            elif prop["default"] == "0":
-                                field_args.append("default=False")
-                                default_python_value = "False"
-                            elif prop["default"].startswith('"') and prop["default"].endswith('"'):
-                                field_args.append(f"default={prop['default']}")
-                                default_python_value = prop["default"]
-                            else:
-                                field_args.append(f"default={prop['default']}")
-                                default_python_value = prop["default"]
-
-                        field_str = ", ".join(field_args)
-
-                        if not prop["required"]:
-                            assignment = f" = {default_python_value}" if default_python_value is not None else " = None"
-                            f.write(f"    {prop['name']}: Annotated[{prop['type']} | None, Field({field_str})]{assignment}\n")
-                        else:
-                            assignment = f" = {default_python_value}" if default_python_value is not None else ""
-                            f.write(f"    {prop['name']}: Annotated[{prop['type']}, Field({field_str})]{assignment}\n")
-
-                f.write("\n    class Meta:\n")
-                f.write(f"        classname = \"{cls_name}\"\n")
-                f.write(f"        mode = \"{mode}\"\n")
-                if super_cls:
-                    f.write(f"        superclasses = \"{super_cls}\"\n")
-
-                if extract_meta:
-                    try:
-                        cursor.execute("SELECT Name, Default FROM %Dictionary.CompiledParameter WHERE parent = ?", [cls_name])
-                        params = cursor.fetchall()
-                        if params:
-                            p_filtered = [(n, d) for n, d in params if not n.startswith("%") and n != "GUID"]
-                            if p_filtered:
-                                f.write("        parameters = {\n")
-                                for p_name, p_default in p_filtered:
-                                    f.write(f"            \"{p_name}\": \"{p_default}\",\n")
-                                f.write("        }\n")
-
-                        cursor.execute("SELECT Name, Properties, _Unique FROM %Dictionary.CompiledIndex WHERE parent = ?", [cls_name])
-                        indexes = cursor.fetchall()
-                        if indexes:
-                            i_filtered = [(n, p, u) for n, p, u in indexes if not str(n).startswith("%") and n not in ("IDKEY", "$Product")]
-                            if i_filtered:
-                                f.write("        indexes = [\n")
-                                for idx_name, idx_props, idx_unique in i_filtered:
-                                    uniq_val = idx_unique == 1 or idx_unique == "1" or str(idx_unique).lower() == "true"
-                                    uniq_str = "True" if uniq_val else "False"
-                                    f.write(f"            Index(\"{idx_name}\", properties=\"{idx_props}\", unique={uniq_str}),\n")
-                                f.write("        ]\n")
-
-                        cursor.execute("SELECT Name, DataLocation, DefaultData, Type FROM %Dictionary.CompiledStorage WHERE parent = ?", [cls_name])
-                        storage_def = cursor.fetchone()
-                        if storage_def:
-                            s_name, s_data_loc, s_def_data, s_type = storage_def
-                            s_parent = f"{cls_name}||{s_name}"
-
-                            f.write("        storage = StorageDefinition(\n")
-                            if s_data_loc:
-                                f.write(f"            data_location=\"{s_data_loc}\",\n")
-                            if s_def_data:
-                                f.write(f"            default_data=\"{s_def_data}\",\n")
-                            if s_type:
-                                f.write(f"            type=\"{s_type}\",\n")
-
-                            cursor.execute("SELECT Name, Structure FROM %Dictionary.CompiledStorageData WHERE parent = ?", [s_parent])
-                            storage_datas = cursor.fetchall()
-                            if storage_datas:
-                                f.write("            data=(\n")
-                                for sd_name, sd_struct in storage_datas:
-                                    sd_parent = f"{s_parent}||{sd_name}"
-                                    cursor.execute("SELECT Name, Value FROM %Dictionary.CompiledStorageDataValue WHERE parent = ?", [sd_parent])
-                                    sd_vals = {str(n): str(v) for n, v in cursor.fetchall()}
-                                    f.write("                StorageData(\n")
-                                    f.write(f"                    name=\"{sd_name}\",\n")
-                                    if sd_struct:
-                                        f.write(f"                    structure=\"{sd_struct}\",\n")
-                                    f.write(f"                    values={sd_vals!r},\n")
-                                    f.write("                ),\n")
-                                f.write("            ),\n")
-
-                            cursor.execute("SELECT Name, AverageFieldSize FROM %Dictionary.CompiledStorageProperty WHERE parent = ?", [s_parent])
-                            storage_props = cursor.fetchall()
-                            if storage_props:
-                                sp_filtered = [(n, a) for n, a in storage_props if not str(n).startswith("%")]
-                                if sp_filtered:
-                                    f.write("            properties=(\n")
-                                    for sp_name, sp_avg in sp_filtered:
-                                        f.write(f"                StorageProperty(name=\"{sp_name}\", average_field_size=\"{sp_avg}\"),\n")
-                                    f.write("            ),\n")
-
-                            cursor.execute("SELECT Name, BlockCount FROM %Dictionary.CompiledStorageSQLMap WHERE parent = ?", [s_parent])
-                            sql_maps = cursor.fetchall()
-                            if sql_maps:
-                                f.write("            sql_maps=(\n")
-                                for sm_name, sm_block in sql_maps:
-                                    f.write(f"                StorageSQLMap(name=\"{sm_name}\", block_count=\"{sm_block}\"),\n")
-                                f.write("            ),\n")
-
-                            f.write("        )\n")
-
-                    except Exception:
-                        pass
-
-            generated_files.append(str(file_path))
+            module_path.write_text(module_text, encoding="utf-8")
+            result.files.append(str(module_path))
     finally:
-        cursor.close()
-        conn.close()
+        reader.close()
 
-    return generated_files
+    if return_result:
+        return result
+    return result.files
+
 
 def scaffold_from_cls(cls_dir: str, output_dir: str, mode: str = "observe") -> None:
     """Scaffold from exported .cls files."""

@@ -12,6 +12,7 @@
 - scaffold from exported `.cls`
 - typed `StorageDefinition` metadata
 - `iris_orm.testing.FakeAdapter` for unit tests
+- structured scaffold warnings/results for partial metadata extraction
 
 ## Quick Start
 
@@ -194,6 +195,7 @@ If `configure()` is never called, `iris_orm` falls back to the embedded runtime 
 ## Testing
 
 `FakeAdapter` moved into the package so downstream projects can test models without a live IRIS instance.
+It is intentionally limited to CRUD/query tests and does not emulate `%Dictionary` or schema compilation.
 
 ```python
 from iris_orm.testing import FakeAdapter, preload_schema
@@ -203,14 +205,35 @@ adapter = FakeAdapter()
 configure_default_runtime(runtime=adapter)
 ```
 
+Run unit tests only:
+
+```bash
+.venv/bin/pytest -m "not integration"
+```
+
+Run the live IRIS round-trip coverage:
+
+```bash
+.venv/bin/pytest -m integration
+```
+
 ## Scaffold
 
 Generate typed models from live IRIS:
 
 ```python
-from iris_orm import scaffold_from_iris
+from iris_orm import ScaffoldResult, scaffold_from_iris
 
 scaffold_from_iris("Demo.*", "./generated_models")
+
+result: ScaffoldResult = scaffold_from_iris(
+    "Demo.*",
+    "./generated_models",
+    extract_meta=True,
+    return_result=True,
+)
+for warning in result.warnings:
+    print(warning.message)
 ```
 
 Generate from exported `.cls` files:
@@ -228,6 +251,8 @@ Scaffold rules:
 - generated files use `class Meta`
 - storage metadata is emitted as `StorageDefinition(...)`
 - `mode="extend"` preserves indexes and parameters in `Meta`
+- `return_result=True` returns generated file paths plus any metadata extraction warnings
+- generated model files are expected to import cleanly as a compatibility contract
 
 Runnable examples:
 

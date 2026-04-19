@@ -1,12 +1,20 @@
 """
 iris_orm core package
 """
+
 __version__ = "0.1.0"
 
-from iris_orm.types import Field, Index, StorageDefinition, StorageData, StorageProperty, StorageSQLMap
 from iris_orm.models import IRISModel
 from iris_orm.runtime import configure
-from iris_orm.scaffold import scaffold_from_iris, scaffold_from_cls
+from iris_orm.scaffold import ScaffoldResult, ScaffoldWarning, scaffold_from_cls, scaffold_from_iris
+from iris_orm.types import (
+    Field,
+    Index,
+    StorageData,
+    StorageDefinition,
+    StorageProperty,
+    StorageSQLMap,
+)
 
 __all__ = [
     "Field",
@@ -17,6 +25,8 @@ __all__ = [
     "StorageSQLMap",
     "IRISModel",
     "configure",
+    "ScaffoldResult",
+    "ScaffoldWarning",
     "scaffold_from_iris",
     "scaffold_from_cls",
 ]

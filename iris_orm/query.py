@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from typing import Any, List, Optional, Type, TypeVar, Dict
+from typing import Any, List, Optional, Type, TypeVar, Dict, Generic
 
 from iris_orm.runtime import get_runtime
 import iris_orm.models
 
 TModel = TypeVar('TModel', bound='iris_orm.models.IRISModel')
 
-class QuerySet:
+class QuerySet(Generic[TModel]):
     def __init__(self, model_cls: Type[TModel], filter_kwargs: Optional[Dict[str, Any]] = None, order_by_keys: Optional[List[str]] = None):
         self.model_cls = model_cls
         self.filter_kwargs = filter_kwargs or {}

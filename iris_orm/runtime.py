@@ -61,11 +61,10 @@ class BaseIRISAdapter:
 
     def call_classmethod(self, class_name: str, method_name: str, *args: Any) -> Any:
         cls_ref = self._cls(class_name)
-        mapped_name = method_name.replace("%", "_", 1) if method_name.startswith("%") else method_name
         if args:
-            return getattr(cls_ref, mapped_name)(*args)
+            return getattr(cls_ref, method_name)(*args)
         else:
-            return getattr(cls_ref, mapped_name)()
+            return getattr(cls_ref, method_name)()
             
     def create_object(self, class_name: str) -> Any:
         return self.call_classmethod(class_name, "_New")
@@ -87,21 +86,10 @@ class BaseIRISAdapter:
         return iris.dbapi.connect(mode="auto")
 
     def invoke_method(self, obj: Any, method_name: str, *args: Any) -> Any:
-        mapped_name = method_name.replace("%", "_", 1) if method_name.startswith("%") else method_name
-        unwrapped_args = []
-        for arg in args:
-            if hasattr(arg, "_oref"):
-                unwrapped_args.append(arg._oref)
-            else:
-                unwrapped_args.append(arg)
-                
-        if hasattr(obj, "_oref"):
-            return obj._oref.invoke(mapped_name, *unwrapped_args)
-        
         if args:
-            return getattr(obj, mapped_name)(*args)
+            return getattr(obj, method_name)(*args)
         else:
-            return getattr(obj, mapped_name)()
+            return getattr(obj, method_name)()
 
     def extract_python_value(self, val: Any) -> Any:
         iris_class = None
@@ -184,10 +172,7 @@ class NativeProxyAdapter(BaseIRISAdapter):
                 self.set_property(obj, field_name, val)
         elif isinstance(val, dict):
             try:
-                if hasattr(db, "classMethodValue"):
-                    dyn_obj = db.classMethodValue("%Library.DynamicObject", "%FromJSON", json.dumps(val))
-                else:
-                    dyn_obj = db.invokeClassMethod("%Library.DynamicObject", "%FromJSON", json.dumps(val))
+                dyn_obj = db.classMethodValue("%Library.DynamicObject", "%FromJSON", json.dumps(val))
                     
                 if use_core_methods:
                     oref.set(field_name, dyn_obj)
@@ -197,10 +182,7 @@ class NativeProxyAdapter(BaseIRISAdapter):
                 self.set_property(obj, field_name, val)
         elif isinstance(val, list):
             try:
-                if hasattr(db, "classMethodValue"):
-                    dyn_obj = db.classMethodValue("%Library.DynamicArray", "%FromJSON", json.dumps(val))
-                else:
-                    dyn_obj = db.invokeClassMethod("%Library.DynamicArray", "%FromJSON", json.dumps(val))
+                dyn_obj = db.classMethodValue("%Library.DynamicArray", "%FromJSON", json.dumps(val))
                     
                 if use_core_methods:
                     oref.set(field_name, dyn_obj)

@@ -1,7 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Type, cast, get_type_hints
+from typing import Any, Dict, Optional, Type, cast, get_type_hints, TypeVar, List, TYPE_CHECKING
 from iris_orm.types import Field, Index, StorageDefinition
+
+if TYPE_CHECKING:
+    from iris_orm.query import QuerySet
+
+T = TypeVar("T", bound="IRISModel")
 
 class ModelMeta(type):
     def __new__(mcs, name: str, bases: tuple, namespace: dict):
@@ -84,17 +89,17 @@ class IRISModel(metaclass=ModelMeta):
         schema_sync(cls)
 
     @classmethod
-    def get(cls, pk: str) -> Optional[IRISModel]:
+    def get(cls: Type[T], pk: str) -> Optional[T]:
         from iris_orm.query import get_model
         return get_model(cls, pk)
 
     @classmethod
-    def all(cls):
+    def all(cls: Type[T]) -> List[T]:
         from iris_orm.query import QuerySet
         return QuerySet(cls).all()
 
     @classmethod
-    def where(cls, **kwargs):
+    def where(cls: Type[T], **kwargs) -> 'QuerySet[T]':
         from iris_orm.query import QuerySet
         return QuerySet(cls).where(**kwargs)
 

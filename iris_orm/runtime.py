@@ -55,6 +55,17 @@ def configure(native_connection=None) -> None:
             configure_default_runtime(EmbeddedAdapter())
 
 class BaseIRISAdapter:
+    def _coerce_temporal_value(self, val: Any) -> Any:
+        import datetime
+
+        if isinstance(val, datetime.datetime):
+            return val.isoformat(sep=" ")
+        if isinstance(val, datetime.date):
+            return val.isoformat()
+        if isinstance(val, datetime.time):
+            return val.isoformat()
+        return val
+
     def _cls(self, class_name: str):
         import iris
         return iris.cls(class_name)
@@ -131,6 +142,8 @@ class BaseIRISAdapter:
                 current_prop.Write(val)
             else:
                 self.set_property(obj, field_name, val)
+        elif val is not None and self._coerce_temporal_value(val) is not val:
+            self.set_property(obj, field_name, self._coerce_temporal_value(val))
         elif isinstance(val, dict):
             import json
             try:

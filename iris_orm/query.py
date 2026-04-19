@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, List, Optional, Type, TypeVar, Dict, Generic
+import datetime
+from types import UnionType
+from typing import Annotated, Any, List, Optional, Type, TypeVar, Dict, Generic, Union, get_args, get_origin, get_type_hints
 
 from iris_orm.runtime import get_runtime
 import iris_orm.models
@@ -76,6 +78,40 @@ def save_model(instance: TModel) -> None:
     if pk:
         instance._pk = str(pk)
 
+
+def _resolve_declared_type(hint: Any) -> Any:
+    origin = get_origin(hint)
+    if origin is Annotated:
+        return _resolve_declared_type(get_args(hint)[0])
+    if origin in (Union, UnionType):
+        args = [arg for arg in get_args(hint) if arg is not type(None)]
+        if len(args) == 1:
+            return _resolve_declared_type(args[0])
+    return hint
+
+
+def _coerce_loaded_value(expected_type: Any, value: Any) -> Any:
+    if value is None:
+        return None
+    if expected_type is bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"0", "false"}:
+                return False
+            if lowered in {"1", "true"}:
+                return True
+    if expected_type is datetime.datetime and isinstance(value, str):
+        return datetime.datetime.fromisoformat(value)
+    if expected_type is datetime.date and isinstance(value, str):
+        return datetime.date.fromisoformat(value)
+    if expected_type is datetime.time and isinstance(value, str):
+        return datetime.time.fromisoformat(value)
+    return value
+
 def get_model(cls: Type[TModel], pk: str) -> Optional[TModel]:
     runtime = get_runtime()
     iris_obj = runtime.get_object(cls._classname, pk)
@@ -84,9 +120,12 @@ def get_model(cls: Type[TModel], pk: str) -> Optional[TModel]:
         return None
         
     params = {}
+    hints = get_type_hints(cls, include_extras=True)
     for field_name in cls._fields:
         val = runtime.get_property(iris_obj, field_name)
-        params[field_name] = runtime.extract_python_value(val)
+        python_val = runtime.extract_python_value(val)
+        declared_type = _resolve_declared_type(hints.get(field_name))
+        params[field_name] = _coerce_loaded_value(declared_type, python_val)
             
     instance = cls(**params)
     instance._pk = pk

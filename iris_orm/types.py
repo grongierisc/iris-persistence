@@ -4,7 +4,7 @@ Types and definitions for iris_orm schema layout.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from typing import Any, Optional, Union, Tuple, Dict
 
 
@@ -41,7 +41,7 @@ class StorageProperty:
 class StorageData:
     name: str
     structure: str
-    values: Dict[str, str]
+    values: Dict[str, str] = dataclass_field(default_factory=dict)
 
 
 @dataclass

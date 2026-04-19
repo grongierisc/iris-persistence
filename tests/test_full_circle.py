@@ -1,15 +1,36 @@
-from iris_orm.scaffold import scaffold_from_iris
-from iris_orm.runtime import configure_default_runtime, NativeProxyAdapter
-import os
-import pytest
+from __future__ import annotations
+
 import datetime
-import iris_orm
+import importlib.util
+import sys
+import uuid
+from pathlib import Path
 from typing import Annotated
-from iris_orm import IRISModel, Field, Index, StorageDefinition, StorageData
 
-iris_orm.configure()
+import pytest
 
-class FullFixture(IRISModel):
+import iris_orm
+from iris_orm import Field, IRISModel, Index, StorageData, StorageDefinition, scaffold_from_iris
+
+
+def _has_iris_runtime() -> bool:
+    return importlib.util.find_spec("iris") is not None
+
+
+pytestmark = pytest.mark.skipif(not _has_iris_runtime(), reason="requires IRIS runtime")
+
+
+def _load_module(module_path: Path):
+    module_name = f"generated_{module_path.stem}_{uuid.uuid4().hex}"
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class FullCircleFixture(IRISModel):
     Title: Annotated[str, Field(required=True, maxlen=350)]
     Description: Annotated[str | None, Field(required=False, default="No desc", maxlen=500)] = "No desc"
     Price: Annotated[float | None, Field(required=False, default=15.5)] = 15.5
@@ -20,51 +41,106 @@ class FullFixture(IRISModel):
     CreatedAt: Annotated[datetime.datetime | None, Field(required=False)] = None
 
     class Meta:
-        classname = "Demo.FullFixture"
+        classname = "Demo.FullCircleFixture"
         mode = "replace"
         indexes = [
             Index("TitleIdx", properties="Title")
         ]
         storage = StorageDefinition(
-            data_location="^Demo.FullFixtureD",
-            default_data="FullFixtureDefaultData",
+            data_location="^Demo.FullCircleFixtureD",
+            default_data="FullCircleFixtureDefaultData",
             type="%Storage.Persistent",
             data=(
                 StorageData(
-                    name="FullFixtureDefaultData",
+                    name="FullCircleFixtureDefaultData",
                     structure="listnode",
-                    values={'1': '%%CLASSNAME', '2': 'Count', '3': 'CreatedAt', '4': 'Description', '5': 'IsActive', '6': 'Price', '7': 'Title'}
+                    values={
+                        "1": "%%CLASSNAME",
+                        "2": "Count",
+                        "3": "CreatedAt",
+                        "4": "Description",
+                        "5": "IsActive",
+                        "6": "Price",
+                        "7": "Title",
+                    },
                 ),
             ),
         )
 
-def test_full_circle():
-    # Use real NativeProxyAdapter for the test
-    configure_default_runtime(NativeProxyAdapter())
-    
-    print("Syncing FullFixture to IRIS...")
-    FullFixture.sync_schema()
-    
-    print("Scaffolding FullFixture from IRIS...")
-    scaffold_from_iris("Demo.FullFixture", "generated_test", extract_meta=True)
-    
-    with open("generated_test/fullfixture.py", "r") as f:
-        res = f.read()
-    
-    print("\n--- Scaffolded Code ---")
-    print(res)
-    
-    assert "Title: Annotated[str, Field(required=True, maxlen=350)]" in res
-    assert 'Description: Annotated[str | None, Field(required=False, maxlen=500, default="No desc")] = "No desc"' in res
-    assert "Price: Annotated[float | None, Field(required=False, default=15.5)] = 15.5" in res
-    assert "IsActive: Annotated[bool | None, Field(required=False, default=True)] = True" in res
-    assert "Count: Annotated[int | None, Field(required=False, default=42)] = 42" in res
-    assert "Data: Annotated[dict | None, Field(required=False)]" in res
-    assert "Tags: Annotated[list | None, Field(required=False)]" in res
-    assert "CreatedAt: Annotated[datetime.datetime | None, Field(required=False)]" in res
-    
-    assert 'Index("TitleIdx", properties="Title"' in res
-    
-    assert 'StorageData(' in res
+
+@pytest.fixture(scope="module", autouse=True)
+def configure_live_runtime():
+    iris_orm.configure()
 
 
+def test_full_circle_round_trip(tmp_path: Path):
+    FullCircleFixture.sync_schema()
+
+    source_created = FullCircleFixture(
+        Title="source-created",
+        Description="Created from the source model",
+        Price=17.25,
+        IsActive=True,
+        Count=7,
+        Data={"origin": "source"},
+        Tags=["alpha", "beta"],
+        CreatedAt=datetime.datetime(2024, 1, 2, 3, 4, 5),
+    )
+    source_created.save()
+    assert source_created.pk is not None
+
+    generated_files = scaffold_from_iris("Demo.FullCircleFixture", str(tmp_path), extract_meta=True)
+    assert generated_files == [str(tmp_path / "fullcirclefixture.py")]
+
+    scaffolded_module = _load_module(tmp_path / "fullcirclefixture.py")
+    ScaffoldedFullCircleFixture = scaffolded_module.FullCircleFixture
+
+    scaffolded_source = ScaffoldedFullCircleFixture.get(source_created.pk)
+    assert scaffolded_source is not None
+    assert scaffolded_source.Title == "source-created"
+    assert scaffolded_source.Description == "Created from the source model"
+    assert scaffolded_source.Price == 17.25
+    assert scaffolded_source.IsActive is True
+    assert scaffolded_source.Count == 7
+    assert scaffolded_source.Data == {"origin": "source"}
+    assert scaffolded_source.Tags == ["alpha", "beta"]
+    assert scaffolded_source.CreatedAt == datetime.datetime(2024, 1, 2, 3, 4, 5)
+
+    scaffold_created = ScaffoldedFullCircleFixture(
+        Title="scaffold-created",
+        Data={"origin": "scaffold"},
+        Tags=["gamma"],
+        CreatedAt=datetime.datetime(2024, 6, 7, 8, 9, 10),
+    )
+    assert scaffold_created.Description == "No desc"
+    assert scaffold_created.Price == 15.5
+    assert scaffold_created.IsActive is True
+    assert scaffold_created.Count == 42
+    scaffold_created.save()
+    assert scaffold_created.pk is not None
+
+    source_view = FullCircleFixture.get(scaffold_created.pk)
+    assert source_view is not None
+    assert source_view.Title == "scaffold-created"
+    assert source_view.Description == "No desc"
+    assert source_view.Price == 15.5
+    assert source_view.IsActive is True
+    assert source_view.Count == 42
+    assert source_view.Data == {"origin": "scaffold"}
+    assert source_view.Tags == ["gamma"]
+    assert source_view.CreatedAt == datetime.datetime(2024, 6, 7, 8, 9, 10)
+
+    matching = ScaffoldedFullCircleFixture.where(Title="scaffold-created").all()
+    assert any(row.pk == scaffold_created.pk for row in matching)
+
+    assert ScaffoldedFullCircleFixture._classname == "Demo.FullCircleFixture"
+    assert ScaffoldedFullCircleFixture._sync_mode == "observe"
+    assert any(index.name == "TitleIdx" for index in ScaffoldedFullCircleFixture._indexes)
+
+    storage = ScaffoldedFullCircleFixture._storage
+    assert storage is not None
+    assert storage.data_location == "^Demo.FullCircleFixtureD"
+    assert storage.default_data == "FullCircleFixtureDefaultData"
+    default_data = next(item for item in storage.data if item.name == "FullCircleFixtureDefaultData")
+    assert default_data.structure == "listnode"
+    assert default_data.values["7"] == "Title"

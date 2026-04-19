@@ -91,6 +91,7 @@ class _CompiledClass:
 @dataclass(frozen=True)
 class _CompiledProperty:
     name: str
+    iris_type: str
     python_type: str
     required: bool
     default: str | None
@@ -182,6 +183,7 @@ class _CompiledDictionaryReader:
             properties.append(
                 _CompiledProperty(
                     name=prop_name,
+                    iris_type=prop_type,
                     python_type=_map_iris_type_to_python(prop_type),
                     required=bool(required) and str(required) != "0",
                     default=init_exp if init_exp != '""' and init_exp else None,
@@ -298,7 +300,15 @@ def _render_model(
     storage_data: list[_CompiledStorageData],
     storage_properties: list[_CompiledStorageProperty],
     storage_sql_maps: list[_CompiledStorageSQLMap],
+    known_classes: dict[str, str],
 ) -> str:
+    custom_imports = []
+    for prop in properties:
+        if prop.iris_type in known_classes and prop.iris_type != class_info.name:
+            module_name = prop.iris_type.split(".")[-1].lower()
+            class_name = known_classes[prop.iris_type]
+            custom_imports.append(f"from {module_name} import {class_name}")
+
     lines = [
         "from __future__ import annotations",
         "",
@@ -309,14 +319,16 @@ def _render_model(
             "from iris_orm import Field, IRISModel, Index, StorageDefinition, "
             "StorageData, StorageProperty, StorageSQLMap"
         ),
-        "",
-        f"class {class_info.name.split('.')[-1]}(IRISModel):",
     ]
+    if custom_imports:
+        lines.extend(["", *sorted(set(custom_imports))])
+    lines.extend(["", f"class {class_info.name.split('.')[-1]}(IRISModel):"])
 
     if not properties:
         lines.append("    pass")
     else:
         for prop in properties:
+            type_name = known_classes.get(prop.iris_type, prop.python_type)
             field_args = [f"required={'True' if prop.required else 'False'}"]
             if prop.maxlen:
                 field_args.append(f"maxlen={prop.maxlen}")
@@ -326,14 +338,12 @@ def _render_model(
             field_str = ", ".join(field_args)
             if prop.required:
                 suffix = f" = {default_value}" if default_value is not None else ""
-                lines.append(
-                    f"    {prop.name}: Annotated[{prop.python_type}, Field({field_str})]{suffix}"
-                )
+                lines.append(f"    {prop.name}: Annotated[{type_name}, Field({field_str})]{suffix}")
             else:
                 suffix = f" = {default_value}" if default_value is not None else " = None"
                 lines.append(
                     f"    {prop.name}: "
-                    f"Annotated[{prop.python_type} | None, Field({field_str})]{suffix}"
+                    f"Annotated[{type_name} | None, Field({field_str})]{suffix}"
                 )
 
     lines.extend(
@@ -426,7 +436,9 @@ def scaffold_from_iris(
     output_path.mkdir(parents=True, exist_ok=True)
 
     try:
-        for class_info in reader.list_classes(pattern):
+        classes = reader.list_classes(pattern)
+        known_classes = {item.name: item.name.split(".")[-1] for item in classes}
+        for class_info in classes:
             properties = reader.list_properties(class_info.name)
 
             parameters: list[_CompiledParameter] = []
@@ -466,6 +478,7 @@ def scaffold_from_iris(
                 storage_data=storage_data,
                 storage_properties=storage_properties,
                 storage_sql_maps=storage_sql_maps,
+                known_classes=known_classes,
             )
             module_path.write_text(module_text, encoding="utf-8")
             result.files.append(str(module_path))

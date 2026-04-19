@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from iris_orm import scaffold_from_cls, scaffold_from_iris
+from iris_orm import scaffold_from_iris
 
 
 def main() -> None:
@@ -14,7 +14,9 @@ def main() -> None:
 
     try:
         print("\nScaffold typed proxy models from live IRIS:")
-        iris_paths = scaffold_from_iris("Demo.*", generated_root / "from_iris", mode="observe", extract_meta=True)
+        iris_paths = scaffold_from_iris(
+            "Demo.*", generated_root / "from_iris", mode="observe", extract_meta=True
+        )
         for path in iris_paths:
             print(" ", path)
     except Exception as exc:

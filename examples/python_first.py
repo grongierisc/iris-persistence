@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from iris_orm import Field, IRISModel, Index, StorageDefinition
+from iris_orm import Field, Index, IRISModel, StorageDefinition
+
 
 class Product(IRISModel):
     Name: Annotated[str, Field(required=True, maxlen=200)]

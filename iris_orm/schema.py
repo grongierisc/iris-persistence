@@ -1,7 +1,19 @@
-from typing import Any, Type, get_type_hints
+from __future__ import annotations
 
+from typing import Any, Type, get_args, get_origin, get_type_hints
+
+import iris_orm.models
 from iris_orm.runtime import get_runtime
 from iris_orm.types import Field
+
+
+def _resolve_model_type(py_type: Any) -> Any:
+    origin = get_origin(py_type)
+    if origin is not None:
+        args = [arg for arg in get_args(py_type) if arg is not type(None)]
+        if len(args) == 1:
+            return _resolve_model_type(args[0])
+    return py_type
 
 
 def _map_python_type_to_iris(py_type: Any, field_meta: Field) -> str:
@@ -37,18 +49,26 @@ def _map_python_type_to_iris(py_type: Any, field_meta: Field) -> str:
         return "%Library.Date"
     if str(py_type) == "<class 'datetime.time'>":
         return "%Library.Time"
+    if isinstance(py_type, type) and issubclass(py_type, iris_orm.models.IRISModel):
+        return py_type._classname
 
     return "%Library.String"
 
 
-def sync_schema(model_cls: Type[Any]) -> None:
+def sync_schema(model_cls: Type[Any], _seen: set[str] | None = None) -> None:
     mode = getattr(model_cls, "_sync_mode", "extend")
     if mode == "observe":
         return
 
+    if _seen is None:
+        _seen = set()
+
     runtime = get_runtime()
     classname = getattr(model_cls, "_classname", model_cls.__name__)
     superclasses = getattr(model_cls, "_superclasses", "%Persistent")
+    if classname in _seen:
+        return
+    _seen.add(classname)
 
     exists = runtime.call_classmethod("%Dictionary.ClassDefinition", "_ExistsId", classname)
     cd = None
@@ -80,9 +100,20 @@ def sync_schema(model_cls: Type[Any]) -> None:
     for field_name, hint in hints.items():
         if field_name.startswith("_"):
             continue
+        resolved = _resolve_model_type(hint)
+        if (
+            isinstance(resolved, type)
+            and issubclass(resolved, iris_orm.models.IRISModel)
+            and resolved is not model_cls
+        ):
+            sync_schema(resolved, _seen)
+
+    for field_name, hint in hints.items():
+        if field_name.startswith("_"):
+            continue
 
         field_meta = fields.get(field_name, Field())
-        iris_type = _map_python_type_to_iris(hint, field_meta)
+        iris_type = _map_python_type_to_iris(_resolve_model_type(hint), field_meta)
 
         if field_name in existing_props and mode == "extend":
             continue

@@ -75,6 +75,13 @@ class IRISModel(metaclass=ModelMeta):
             else:
                 raise ValueError(f"Unknown field {k} for model {self.__class__.__name__}")
 
+    def __repr__(self) -> str:
+        fields = [f"pk={repr(self.pk)}"]
+        for name in self.__class__._fields:
+            if hasattr(self, name):
+                fields.append(f"{name}={repr(getattr(self, name))}")
+        return f"<{self.__class__.__name__} {', '.join(fields)}>"
+
     @property
     def pk(self) -> Optional[str]:
         return self._pk

@@ -14,7 +14,7 @@ def main() -> None:
 
     try:
         print("\nScaffold typed proxy models from live IRIS:")
-        iris_paths = scaffold_from_iris("Demo.*", generated_root / "from_iris", style="observe")
+        iris_paths = scaffold_from_iris("Demo.*", generated_root / "from_iris", mode="observe", extract_meta=True)
         for path in iris_paths:
             print(" ", path)
     except Exception as exc:

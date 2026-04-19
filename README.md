@@ -223,11 +223,11 @@ scaffold_from_cls("./cls", "./generated_models")
 
 Scaffold rules:
 
-- `style="proxy"` is the default
+- `mode="observe"` is the default
 - generated files use `Annotated[..., Field(...)]`
 - generated files use `class Meta`
 - storage metadata is emitted as `StorageDefinition(...)`
-- `style="python"` preserves indexes and parameters in `Meta`
+- `mode="extend"` preserves indexes and parameters in `Meta`
 
 Runnable examples:
 

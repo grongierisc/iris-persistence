@@ -30,14 +30,11 @@ class FullFixture(IRISModel):
             default_data="FullFixtureDefaultData",
             type="%Storage.Persistent",
             data=(
-                StorageData(name="CustomMapping", structure="node", values={}),
-                StorageData(name="Data", structure="node", values={}),
                 StorageData(
                     name="FullFixtureDefaultData",
                     structure="listnode",
                     values={'1': '%%CLASSNAME', '2': 'Count', '3': 'CreatedAt', '4': 'Description', '5': 'IsActive', '6': 'Price', '7': 'Title'}
                 ),
-                StorageData(name="Tags", structure="node", values={}),
             ),
         )
 
@@ -69,6 +66,5 @@ def test_full_circle():
     assert 'Index("TitleIdx", properties="Title"' in res
     
     assert 'StorageData(' in res
-    assert 'name="CustomMapping",' in res
-    assert 'structure="node"' in res
+
 

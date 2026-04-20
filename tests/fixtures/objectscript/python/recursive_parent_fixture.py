@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Annotated
 
 from iris_orm import Field, IRISModel
-from tests.fixtures.objectscript.recursive_address_fixture import SourceRecursiveAddress
-from tests.fixtures.objectscript.recursive_child_fixture import SourceRecursiveChild
+from tests.fixtures.objectscript.python.recursive_address_fixture import SourceRecursiveAddress
+from tests.fixtures.objectscript.python.recursive_child_fixture import SourceRecursiveChild
 
 
 class SourceRecursiveParent(IRISModel):

@@ -9,6 +9,8 @@ from types import ModuleType
 
 FIXTURES_ROOT = Path(__file__).parent / "fixtures"
 OBJECTSCRIPT_FIXTURES = FIXTURES_ROOT / "objectscript"
+OBJECTSCRIPT_CLS_FIXTURES = OBJECTSCRIPT_FIXTURES / "cls"
+OBJECTSCRIPT_PYTHON_FIXTURES = OBJECTSCRIPT_FIXTURES / "python"
 PYTHON_FIXTURES = FIXTURES_ROOT / "python"
 
 
@@ -42,8 +44,8 @@ def delete_iris_classes(classnames: list[str]) -> None:
 
 
 def load_objectscript_fixture(name: str) -> LoadedObjectScriptFixture:
-    cls_path = OBJECTSCRIPT_FIXTURES / f"{name}.cls"
-    sidecar_path = OBJECTSCRIPT_FIXTURES / f"{name}.py"
+    cls_path = OBJECTSCRIPT_CLS_FIXTURES / f"{name}.cls"
+    sidecar_path = OBJECTSCRIPT_PYTHON_FIXTURES / f"{name}.py"
     sidecar = load_module_from_path(sidecar_path)
     classnames = list(sidecar.FIXTURE_CLASSNAMES)
 

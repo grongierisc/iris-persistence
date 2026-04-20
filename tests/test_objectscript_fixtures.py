@@ -8,16 +8,19 @@ from pathlib import Path
 import pytest
 
 import iris_orm
-from iris_orm import IRISModel, scaffold_from_iris
+from iris_orm import scaffold_from_iris
 from iris_orm.runtime import get_runtime
 from tests.fixture_support import (
+    OBJECTSCRIPT_CLS_FIXTURES,
     OBJECTSCRIPT_FIXTURES,
+    OBJECTSCRIPT_PYTHON_FIXTURES,
     delete_iris_classes,
     load_module_from_path,
     load_objectscript_fixture,
 )
-from tests.fixtures.objectscript.persistent_fixture import SourcePersistentFixture
+from tests.fixtures.objectscript.python.persistent_fixture import SourcePersistentFixture
 from tests.fixtures.python.demo_fixture import DemoFixture
+from tests.fixtures.python.objectscript_probe_fixtures import DemoProductProbe
 
 
 def _has_iris_runtime() -> bool:
@@ -28,12 +31,6 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not _has_iris_runtime(), reason="requires IRIS runtime"),
 ]
-
-
-class _DemoProductProbe(IRISModel):
-    class Meta:
-        classname = "Demo.Product"
-        mode = "observe"
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -62,23 +59,26 @@ def loaded_objectscript_fixtures():
 
 def test_objectscript_fixture_sources_are_present():
     expected = [
-        OBJECTSCRIPT_FIXTURES / "list_fixture.cls",
-        OBJECTSCRIPT_FIXTURES / "list_fixture.py",
-        OBJECTSCRIPT_FIXTURES / "list_fixture_item.cls",
-        OBJECTSCRIPT_FIXTURES / "meta_fixture.cls",
-        OBJECTSCRIPT_FIXTURES / "meta_fixture.py",
-        OBJECTSCRIPT_FIXTURES / "persistent_fixture.cls",
-        OBJECTSCRIPT_FIXTURES / "persistent_fixture.py",
-        OBJECTSCRIPT_FIXTURES / "recursive_child_fixture.cls",
-        OBJECTSCRIPT_FIXTURES / "recursive_child_fixture.py",
-        OBJECTSCRIPT_FIXTURES / "recursive_address_fixture.cls",
-        OBJECTSCRIPT_FIXTURES / "recursive_address_fixture.py",
-        OBJECTSCRIPT_FIXTURES / "recursive_parent_fixture.cls",
-        OBJECTSCRIPT_FIXTURES / "recursive_parent_fixture.py",
-        OBJECTSCRIPT_FIXTURES / "request_fixture.cls",
-        OBJECTSCRIPT_FIXTURES / "request_fixture.py",
-        OBJECTSCRIPT_FIXTURES / "serial_fixture.cls",
-        OBJECTSCRIPT_FIXTURES / "serial_fixture.py",
+        OBJECTSCRIPT_FIXTURES / "__init__.py",
+        OBJECTSCRIPT_CLS_FIXTURES / "__init__.py",
+        OBJECTSCRIPT_CLS_FIXTURES / "list_fixture.cls",
+        OBJECTSCRIPT_CLS_FIXTURES / "list_fixture_item.cls",
+        OBJECTSCRIPT_CLS_FIXTURES / "meta_fixture.cls",
+        OBJECTSCRIPT_CLS_FIXTURES / "persistent_fixture.cls",
+        OBJECTSCRIPT_CLS_FIXTURES / "recursive_child_fixture.cls",
+        OBJECTSCRIPT_CLS_FIXTURES / "recursive_address_fixture.cls",
+        OBJECTSCRIPT_CLS_FIXTURES / "recursive_parent_fixture.cls",
+        OBJECTSCRIPT_CLS_FIXTURES / "request_fixture.cls",
+        OBJECTSCRIPT_CLS_FIXTURES / "serial_fixture.cls",
+        OBJECTSCRIPT_PYTHON_FIXTURES / "__init__.py",
+        OBJECTSCRIPT_PYTHON_FIXTURES / "list_fixture.py",
+        OBJECTSCRIPT_PYTHON_FIXTURES / "meta_fixture.py",
+        OBJECTSCRIPT_PYTHON_FIXTURES / "persistent_fixture.py",
+        OBJECTSCRIPT_PYTHON_FIXTURES / "recursive_child_fixture.py",
+        OBJECTSCRIPT_PYTHON_FIXTURES / "recursive_address_fixture.py",
+        OBJECTSCRIPT_PYTHON_FIXTURES / "recursive_parent_fixture.py",
+        OBJECTSCRIPT_PYTHON_FIXTURES / "request_fixture.py",
+        OBJECTSCRIPT_PYTHON_FIXTURES / "serial_fixture.py",
     ]
     for path in expected:
         assert path.exists(), f"Missing fixture source: {path}"
@@ -490,7 +490,7 @@ def test_scaffold_storage_statistics_for_demo_product(tmp_path: Path):
     if not exists:
         pytest.skip("requires Demo.Product to exist in the current IRIS namespace")
 
-    list(_DemoProductProbe.all())
+    list(DemoProductProbe.all())
 
     try:
         conn = runtime.get_dbapi_connection()

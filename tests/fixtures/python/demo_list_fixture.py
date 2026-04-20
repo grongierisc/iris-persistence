@@ -5,7 +5,7 @@ from typing import Any
 import iris_orm
 from iris_orm.runtime import configure_default_runtime, get_runtime
 from iris_orm.testing import FakeAdapter
-from tests.fixtures.objectscript.list_fixture import ListFixture, ListFixtureItem
+from tests.fixtures.objectscript.python.list_fixture import ListFixture, ListFixtureItem
 
 
 def configure_fixture_runtime(*, backend: str = "auto") -> str:

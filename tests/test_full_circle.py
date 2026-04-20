@@ -5,13 +5,16 @@ import importlib.util
 import sys
 import uuid
 from pathlib import Path
-from typing import Annotated
 
 import pytest
 
 import iris_orm
-from iris_orm import ClassMetadata, Field, IRISModel, scaffold_from_iris
+from iris_orm import scaffold_from_iris
 from tests.fixtures.python.full_circle_fixture import FullCircleFixture
+from tests.fixtures.python.round_trip_fixtures import (
+    ClassMetadataRoundTripFixture,
+    SQLProjectionRoundTripFixture,
+)
 
 
 def _has_iris_runtime() -> bool:
@@ -32,45 +35,6 @@ def _load_module(module_path: Path):
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
-
-
-class ClassMetadataRoundTripFixture(IRISModel):
-    Title: str
-
-    class Meta:
-        classname = "Demo.ClassMetadataRoundTripFixture"
-        mode = "replace"
-        metadata = ClassMetadata(
-            description="round-trip class metadata",
-            deprecated=True,
-            final=True,
-            sql_table_name="Demo_ClassMetadataRoundTripFixture",
-            procedure_block=True,
-        )
-
-
-class SQLProjectionRoundTripFixture(IRISModel):
-    Title: str
-    Tags: Annotated[
-        list[str] | None,
-        Field(
-            iris_type="%List",
-            sql_list_delimiter="|",
-            sql_list_type="DELIMITED",
-        ),
-    ] = None
-    TitleUpper: Annotated[
-        str | None,
-        Field(
-            sql_compute_code="Set {*} = {Title}",
-            sql_compute_on_change="Title",
-            sql_computed=True,
-        ),
-    ] = None
-
-    class Meta:
-        classname = "Demo.SQLProjectionRoundTripFixture"
-        mode = "replace"
 
 
 @pytest.fixture(scope="module", autouse=True)

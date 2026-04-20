@@ -1,95 +1,24 @@
-from typing import Annotated
-
 import pytest
 
-from iris_orm import ClassMetadata, Field, Index, IRISModel
+from iris_orm import ClassMetadata
 from iris_orm.runtime import configure_default_runtime
 from iris_orm.testing import FakeAdapter
+from tests.fixtures.python.model_behavior_fixtures import (
+    AutoSyncModel,
+    ClassMetadataModel,
+    FailingSaveModel,
+    ObserveAutoSyncModel,
+    Product,
+    QueryAliasModel,
+    ReadonlyModel,
+    ReplaceAutoSyncModel,
+)
 
 
 @pytest.fixture(autouse=True)
 def setup_fake_backend():
     adapter = FakeAdapter()
     configure_default_runtime(adapter)
-
-
-class Product(IRISModel):
-    Name: Annotated[str, Field(required=True, maxlen=200)]
-    Price: Annotated[float, Field(default=0.0)]
-    InStock: Annotated[bool, Field(default=True)]
-    Docs: dict[str, str]
-    Thumbnail: bytes
-
-    class Meta:
-        classname = "Demo.Product"
-        mode = "replace"
-        indexes = [Index("NameIdx", properties="Name", unique=True)]
-
-
-class QueryAliasModel(IRISModel):
-    Payload: Annotated[str | None, Field(sql_field_name="payload_json")] = None
-
-    class Meta:
-        classname = "Demo.QueryAliasModel"
-        mode = "observe"
-
-
-class ReadonlyModel(IRISModel):
-    Code: Annotated[str | None, Field(readonly=True)] = None
-    Name: Annotated[str | None, Field()] = None
-
-    class Meta:
-        classname = "Demo.ReadonlyModel"
-        mode = "replace"
-
-
-class AutoSyncModel(IRISModel):
-    Name: Annotated[str | None, Field()] = None
-
-    class Meta:
-        classname = "Demo.AutoSyncModel"
-        mode = "extend"
-        auto_sync = True
-
-
-class ObserveAutoSyncModel(IRISModel):
-    Name: Annotated[str | None, Field()] = None
-
-    class Meta:
-        classname = "Demo.ObserveAutoSyncModel"
-        mode = "observe"
-        auto_sync = True
-
-
-class ReplaceAutoSyncModel(IRISModel):
-    Name: Annotated[str | None, Field()] = None
-
-    class Meta:
-        classname = "Demo.ReplaceAutoSyncModel"
-        mode = "replace"
-        auto_sync = True
-
-
-class FailingSaveModel(IRISModel):
-    Name: Annotated[str | None, Field()] = None
-
-    class Meta:
-        classname = "Demo.FailingSaveModel"
-        mode = "observe"
-
-
-class ClassMetadataModel(IRISModel):
-    Name: Annotated[str | None, Field()] = None
-
-    class Meta:
-        classname = "Demo.ClassMetadataModel"
-        metadata = ClassMetadata(
-            description="class-level description",
-            deprecated=True,
-            final=True,
-            sql_table_name="Demo_ClassMetadataModel",
-            procedure_block=True,
-        )
 
 
 def test_save_and_get():

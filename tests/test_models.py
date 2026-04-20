@@ -26,6 +26,23 @@ class Product(IRISModel):
         indexes = [Index("NameIdx", properties="Name", unique=True)]
 
 
+class QueryAliasModel(IRISModel):
+    Payload: Annotated[str | None, Field(sql_field_name="payload_json")] = None
+
+    class Meta:
+        classname = "Demo.QueryAliasModel"
+        mode = "observe"
+
+
+class ReadonlyModel(IRISModel):
+    Code: Annotated[str | None, Field(readonly=True)] = None
+    Name: Annotated[str | None, Field()] = None
+
+    class Meta:
+        classname = "Demo.ReadonlyModel"
+        mode = "replace"
+
+
 def test_save_and_get():
     p = Product(Name="Widget", Price=12.5, InStock=True, Docs={"key": "value"}, Thumbnail=b"bytes")
     p.save()
@@ -52,3 +69,31 @@ def test_query_all():
     names = [x.Name for x in products]
     assert "A" in names
     assert "B" in names
+
+
+def test_query_uses_sql_field_name():
+    adapter = FakeAdapter()
+    configure_default_runtime(adapter)
+
+    QueryAliasModel.where(Payload="x").order_by("Payload").all()
+
+    assert adapter.last_sql is not None
+    assert "WHERE payload_json = ?" in adapter.last_sql
+    assert "ORDER BY payload_json" in adapter.last_sql
+    assert adapter.last_params == ("x",)
+
+
+def test_readonly_field_is_not_updated_after_create():
+    model = ReadonlyModel(Code="A1", Name="first")
+    model.save()
+
+    loaded = ReadonlyModel.get(model.pk)
+    assert loaded is not None
+    loaded.Code = "B2"
+    loaded.Name = "second"
+    loaded.save()
+
+    reloaded = ReadonlyModel.get(model.pk)
+    assert reloaded is not None
+    assert reloaded.Code == "A1"
+    assert reloaded.Name == "second"

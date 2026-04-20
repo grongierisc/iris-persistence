@@ -13,6 +13,8 @@ class FakeAdapter(RuntimeAdapter):
     def __init__(self):
         self.db: Dict[str, Dict[str, Any]] = {}
         self._id_counter = 1
+        self.last_sql: str | None = None
+        self.last_params: tuple[Any, ...] | None = None
 
     def call_classmethod(self, class_name: str, method_name: str, *args: Any) -> Any:
         pass
@@ -103,6 +105,8 @@ class FakeAdapter(RuntimeAdapter):
                 self._rows = []
 
             def execute(self, sql, params=()):
+                self._db_adapter.last_sql = sql
+                self._db_adapter.last_params = tuple(params)
                 table_name = sql.split("FROM ")[1].split(" ")[0].replace("_", ".")
                 if table_name in self._db:
                     self._rows = [(k,) for k in self._db[table_name].keys()]
@@ -119,16 +123,19 @@ class FakeAdapter(RuntimeAdapter):
                 pass
 
         class _Connection:
-            def __init__(self, db):
+            def __init__(self, db, db_adapter):
                 self._db = db
+                self._db_adapter = db_adapter
 
             def cursor(self):
-                return _Cursor(self._db)
+                cursor = _Cursor(self._db)
+                cursor._db_adapter = self._db_adapter
+                return cursor
 
             def close(self):
                 pass
 
-        return _Connection(self.db)
+        return _Connection(self.db, self)
 
 
 def preload_schema(*args, **kwargs):

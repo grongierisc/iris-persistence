@@ -133,7 +133,7 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
         (
             (
                 "SELECT Name, DataLocation, DefaultData, IdLocation, IndexLocation, "
-                "StreamLocation, Type "
+                "State, StreamLocation, Type "
                 "FROM %Dictionary.CompiledStorage WHERE parent = ?"
             ),
             ("Demo.StubFixture",),
@@ -144,6 +144,7 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
                 "StubDefaultData",
                 "^Demo.StubFixtureD",
                 "^Demo.StubFixtureI",
+                "StubState",
                 "^Demo.StubFixtureS",
                 "%Storage.Persistent",
             ),
@@ -270,6 +271,7 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
     assert storage.default_data == "StubDefaultData"
     assert storage.id_location == "^Demo.StubFixtureD"
     assert storage.index_location == "^Demo.StubFixtureI"
+    assert storage.state == "StubState"
     assert storage.stream_location == "^Demo.StubFixtureS"
 
     storage_data = {item.name: item for item in storage.data}
@@ -334,6 +336,7 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
     )
     assert 'id_location="^Demo.StubFixtureD"' in generated_text
     assert 'index_location="^Demo.StubFixtureI"' in generated_text
+    assert 'state="StubState"' in generated_text
     assert 'stream_location="^Demo.StubFixtureS"' in generated_text
     assert 'subscript=\'"Stub"\'' in generated_text
     assert "attribute='Payload'" in generated_text
@@ -387,7 +390,7 @@ def test_scaffold_from_iris_reports_metadata_warnings(monkeypatch, tmp_path: Pat
         (
             (
                 "SELECT Name, DataLocation, DefaultData, IdLocation, IndexLocation, "
-                "StreamLocation, Type "
+                "State, StreamLocation, Type "
                 "FROM %Dictionary.CompiledStorage WHERE parent = ?"
             ),
             ("Demo.WarnFixture",),
@@ -441,7 +444,7 @@ def test_scaffold_selectivity_merges_storage_property_definitions(monkeypatch, t
         (
             (
                 "SELECT Name, DataLocation, DefaultData, IdLocation, IndexLocation, "
-                "StreamLocation, Type "
+                "State, StreamLocation, Type "
                 "FROM %Dictionary.CompiledStorage WHERE parent = ?"
             ),
             ("Demo.SelectivityFixture",),
@@ -452,6 +455,7 @@ def test_scaffold_selectivity_merges_storage_property_definitions(monkeypatch, t
                 "SelectivityFixtureDefaultData",
                 "^Demo.SelectivityFixtureD",
                 "^Demo.SelectivityFixtureI",
+                None,
                 "^Demo.SelectivityFixtureS",
                 "%Storage.Persistent",
             ),

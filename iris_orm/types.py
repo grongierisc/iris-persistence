@@ -128,6 +128,7 @@ class StorageDefinition:
     default_data: Optional[str] = None
     id_location: Optional[str] = None
     index_location: Optional[str] = None
+    state: Optional[str] = None
     stream_location: Optional[str] = None
     data: Tuple[StorageData, ...] = ()
     properties: Tuple[StorageProperty, ...] = ()

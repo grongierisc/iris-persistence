@@ -183,6 +183,8 @@ def sync_schema(model_cls: Type[Any], _seen: set[str] | None = None) -> None:
             runtime.set_property(stor_def, "IdLocation", storage_meta.id_location)
         if getattr(storage_meta, "index_location", None):
             runtime.set_property(stor_def, "IndexLocation", storage_meta.index_location)
+        if getattr(storage_meta, "state", None):
+            runtime.set_property(stor_def, "State", storage_meta.state)
         if getattr(storage_meta, "stream_location", None):
             runtime.set_property(stor_def, "StreamLocation", storage_meta.stream_location)
 

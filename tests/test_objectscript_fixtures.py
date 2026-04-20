@@ -149,6 +149,7 @@ def test_objectscript_fixture_scaffold_e2e(loaded_objectscript_fixtures, tmp_pat
     assert SerialFixture._fields["Street"].iris_type == "%Library.String"
     assert SerialFixture._fields["Country"].default == "FR"
     assert SerialFixture._storage is not None
+    assert SerialFixture._storage.state == "SourceSerialFixtureState"
     assert SerialFixture._storage.stream_location == "^Demo.SourceSerialFixtureS"
 
 

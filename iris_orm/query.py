@@ -82,6 +82,13 @@ def _materialize_related_value(runtime: Any, declared_type: Any, value: Any) -> 
     return value
 
 
+def _resolve_sql_field_name(model_cls: Type[TModel], field_name: str) -> str:
+    field_meta = model_cls._fields.get(field_name)
+    if field_meta is not None and getattr(field_meta, "sql_field_name", None):
+        return field_meta.sql_field_name
+    return field_name
+
+
 class QuerySet(Generic[TModel]):
     def __init__(
         self,
@@ -112,12 +119,14 @@ class QuerySet(Generic[TModel]):
         if self.filter_kwargs:
             conditions = []
             for k, v in self.filter_kwargs.items():
-                conditions.append(f"{k} = ?")
+                conditions.append(f"{_resolve_sql_field_name(self.model_cls, k)} = ?")
                 params.append(v)
             sql += " WHERE " + " AND ".join(conditions)
 
         if self.order_by_keys:
-            sql += " ORDER BY " + ", ".join(self.order_by_keys)
+            sql += " ORDER BY " + ", ".join(
+                _resolve_sql_field_name(self.model_cls, key) for key in self.order_by_keys
+            )
 
         conn = runtime.get_dbapi_connection()
         cursor = conn.cursor()
@@ -146,6 +155,9 @@ def save_model(instance: TModel) -> None:
 
     for field_name in instance._fields:
         if field_name in instance.__dict__:
+            field_meta = instance._fields[field_name]
+            if getattr(field_meta, "readonly", False) and instance._pk:
+                continue
             val = getattr(instance, field_name)
             declared_type = resolve_declared_type(hints.get(field_name))
             runtime.inject_iris_value(

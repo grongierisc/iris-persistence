@@ -150,6 +150,7 @@ class SchemaMetadataFixture(IRISModel):
             default_data="SchemaMetadataFixtureDefaultData",
             id_location="^Demo.SchemaMetadataFixtureD",
             index_location="^Demo.SchemaMetadataFixtureI",
+            state="SchemaMetadataFixtureState",
             stream_location="^Demo.SchemaMetadataFixtureS",
             data=(
                 StorageData(
@@ -258,6 +259,7 @@ def test_sync_schema_writes_extended_metadata(monkeypatch):
     assert storage.DefaultData == "SchemaMetadataFixtureDefaultData"
     assert storage.IdLocation == "^Demo.SchemaMetadataFixtureD"
     assert storage.IndexLocation == "^Demo.SchemaMetadataFixtureI"
+    assert storage.State == "SchemaMetadataFixtureState"
     assert storage.StreamLocation == "^Demo.SchemaMetadataFixtureS"
 
     storage_data = storage.Data.items[0]

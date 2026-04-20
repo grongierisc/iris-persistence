@@ -131,6 +131,7 @@ class _CompiledStorage:
     default_data: str | None
     id_location: str | None
     index_location: str | None
+    state: str | None
     stream_location: str | None
     storage_type: str | None
 
@@ -327,7 +328,7 @@ class _CompiledDictionaryReader:
         row = self._fetchone(
             (
                 "SELECT Name, DataLocation, DefaultData, IdLocation, IndexLocation, "
-                "StreamLocation, Type "
+                "State, StreamLocation, Type "
                 "FROM %Dictionary.CompiledStorage WHERE parent = ?"
             ),
             (classname,),
@@ -340,8 +341,9 @@ class _CompiledDictionaryReader:
             default_data=row[2],
             id_location=row[3],
             index_location=row[4],
-            stream_location=row[5],
-            storage_type=row[6],
+            state=row[5],
+            stream_location=row[6],
+            storage_type=row[7],
         )
 
     def list_storage_data(self, storage_parent: str) -> list[_CompiledStorageData]:
@@ -801,6 +803,8 @@ def _render_model(
             lines.append(f'            id_location="{storage.id_location}",')
         if storage.index_location:
             lines.append(f'            index_location="{storage.index_location}",')
+        if storage.state:
+            lines.append(f'            state="{storage.state}",')
         if storage.stream_location:
             lines.append(f'            stream_location="{storage.stream_location}",')
         if storage.storage_type:

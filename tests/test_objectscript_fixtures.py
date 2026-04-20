@@ -9,6 +9,7 @@ import pytest
 
 import iris_orm
 from iris_orm import scaffold_from_iris
+from iris_orm.runtime import get_runtime
 from tests.fixture_support import (
     OBJECTSCRIPT_FIXTURES,
     delete_iris_classes,
@@ -36,6 +37,7 @@ def configure_live_runtime():
 def loaded_objectscript_fixtures():
     loaded = [
         load_objectscript_fixture("list_fixture"),
+        load_objectscript_fixture("meta_fixture"),
         load_objectscript_fixture("persistent_fixture"),
         load_objectscript_fixture("recursive_child_fixture"),
         load_objectscript_fixture("recursive_address_fixture"),
@@ -55,6 +57,8 @@ def test_objectscript_fixture_sources_are_present():
         OBJECTSCRIPT_FIXTURES / "list_fixture.cls",
         OBJECTSCRIPT_FIXTURES / "list_fixture.py",
         OBJECTSCRIPT_FIXTURES / "list_fixture_item.cls",
+        OBJECTSCRIPT_FIXTURES / "meta_fixture.cls",
+        OBJECTSCRIPT_FIXTURES / "meta_fixture.py",
         OBJECTSCRIPT_FIXTURES / "persistent_fixture.cls",
         OBJECTSCRIPT_FIXTURES / "persistent_fixture.py",
         OBJECTSCRIPT_FIXTURES / "recursive_child_fixture.cls",
@@ -98,6 +102,7 @@ def test_objectscript_fixture_scaffold_e2e(loaded_objectscript_fixtures, tmp_pat
     assert len(generated_files) == 3
     assert {fixture.name for fixture in loaded_objectscript_fixtures} == {
         "list_fixture",
+        "meta_fixture",
         "persistent_fixture",
         "recursive_child_fixture",
         "recursive_address_fixture",
@@ -156,6 +161,46 @@ def test_objectscript_fixture_scaffold_e2e(loaded_objectscript_fixtures, tmp_pat
     assert SerialFixture._storage is not None
     assert SerialFixture._storage.state == "SourceSerialFixtureState"
     assert SerialFixture._storage.stream_location == "^Demo.SourceSerialFixtureS"
+
+
+def test_meta_fixture_reverse_engineers_query_level_metadata(
+    loaded_objectscript_fixtures,
+    tmp_path: Path,
+):
+    fixture = next(item for item in loaded_objectscript_fixtures if item.name == "meta_fixture")
+    if fixture.source != "cls":
+        pytest.skip("requires loading the ObjectScript fixture from .cls to inspect query metadata")
+
+    result = scaffold_from_iris(
+        "Demo.SourceMetaFixture",
+        str(tmp_path),
+        extract_meta=True,
+        return_result=True,
+    )
+    assert result.warnings == []
+    module = load_module_from_path(Path(result.files[0]))
+    SourceMetaFixture = module.SourceMetaFixture
+
+    assert SourceMetaFixture._class_metadata is not None
+    assert SourceMetaFixture._class_metadata.deprecated is True
+    assert SourceMetaFixture._class_metadata.final is True
+    assert SourceMetaFixture._class_metadata.sql_table_name == "SourceMetaFixtureTable"
+    assert SourceMetaFixture._class_metadata.procedure_block is True
+
+    conn = get_runtime().get_dbapi_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        (
+            "SELECT Name, Internal, SqlView, SqlViewName "
+            "FROM %Dictionary.CompiledQuery WHERE parent = ? ORDER BY Name"
+        ),
+        ["Demo.SourceMetaFixture"],
+    )
+    query_rows = [
+        (name, str(internal), str(sql_view), sql_view_name)
+        for name, internal, sql_view, sql_view_name in cursor.fetchall()
+    ]
+    assert ("Titles", "1", "1", "SourceMetaFixtureTitlesView") in query_rows
 
 
 def test_recursive_object_reference_scaffold_e2e(loaded_objectscript_fixtures, tmp_path: Path):

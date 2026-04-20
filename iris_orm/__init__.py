@@ -8,6 +8,7 @@ from iris_orm.models import IRISModel
 from iris_orm.runtime import configure
 from iris_orm.scaffold import ScaffoldResult, ScaffoldWarning, scaffold_from_cls, scaffold_from_iris
 from iris_orm.types import (
+    ClassMetadata,
     Field,
     Index,
     StorageData,
@@ -23,6 +24,7 @@ from iris_orm.types import (
 )
 
 __all__ = [
+    "ClassMetadata",
     "Field",
     "Index",
     "StorageDefinition",

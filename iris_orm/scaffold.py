@@ -158,6 +158,11 @@ class ScaffoldResult:
 class _CompiledClass:
     name: str
     superclasses: str | None
+    description: str | None = None
+    deprecated: bool = False
+    final: bool = False
+    sql_table_name: str | None = None
+    procedure_block: bool = False
 
 
 @dataclass(frozen=True)
@@ -171,6 +176,13 @@ class _CompiledProperty:
     readonly: bool
     collection: str | None
     sql_field_name: str | None
+    identity: bool
+    relationship: str | None
+    on_delete: str | None
+    inverse: str | None
+    transient: bool
+    storable: bool
+    multi_dimensional: bool
 
 
 @dataclass(frozen=True)
@@ -343,6 +355,26 @@ class _CompiledDictionaryReader:
             return None
         return _CompiledClass(name=row[0], superclasses=row[1])
 
+    def get_class_metadata(self, classname: str) -> _CompiledClass | None:
+        row = self._fetchone(
+            (
+                "SELECT Description, Deprecated, Final, SqlTableName, ProcedureBlock "
+                "FROM %Dictionary.CompiledClass WHERE Name = ?"
+            ),
+            (classname,),
+        )
+        if row is None:
+            return None
+        return _CompiledClass(
+            name=classname,
+            superclasses=None,
+            description=_optional_str(row[0]),
+            deprecated=_as_bool(row[1]),
+            final=_as_bool(row[2]),
+            sql_table_name=_optional_str(row[3]),
+            procedure_block=_as_bool(row[4]),
+        )
+
     def list_properties(self, classname: str) -> list[_CompiledProperty]:
         rows = self._fetchall(
             (
@@ -352,6 +384,19 @@ class _CompiledDictionaryReader:
             ),
             (classname,),
         )
+        metadata_by_name: dict[str, tuple[Any, ...]] = {}
+        try:
+            metadata_rows = self._fetchall(
+                (
+                    "SELECT Name, Identity, Relationship, OnDelete, Inverse, Transient, "
+                    "Storable, MultiDimensional "
+                    "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+                ),
+                (classname,),
+            )
+            metadata_by_name = {str(row[0]): row[1:] for row in metadata_rows}
+        except Exception:
+            metadata_by_name = {}
         properties = []
         for (
             prop_name,
@@ -366,6 +411,18 @@ class _CompiledDictionaryReader:
             if str(prop_name).startswith("%"):
                 continue
             parsed_params = _parse_iris_dict(params_raw) if params_raw else {}
+            (
+                identity,
+                relationship,
+                on_delete,
+                inverse,
+                transient,
+                storable,
+                multi_dimensional,
+            ) = metadata_by_name.get(
+                str(prop_name),
+                (None, None, None, None, None, None, None),
+            )
             properties.append(
                 _CompiledProperty(
                     name=prop_name,
@@ -381,6 +438,13 @@ class _CompiledDictionaryReader:
                         if not sql_field_name or str(sql_field_name) == str(prop_name)
                         else str(sql_field_name)
                     ),
+                    identity=_as_bool(identity),
+                    relationship=_optional_str(relationship),
+                    on_delete=_optional_str(on_delete),
+                    inverse=_optional_str(inverse),
+                    transient=_as_bool(transient),
+                    storable=True if storable is None else _as_bool(storable),
+                    multi_dimensional=_as_bool(multi_dimensional),
                 )
             )
         return sorted(properties, key=lambda item: item.name)
@@ -1130,6 +1194,18 @@ def _render_storage_index(item: _CompiledStorageIndex) -> str:
     return f"StorageIndex({', '.join(args)})"
 
 
+def _has_class_metadata(class_info: _CompiledClass) -> bool:
+    return any(
+        (
+            class_info.description is not None,
+            class_info.deprecated,
+            class_info.final,
+            class_info.sql_table_name is not None,
+            class_info.procedure_block,
+        )
+    )
+
+
 def _render_model(
     class_info: _CompiledClass,
     properties: list[_CompiledProperty],
@@ -1158,7 +1234,7 @@ def _render_model(
         "from typing import Annotated, Any",
         "",
         (
-            "from iris_orm import Field, IRISModel, Index, StorageDefinition, "
+            "from iris_orm import ClassMetadata, Field, IRISModel, Index, StorageDefinition, "
             "StorageData, StorageIndex, StorageProperty, StorageSQLMap, StorageSQLMapData, "
             "StorageSQLMapRowIdSpec, StorageSQLMapSub, StorageSQLMapSubAccessVar, "
             "StorageSQLMapSubInvalidCondition"
@@ -1184,6 +1260,20 @@ def _render_model(
                 field_args.append(f"collection={prop.collection!r}")
             if prop.sql_field_name:
                 field_args.append(f"sql_field_name={prop.sql_field_name!r}")
+            if prop.identity:
+                field_args.append("identity=True")
+            if prop.relationship:
+                field_args.append(f"relationship={prop.relationship!r}")
+            if prop.on_delete:
+                field_args.append(f"on_delete={prop.on_delete!r}")
+            if prop.inverse:
+                field_args.append(f"inverse={prop.inverse!r}")
+            if prop.transient:
+                field_args.append("transient=True")
+            if not prop.storable:
+                field_args.append("storable=False")
+            if prop.multi_dimensional:
+                field_args.append("multi_dimensional=True")
             default_arg, default_value = _python_default_literal(prop)
             if default_arg:
                 field_args.append(default_arg)
@@ -1210,6 +1300,23 @@ def _render_model(
     )
     if class_info.superclasses:
         lines.append(f'        superclasses = "{class_info.superclasses}"')
+    if _has_class_metadata(class_info):
+        lines.append("        metadata = ClassMetadata(")
+        if class_info.description is not None:
+            lines.append(
+                f"            description={_double_quoted_literal(class_info.description)},"
+            )
+        if class_info.deprecated:
+            lines.append("            deprecated=True,")
+        if class_info.final:
+            lines.append("            final=True,")
+        if class_info.sql_table_name is not None:
+            lines.append(
+                f"            sql_table_name={_double_quoted_literal(class_info.sql_table_name)},"
+            )
+        if class_info.procedure_block:
+            lines.append("            procedure_block=True,")
+        lines.append("        )")
     if parameters:
         lines.append("        parameters = {")
         lines.extend(f'            "{param.name}": "{param.default}",' for param in parameters)
@@ -1448,6 +1555,18 @@ def scaffold_from_iris(
         python_class_names = _assign_generated_names(classnames, seed_names, _camel_case)
         module_names = _assign_generated_names(classnames, seed_names, _snake_case)
         for class_info in classes:
+            if extract_meta:
+                metadata = reader.get_class_metadata(class_info.name)
+                if metadata is not None:
+                    class_info = _CompiledClass(
+                        name=class_info.name,
+                        superclasses=class_info.superclasses,
+                        description=metadata.description,
+                        deprecated=metadata.deprecated,
+                        final=metadata.final,
+                        sql_table_name=metadata.sql_table_name,
+                        procedure_block=metadata.procedure_block,
+                    )
             properties = properties_by_class.get(class_info.name)
             if properties is None:
                 properties = reader.list_properties(class_info.name)

@@ -2,6 +2,7 @@ from typing import Annotated
 
 import iris_orm.schema as schema_module
 from iris_orm import (
+    ClassMetadata,
     Field,
     Index,
     IRISModel,
@@ -294,6 +295,41 @@ class ExtendIndexFixture(IRISModel):
         ]
 
 
+class RelationshipMetadataFixture(IRISModel):
+    Owner: Annotated[
+        str | None,
+        Field(
+            iris_type="Demo.RelatedFixture",
+            identity=True,
+            relationship="parent",
+            on_delete="cascade",
+            inverse="Children",
+            transient=True,
+            storable=False,
+            multi_dimensional=True,
+        ),
+    ] = None
+
+    class Meta:
+        classname = "Demo.RelationshipMetadataFixture"
+        mode = "replace"
+
+
+class ClassMetadataFixture(IRISModel):
+    Payload: Annotated[str | None, Field()] = None
+
+    class Meta:
+        classname = "Demo.ClassMetadataFixture"
+        mode = "replace"
+        metadata = ClassMetadata(
+            description="schema metadata fixture",
+            deprecated=True,
+            final=True,
+            sql_table_name="Demo_ClassMetadataFixture",
+            procedure_block=True,
+        )
+
+
 def test_sync_schema_writes_extended_metadata(monkeypatch):
     runtime = _RecordingRuntime()
     monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
@@ -399,6 +435,38 @@ def test_sync_schema_writes_extended_metadata(monkeypatch):
     invalid_condition = subscript.Invalidconditions.items[0]
     assert invalid_condition.Name == "1"
     assert invalid_condition.Expression == "i<1"
+
+
+def test_sync_schema_writes_relationship_property_metadata(monkeypatch):
+    runtime = _RecordingRuntime()
+    monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
+
+    RelationshipMetadataFixture.sync_schema()
+
+    prop = runtime.class_definition.Properties.items[0]
+    assert prop.Name == "Owner"
+    assert prop.Type == "Demo.RelatedFixture"
+    assert prop.Identity == 1
+    assert prop.Relationship == "parent"
+    assert prop.OnDelete == "cascade"
+    assert prop.Inverse == "Children"
+    assert prop.Transient == 1
+    assert prop.Storable == 0
+    assert prop.MultiDimensional == 1
+
+
+def test_sync_schema_writes_class_metadata(monkeypatch):
+    runtime = _RecordingRuntime()
+    monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
+
+    ClassMetadataFixture.sync_schema()
+
+    class_def = runtime.class_definition
+    assert class_def.Description == "schema metadata fixture"
+    assert class_def.Deprecated == 1
+    assert class_def.Final == 1
+    assert class_def.SqlTableName == "Demo_ClassMetadataFixture"
+    assert class_def.ProcedureBlock == 1
 
 
 def test_sync_schema_extend_adds_missing_indexes_without_duplication(monkeypatch):

@@ -2,12 +2,42 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, List, Optional, Type, TypeVar, get_type_hints
 
+from iris_orm.types import ClassMetadata
 from iris_orm.types import Field
 
 if TYPE_CHECKING:
     from iris_orm.query import QuerySet
 
 T = TypeVar("T", bound="IRISModel")
+
+
+def _is_empty_class_metadata(metadata: ClassMetadata | None) -> bool:
+    if metadata is None:
+        return True
+    return (
+        metadata.description is None
+        and not metadata.deprecated
+        and not metadata.final
+        and metadata.sql_table_name is None
+        and not metadata.procedure_block
+    )
+
+
+def _parse_class_metadata(meta_inner: Any) -> ClassMetadata | None:
+    if meta_inner is None:
+        return None
+
+    metadata = getattr(meta_inner, "metadata", None)
+    if metadata is None:
+        metadata = ClassMetadata(
+            description=getattr(meta_inner, "description", None),
+            deprecated=getattr(meta_inner, "deprecated", False),
+            final=getattr(meta_inner, "final", False),
+            sql_table_name=getattr(meta_inner, "sql_table_name", None),
+            procedure_block=getattr(meta_inner, "procedure_block", False),
+        )
+
+    return None if _is_empty_class_metadata(metadata) else metadata
 
 
 class ModelMeta(type):
@@ -52,6 +82,7 @@ class ModelMeta(type):
         setattr(cls, "_sync_mode", getattr(meta_inner, "mode", "extend"))
         setattr(cls, "_auto_sync", getattr(meta_inner, "auto_sync", False))
         setattr(cls, "_superclasses", getattr(meta_inner, "superclasses", "%Persistent"))
+        setattr(cls, "_class_metadata", _parse_class_metadata(meta_inner))
         setattr(cls, "_storage", getattr(meta_inner, "storage", None))
         setattr(cls, "_indexes", getattr(meta_inner, "indexes", []))
         setattr(cls, "_parameters", getattr(meta_inner, "parameters", {}))
@@ -62,6 +93,7 @@ class IRISModel(metaclass=ModelMeta):
     _classname: str
     _sync_mode: str
     _auto_sync: bool
+    _class_metadata: ClassMetadata | None
 
     def __init__(self, **kwargs):
         self._pk: Optional[str] = None

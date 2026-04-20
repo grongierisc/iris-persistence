@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 import iris_orm
-from iris_orm import scaffold_from_iris
+from iris_orm import ClassMetadata, Field, IRISModel, scaffold_from_iris
 from tests.fixtures.python.full_circle_fixture import FullCircleFixture
 
 
@@ -31,6 +31,21 @@ def _load_module(module_path: Path):
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
+
+
+class ClassMetadataRoundTripFixture(IRISModel):
+    Title: str
+
+    class Meta:
+        classname = "Demo.ClassMetadataRoundTripFixture"
+        mode = "replace"
+        metadata = ClassMetadata(
+            description="round-trip class metadata",
+            deprecated=True,
+            final=True,
+            sql_table_name="Demo_ClassMetadataRoundTripFixture",
+            procedure_block=True,
+        )
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -149,3 +164,27 @@ def test_full_circle_round_trip(tmp_path: Path):
     )
     assert default_data.structure == "listnode"
     assert default_data.values["9"] == "Title"
+
+
+def test_class_metadata_round_trip(tmp_path: Path):
+    ClassMetadataRoundTripFixture.sync_schema()
+
+    generated_files = scaffold_from_iris(
+        "Demo.ClassMetadataRoundTripFixture",
+        str(tmp_path),
+        extract_meta=True,
+    )
+    assert generated_files == [str(tmp_path / "classmetadataroundtripfixture.py")]
+
+    scaffolded_module = _load_module(tmp_path / "classmetadataroundtripfixture.py")
+    ScaffoldedFixture = scaffolded_module.ClassMetadataRoundTripFixture
+
+    assert ScaffoldedFixture._class_metadata is not None
+    assert ScaffoldedFixture._class_metadata.description == "round-trip class metadata"
+    assert ScaffoldedFixture._class_metadata.deprecated is True
+    assert ScaffoldedFixture._class_metadata.final is True
+    assert (
+        ScaffoldedFixture._class_metadata.sql_table_name
+        == "Demo_ClassMetadataRoundTripFixture"
+    )
+    assert ScaffoldedFixture._class_metadata.procedure_block is True

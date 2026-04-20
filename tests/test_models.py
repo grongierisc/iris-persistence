@@ -2,7 +2,7 @@ from typing import Annotated
 
 import pytest
 
-from iris_orm import Field, Index, IRISModel
+from iris_orm import ClassMetadata, Field, Index, IRISModel
 from iris_orm.runtime import configure_default_runtime
 from iris_orm.testing import FakeAdapter
 
@@ -78,6 +78,20 @@ class FailingSaveModel(IRISModel):
         mode = "observe"
 
 
+class ClassMetadataModel(IRISModel):
+    Name: Annotated[str | None, Field()] = None
+
+    class Meta:
+        classname = "Demo.ClassMetadataModel"
+        metadata = ClassMetadata(
+            description="class-level description",
+            deprecated=True,
+            final=True,
+            sql_table_name="Demo_ClassMetadataModel",
+            procedure_block=True,
+        )
+
+
 def test_save_and_get():
     p = Product(Name="Widget", Price=12.5, InStock=True, Docs={"key": "value"}, Thumbnail=b"bytes")
     p.save()
@@ -137,6 +151,16 @@ def test_readonly_field_is_not_updated_after_create():
 def test_model_meta_sets_auto_sync_flag():
     assert AutoSyncModel._auto_sync is True
     assert Product._auto_sync is False
+
+
+def test_model_meta_sets_class_metadata():
+    assert ClassMetadataModel._class_metadata == ClassMetadata(
+        description="class-level description",
+        deprecated=True,
+        final=True,
+        sql_table_name="Demo_ClassMetadataModel",
+        procedure_block=True,
+    )
 
 
 def test_auto_sync_calls_sync_schema_before_save(monkeypatch):

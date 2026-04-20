@@ -84,6 +84,18 @@ def sync_schema(model_cls: Type[Any], _seen: set[str] | None = None) -> None:
         runtime.set_property(cd, "Name", classname)
 
     runtime.set_property(cd, "Super", superclasses)
+    class_metadata = getattr(model_cls, "_class_metadata", None)
+    if class_metadata is not None:
+        if getattr(class_metadata, "description", None) is not None:
+            runtime.set_property(cd, "Description", class_metadata.description)
+        if getattr(class_metadata, "deprecated", False):
+            runtime.set_property(cd, "Deprecated", 1)
+        if getattr(class_metadata, "final", False):
+            runtime.set_property(cd, "Final", 1)
+        if getattr(class_metadata, "sql_table_name", None) is not None:
+            runtime.set_property(cd, "SqlTableName", class_metadata.sql_table_name)
+        if getattr(class_metadata, "procedure_block", False):
+            runtime.set_property(cd, "ProcedureBlock", 1)
 
     props_oref_list = runtime.get_property(cd, "Properties")
     existing_props = {}
@@ -131,6 +143,20 @@ def sync_schema(model_cls: Type[Any], _seen: set[str] | None = None) -> None:
             runtime.set_property(prop, "Collection", field_meta.collection)
         if getattr(field_meta, "sql_field_name", None):
             runtime.set_property(prop, "SqlFieldName", field_meta.sql_field_name)
+        if getattr(field_meta, "identity", False):
+            runtime.set_property(prop, "Identity", 1)
+        if getattr(field_meta, "relationship", None) is not None:
+            runtime.set_property(prop, "Relationship", field_meta.relationship)
+        if getattr(field_meta, "on_delete", None) is not None:
+            runtime.set_property(prop, "OnDelete", field_meta.on_delete)
+        if getattr(field_meta, "inverse", None) is not None:
+            runtime.set_property(prop, "Inverse", field_meta.inverse)
+        if getattr(field_meta, "transient", False):
+            runtime.set_property(prop, "Transient", 1)
+        if getattr(field_meta, "storable", True) is False:
+            runtime.set_property(prop, "Storable", 0)
+        if getattr(field_meta, "multi_dimensional", False):
+            runtime.set_property(prop, "MultiDimensional", 1)
 
         if getattr(field_meta, "initial_expression", None) is not None:
             runtime.set_property(prop, "InitialExpression", field_meta.initial_expression)

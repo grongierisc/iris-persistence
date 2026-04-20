@@ -9,6 +9,15 @@ from dataclasses import field as dataclass_field
 from typing import Any, Dict, Optional, Tuple
 
 
+@dataclass(frozen=True)
+class ClassMetadata:
+    description: Optional[str] = None
+    deprecated: bool = False
+    final: bool = False
+    sql_table_name: Optional[str] = None
+    procedure_block: bool = False
+
+
 @dataclass
 class Field:
     """Metadata definition for a model field."""
@@ -23,6 +32,13 @@ class Field:
     # Backward-compatible alias for older callers; prefer `iris_type`.
     sql_type: Optional[str] = None
     sql_field_name: Optional[str] = None
+    identity: bool = False
+    relationship: Optional[str] = None
+    on_delete: Optional[str] = None
+    inverse: Optional[str] = None
+    transient: bool = False
+    storable: bool = True
+    multi_dimensional: bool = False
 
     def __post_init__(self) -> None:
         if self.iris_type is None and self.sql_type is not None:

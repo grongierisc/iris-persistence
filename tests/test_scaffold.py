@@ -408,6 +408,147 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
     assert "values={}" in generated_text
 
 
+def test_scaffold_reads_property_relationship_metadata(monkeypatch, tmp_path: Path):
+    rows_by_query = {
+        (
+            "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name LIKE ?",
+            ("Demo.RelationshipFixture",),
+        ): [
+            ("Demo.RelationshipFixture", "%Persistent"),
+        ],
+        (
+            (
+                "SELECT Name, Type, Required, InitialExpression, Parameters, "
+                "Collection, SqlFieldName, ReadOnly "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
+            ("Demo.RelationshipFixture",),
+        ): [
+            ("Owner", "Demo.RelatedFixture", 0, None, None, "", "Owner", 0),
+            ("TransientValue", "%Library.String", 0, None, None, "", "TransientValue", 0),
+            ("IdentityCode", "%Library.Integer", 1, None, None, "", "IdentityCode", 0),
+        ],
+        (
+            (
+                "SELECT Name, Identity, Relationship, OnDelete, Inverse, Transient, "
+                "Storable, MultiDimensional "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
+            ("Demo.RelationshipFixture",),
+        ): [
+            ("Owner", 0, "parent", "cascade", "Children", 0, 1, 0),
+            ("TransientValue", 0, None, None, None, 1, 0, 1),
+            ("IdentityCode", 1, None, None, None, 0, 1, 0),
+        ],
+    }
+
+    monkeypatch.setattr(scaffold_module, "get_runtime", lambda: _StubRuntime(rows_by_query))
+
+    result = scaffold_module.scaffold_from_iris(
+        "Demo.RelationshipFixture",
+        str(tmp_path),
+        return_result=True,
+    )
+
+    assert result.warnings == []
+    module_path = Path(result.files[0])
+    generated_text = module_path.read_text(encoding="utf-8")
+    assert (
+        "Field(iris_type=\"Demo.RelatedFixture\", relationship='parent', "
+        "on_delete='cascade', inverse='Children')"
+        in generated_text
+    )
+    assert (
+        "Field(iris_type=\"%Library.String\", transient=True, "
+        "storable=False, multi_dimensional=True)"
+        in generated_text
+    )
+    assert 'Field(iris_type="%Library.Integer", required=True, identity=True)' in generated_text
+
+    module = _load_module(module_path)
+    assert module.RelationshipFixture._fields["Owner"].relationship == "parent"
+    assert module.RelationshipFixture._fields["Owner"].on_delete == "cascade"
+    assert module.RelationshipFixture._fields["Owner"].inverse == "Children"
+    assert module.RelationshipFixture._fields["TransientValue"].transient is True
+    assert module.RelationshipFixture._fields["TransientValue"].storable is False
+    assert module.RelationshipFixture._fields["TransientValue"].multi_dimensional is True
+    assert module.RelationshipFixture._fields["IdentityCode"].identity is True
+
+
+def test_scaffold_reads_class_metadata(monkeypatch, tmp_path: Path):
+    rows_by_query = {
+        (
+            "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name LIKE ?",
+            ("Demo.MetaFixture",),
+        ): [
+            ("Demo.MetaFixture", "%Persistent"),
+        ],
+        (
+            (
+                "SELECT Description, Deprecated, Final, SqlTableName, ProcedureBlock "
+                "FROM %Dictionary.CompiledClass WHERE Name = ?"
+            ),
+            ("Demo.MetaFixture",),
+        ): [
+            (
+                "scaffolded class metadata",
+                1,
+                1,
+                "Demo_MetaFixture",
+                1,
+            ),
+        ],
+        (
+            (
+                "SELECT Name, Type, Required, InitialExpression, Parameters, "
+                "Collection, SqlFieldName, ReadOnly "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
+            ("Demo.MetaFixture",),
+        ): [
+            ("Title", "%Library.String", 1, None, None, "", "Title", 0),
+        ],
+        (
+            (
+                "SELECT Name, Identity, Relationship, OnDelete, Inverse, Transient, "
+                "Storable, MultiDimensional "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
+            ("Demo.MetaFixture",),
+        ): [
+            ("Title", 0, None, None, None, 0, 1, 0),
+        ],
+    }
+
+    monkeypatch.setattr(scaffold_module, "get_runtime", lambda: _StubRuntime(rows_by_query))
+
+    result = scaffold_module.scaffold_from_iris(
+        "Demo.MetaFixture",
+        str(tmp_path),
+        extract_meta=True,
+        return_result=True,
+    )
+
+    assert result.warnings == []
+    module_path = Path(result.files[0])
+    generated_text = module_path.read_text(encoding="utf-8")
+    assert "from iris_orm import ClassMetadata, Field, IRISModel, Index, StorageDefinition" in generated_text
+    assert "metadata = ClassMetadata(" in generated_text
+    assert 'description="scaffolded class metadata"' in generated_text
+    assert "deprecated=True" in generated_text
+    assert "final=True" in generated_text
+    assert 'sql_table_name="Demo_MetaFixture"' in generated_text
+    assert "procedure_block=True" in generated_text
+
+    module = _load_module(module_path)
+    assert module.MetaFixture._class_metadata is not None
+    assert module.MetaFixture._class_metadata.description == "scaffolded class metadata"
+    assert module.MetaFixture._class_metadata.deprecated is True
+    assert module.MetaFixture._class_metadata.final is True
+    assert module.MetaFixture._class_metadata.sql_table_name == "Demo_MetaFixture"
+    assert module.MetaFixture._class_metadata.procedure_block is True
+
+
 def test_scaffold_from_iris_reports_metadata_warnings(monkeypatch, tmp_path: Path):
     rows_by_query = {
         (

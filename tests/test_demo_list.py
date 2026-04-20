@@ -53,10 +53,10 @@ def test_demo_list_configure_demo_runtime_falls_back_to_fake(monkeypatch):
     assert backend == "fake"
 
 
+@pytest.mark.integration
 @pytest.mark.skipif(importlib.util.find_spec("iris") is None, reason="requires IRIS runtime")
-def test_demo_list_percent_list_persists_logical_value():
-    backend = configure_fixture_runtime()
-    assert backend == "iris"
+def test_demo_list_percent_list_persists_logical_value(configured_iris_runtime):
+    assert configured_iris_runtime in {"embedded", "remote"}
 
     result = run_list_fixture_round_trip(sync_schema=True)
     conn = get_runtime().get_dbapi_connection()

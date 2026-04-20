@@ -33,8 +33,9 @@ def load_module_from_path(module_path: Path) -> ModuleType:
 
 def delete_iris_classes(classnames: list[str]) -> None:
     import iris
+    from iris_orm.runtime import get_runtime
 
-    iris.runtime.configure()
+    get_runtime()
     system_obj = iris.cls("%SYSTEM.OBJ")
     for classname in classnames:
         try:
@@ -44,6 +45,8 @@ def delete_iris_classes(classnames: list[str]) -> None:
 
 
 def load_objectscript_fixture(name: str) -> LoadedObjectScriptFixture:
+    from iris_orm.runtime import get_runtime
+
     cls_path = OBJECTSCRIPT_CLS_FIXTURES / f"{name}.cls"
     sidecar_path = OBJECTSCRIPT_PYTHON_FIXTURES / f"{name}.py"
     sidecar = load_module_from_path(sidecar_path)
@@ -54,7 +57,7 @@ def load_objectscript_fixture(name: str) -> LoadedObjectScriptFixture:
     try:
         import iris
 
-        iris.runtime.configure()
+        get_runtime()
         iris.cls("%SYSTEM.OBJ").LoadDir(str(cls_path.parent), "uk")
         for classname in classnames:
             iris.cls("%SYSTEM.OBJ").Compile(classname, "cb")

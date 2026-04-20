@@ -29,13 +29,9 @@ def _has_iris_runtime() -> bool:
 
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.usefixtures("configured_iris_runtime"),
     pytest.mark.skipif(not _has_iris_runtime(), reason="requires IRIS runtime"),
 ]
-
-
-@pytest.fixture(scope="module", autouse=True)
-def configure_live_runtime():
-    iris_orm.configure()
 
 
 @pytest.fixture()

@@ -23,6 +23,7 @@ def _has_iris_runtime() -> bool:
 
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.usefixtures("configured_iris_runtime"),
     pytest.mark.skipif(not _has_iris_runtime(), reason="requires IRIS runtime"),
 ]
 
@@ -35,12 +36,6 @@ def _load_module(module_path: Path):
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
-
-
-@pytest.fixture(scope="module", autouse=True)
-def configure_live_runtime():
-    iris_orm.configure()
-
 
 def test_full_circle_round_trip(tmp_path: Path):
     FullCircleFixture.sync_schema()

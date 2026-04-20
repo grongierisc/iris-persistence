@@ -132,7 +132,9 @@ def sync_schema(model_cls: Type[Any], _seen: set[str] | None = None) -> None:
         if getattr(field_meta, "sql_field_name", None):
             runtime.set_property(prop, "SqlFieldName", field_meta.sql_field_name)
 
-        if getattr(field_meta, "default", None) is not None:
+        if getattr(field_meta, "initial_expression", None) is not None:
+            runtime.set_property(prop, "InitialExpression", field_meta.initial_expression)
+        elif getattr(field_meta, "default", None) is not None:
             val = field_meta.default
             if isinstance(val, str):
                 runtime.set_property(prop, "InitialExpression", f'"{val}"')

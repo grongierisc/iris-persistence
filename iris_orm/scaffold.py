@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import warnings as py_warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,7 +32,11 @@ def _map_iris_type_to_python(iris_type: str) -> str:
         "%Library.TimeStamp": "datetime.datetime",
     }
 
-    return mapping.get(iris_type, "str")
+    if iris_type in mapping:
+        return mapping[iris_type]
+    if iris_type.startswith("%"):
+        return "str"
+    return "Any"
 
 
 def _parse_iris_list(value: Any) -> list[Any]:
@@ -244,6 +249,15 @@ class _CompiledDictionaryReader:
             (_CompiledClass(name=row[0], superclasses=row[1]) for row in rows),
             key=lambda item: item.name,
         )
+
+    def get_class(self, classname: str) -> _CompiledClass | None:
+        row = self._fetchone(
+            "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name = ?",
+            (classname,),
+        )
+        if row is None:
+            return None
+        return _CompiledClass(name=row[0], superclasses=row[1])
 
     def list_properties(self, classname: str) -> list[_CompiledProperty]:
         rows = self._fetchall(
@@ -564,16 +578,121 @@ class _CompiledDictionaryReader:
         return sorted(sql_maps, key=lambda item: item.name)
 
 
-def _default_literal(default: str | None) -> tuple[str | None, str | None]:
+def _python_default_literal(prop: _CompiledProperty) -> tuple[str | None, str | None]:
+    default = prop.default
     if default is None:
         return (None, None)
-    if default == "1":
-        return ("default=True", "True")
-    if default == "0":
-        return ("default=False", "False")
-    if default.startswith('"') and default.endswith('"'):
+    if prop.iris_type == "%Library.Boolean" and default in {"1", "0"}:
+        literal = "True" if default == "1" else "False"
+        return (f"default={literal}", literal)
+    if prop.python_type == "int" and re.fullmatch(r"-?\d+", default):
         return (f"default={default}", default)
-    return (f"default={default}", default)
+    if prop.python_type == "float" and re.fullmatch(r"-?(?:\d+\.\d*|\d*\.\d+|\d+)", default):
+        return (f"default={default}", default)
+    if default.startswith('"') and default.endswith('"'):
+        value = default[1:-1].replace('""', '"')
+        literal = repr(value)
+        return (f"default={literal}", literal)
+    return (None, None)
+
+
+def _is_custom_iris_class(iris_type: str | None) -> bool:
+    return bool(iris_type) and not str(iris_type).startswith("%")
+
+
+def _safe_identifier_part(part: str) -> str:
+    cleaned = re.sub(r"[^0-9A-Za-z]+", "_", part).strip("_")
+    return cleaned or "model"
+
+
+def _camel_case(parts: list[str]) -> str:
+    tokens: list[str] = []
+    for part in parts:
+        cleaned = _safe_identifier_part(part)
+        if not cleaned:
+            continue
+        for token in cleaned.split("_"):
+            if not token:
+                continue
+            tokens.append(token[:1].upper() + token[1:])
+    return "".join(tokens)
+
+
+def _snake_case(parts: list[str]) -> str:
+    cleaned_parts = [
+        cleaned.lower()
+        for part in parts
+        if (cleaned := _safe_identifier_part(part))
+    ]
+    return "_".join(cleaned_parts)
+
+
+def _assign_generated_names(
+    classnames: list[str],
+    preferred: list[str],
+    formatter: Any,
+) -> dict[str, str]:
+    resolved: dict[str, str] = {}
+    used: set[str] = set()
+    ordered = preferred + [
+        classname for classname in sorted(classnames) if classname not in preferred
+    ]
+
+    for classname in ordered:
+        parts = classname.split(".")
+        for depth in range(1, len(parts) + 1):
+            candidate = formatter(parts[-depth:])
+            if candidate and candidate not in used:
+                resolved[classname] = candidate
+                used.add(candidate)
+                break
+        else:
+            candidate = formatter(parts)
+            resolved[classname] = candidate
+            used.add(candidate)
+
+    return resolved
+
+
+def _collect_classes(
+    reader: _CompiledDictionaryReader,
+    pattern: str,
+    include_related: bool,
+) -> tuple[list[_CompiledClass], dict[str, list[_CompiledProperty]], list[str]]:
+    seed_classes = reader.list_classes(pattern)
+    seed_names = [item.name for item in seed_classes]
+    classes_by_name = {item.name: item for item in seed_classes}
+    properties_by_class: dict[str, list[_CompiledProperty]] = {}
+
+    if not include_related:
+        return (seed_classes, properties_by_class, seed_names)
+
+    queue = list(seed_names)
+    visited = set()
+    while queue:
+        classname = queue.pop(0)
+        if classname in visited:
+            continue
+        visited.add(classname)
+        properties = properties_by_class.setdefault(classname, reader.list_properties(classname))
+        for prop in properties:
+            if not _is_custom_iris_class(prop.iris_type):
+                continue
+            if prop.iris_type in classes_by_name:
+                if prop.iris_type not in visited:
+                    queue.append(prop.iris_type)
+                continue
+            class_info = reader.get_class(prop.iris_type)
+            if class_info is None:
+                continue
+            classes_by_name[class_info.name] = class_info
+            queue.append(class_info.name)
+
+    return (
+        sorted(classes_by_name.values(), key=lambda item: item.name),
+        properties_by_class,
+        seed_names,
+    )
 
 
 def _append_literal_arg(args: list[str], name: str, value: Any) -> None:
@@ -583,6 +702,24 @@ def _append_literal_arg(args: list[str], name: str, value: Any) -> None:
         args.append(f"{name}={'True' if value else 'False'}")
     else:
         args.append(f"{name}={value!r}")
+
+
+def _render_property_type(
+    prop: _CompiledProperty,
+    python_class_names: dict[str, str],
+) -> str:
+    if prop.iris_type in python_class_names:
+        base_type = python_class_names[prop.iris_type]
+    elif _is_custom_iris_class(prop.iris_type):
+        base_type = "Any"
+    else:
+        base_type = prop.python_type
+
+    if prop.collection == "list":
+        return f"list[{base_type}]"
+    if prop.collection == "array":
+        return f"dict[str, {base_type}]"
+    return base_type
 
 
 def _render_storage_sql_map_data(item: _CompiledStorageSQLMapData) -> str:
@@ -710,13 +847,14 @@ def _render_model(
     storage_data: list[_CompiledStorageData],
     storage_properties: list[_CompiledStorageProperty],
     storage_sql_maps: list[_CompiledStorageSQLMap],
-    known_classes: dict[str, str],
+    python_class_names: dict[str, str],
+    module_names: dict[str, str],
 ) -> str:
     custom_imports = []
     for prop in properties:
-        if prop.iris_type in known_classes and prop.iris_type != class_info.name:
-            module_name = prop.iris_type.split(".")[-1].lower()
-            class_name = known_classes[prop.iris_type]
+        if prop.iris_type in python_class_names and prop.iris_type != class_info.name:
+            module_name = module_names[prop.iris_type]
+            class_name = python_class_names[prop.iris_type]
             custom_imports.append(f"from {module_name} import {class_name}")
 
     lines = [
@@ -734,13 +872,13 @@ def _render_model(
     ]
     if custom_imports:
         lines.extend(["", *sorted(set(custom_imports))])
-    lines.extend(["", f"class {class_info.name.split('.')[-1]}(IRISModel):"])
+    lines.extend(["", f"class {python_class_names[class_info.name]}(IRISModel):"])
 
     if not properties:
         lines.append("    pass")
     else:
         for prop in properties:
-            type_name = known_classes.get(prop.iris_type, prop.python_type)
+            type_name = _render_property_type(prop, python_class_names)
             field_args = [
                 f'iris_type="{prop.iris_type}"',
                 f"required={'True' if prop.required else 'False'}",
@@ -753,9 +891,11 @@ def _render_model(
                 field_args.append(f"collection={prop.collection!r}")
             if prop.sql_field_name:
                 field_args.append(f"sql_field_name={prop.sql_field_name!r}")
-            default_arg, default_value = _default_literal(prop.default)
+            default_arg, default_value = _python_default_literal(prop)
             if default_arg:
                 field_args.append(default_arg)
+            elif prop.default is not None:
+                field_args.append(f"initial_expression={prop.default!r}")
             field_str = ", ".join(field_args)
             if prop.required:
                 suffix = f" = {default_value}" if default_value is not None else ""
@@ -881,6 +1021,7 @@ def scaffold_from_iris(
     output_dir: str,
     mode: str = "observe",
     extract_meta: bool = False,
+    include_related: bool = False,
     scaffold_selectivity: bool = False,
     return_result: bool = False,
 ) -> list[str] | ScaffoldResult:
@@ -897,10 +1038,18 @@ def scaffold_from_iris(
     output_path.mkdir(parents=True, exist_ok=True)
 
     try:
-        classes = reader.list_classes(pattern)
-        known_classes = {item.name: item.name.split(".")[-1] for item in classes}
+        classes, properties_by_class, seed_names = _collect_classes(
+            reader,
+            pattern,
+            include_related,
+        )
+        classnames = [item.name for item in classes]
+        python_class_names = _assign_generated_names(classnames, seed_names, _camel_case)
+        module_names = _assign_generated_names(classnames, seed_names, _snake_case)
         for class_info in classes:
-            properties = reader.list_properties(class_info.name)
+            properties = properties_by_class.get(class_info.name)
+            if properties is None:
+                properties = reader.list_properties(class_info.name)
 
             parameters: list[_CompiledParameter] = []
             indexes: list[_CompiledIndex] = []
@@ -933,7 +1082,7 @@ def scaffold_from_iris(
                 except Exception as exc:
                     _record_warning(result, "storage", class_info.name, exc)
 
-            module_path = output_path / f"{class_info.name.split('.')[-1].lower()}.py"
+            module_path = output_path / f"{module_names[class_info.name]}.py"
             module_text = _render_model(
                 class_info=class_info,
                 properties=properties,
@@ -944,7 +1093,8 @@ def scaffold_from_iris(
                 storage_data=storage_data,
                 storage_properties=storage_properties,
                 storage_sql_maps=storage_sql_maps,
-                known_classes=known_classes,
+                python_class_names=python_class_names,
+                module_names=module_names,
             )
             module_path.write_text(module_text, encoding="utf-8")
             result.files.append(str(module_path))

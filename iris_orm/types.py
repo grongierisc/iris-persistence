@@ -15,6 +15,7 @@ class Field:
 
     required: bool = False
     default: Any = None
+    initial_expression: Optional[str] = None
     maxlen: Optional[int] = None
     readonly: bool = False
     collection: Optional[str] = None  # e.g. "list", "array"

@@ -217,16 +217,34 @@ def test_recursive_object_reference_scaffold_e2e(loaded_objectscript_fixtures, t
 def test_objectscript_storage_property_selectivity_scaffold(
     loaded_objectscript_fixtures, tmp_path: Path
 ):
+    from iris_orm.runtime import get_runtime
+
     persistent_fixture = next(
         fixture for fixture in loaded_objectscript_fixtures if fixture.name == "persistent_fixture"
     )
     if persistent_fixture.source != "cls":
         pytest.skip("requires loading the ObjectScript fixture directly from .cls storage metadata")
 
+    runtime = get_runtime()
+    conn = runtime.get_dbapi_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT Name, AverageFieldSize, Selectivity "
+        "FROM %Dictionary.StoragePropertyDefinition WHERE parent = ?",
+        ("Demo.SourcePersistentFixture||Default",),
+    )
+    if not cur.fetchall():
+        cur.close()
+        conn.close()
+        pytest.skip("fixture storage property definitions are not exposed in this IRIS namespace")
+    cur.close()
+    conn.close()
+
     result = scaffold_from_iris(
         "Demo.SourcePersistentFixture",
         str(tmp_path),
         extract_meta=True,
+        scaffold_selectivity=True,
         return_result=True,
     )
     assert result.warnings == []
@@ -279,3 +297,61 @@ def test_scaffold_selectivity_option_for_demo_demo(tmp_path: Path):
     assert properties["Toto"].selectivity == "9.3220%"
     assert properties["dickt"].selectivity == "1"
     assert properties["snake_case"].selectivity == "33.3333%"
+
+
+def test_healthshare_request_scaffold_handles_initial_expression_and_related_request(
+    tmp_path: Path,
+):
+    from iris_orm.runtime import get_runtime
+
+    runtime = get_runtime()
+    exists = runtime.call_classmethod(
+        "%Dictionary.ClassDefinition",
+        "_ExistsId",
+        "HS.FHIRServer.Interop.Request",
+    )
+    if not exists:
+        pytest.skip("requires HS.FHIRServer.Interop.Request to exist in the current IRIS namespace")
+
+    default_result = scaffold_from_iris(
+        "HS.FHIRServer.Interop.Request",
+        str(tmp_path / "default"),
+        return_result=True,
+    )
+    assert default_result.warnings == []
+    assert default_result.files == [str(tmp_path / "default" / "request.py")]
+    default_text = Path(default_result.files[0]).read_text(encoding="utf-8")
+    assert (
+        "initial_expression='##class(%ZHSLIB.HealthShareMgr).GetComponentVersion(\"HSLIB\")'"
+        in default_text
+    )
+    assert (
+        "Request: Annotated[Any | None, "
+        'Field(iris_type="HS.FHIRServer.API.Data.Request", required=False)]'
+        in default_text
+    )
+    assert ' = ##class(%ZHSLIB.HealthShareMgr).GetComponentVersion("HSLIB")' not in default_text
+
+    default_module = load_module_from_path(Path(default_result.files[0]))
+    DefaultRequest = default_module.Request
+    assert DefaultRequest._fields["HSCoreVersion"].default is None
+    assert (
+        DefaultRequest._fields["HSCoreVersion"].initial_expression
+        == '##class(%ZHSLIB.HealthShareMgr).GetComponentVersion("HSLIB")'
+    )
+
+    follow_result = scaffold_from_iris(
+        "HS.FHIRServer.Interop.Request",
+        str(tmp_path / "related"),
+        include_related=True,
+        return_result=True,
+    )
+    assert follow_result.warnings == []
+    assert {Path(path).name for path in follow_result.files} >= {"request.py", "data_request.py"}
+    related_text = (tmp_path / "related" / "request.py").read_text(encoding="utf-8")
+    assert "from data_request import DataRequest" in related_text
+    assert (
+        "Request: Annotated[DataRequest | None, "
+        'Field(iris_type="HS.FHIRServer.API.Data.Request", required=False)]'
+        in related_text
+    )

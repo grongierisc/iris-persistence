@@ -523,3 +523,433 @@ def test_scaffold_selectivity_merges_storage_property_definitions(monkeypatch, t
     assert properties["Title"].selectivity == "9.3220%"
     assert properties["Count"].average_field_size == "2.73"
     assert properties["Count"].selectivity == "13.5593%"
+
+
+def test_scaffold_preserves_objectscript_initial_expression_and_can_follow_related_classes(
+    monkeypatch,
+    tmp_path: Path,
+):
+    rows_by_query = {
+        (
+            "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name LIKE ?",
+            ("Demo.Interop.Request",),
+        ): [
+            ("Demo.Interop.Request", "%Persistent"),
+        ],
+        (
+            "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name = ?",
+            ("Demo.API.Request",),
+        ): [
+            ("Demo.API.Request", "%SerialObject"),
+        ],
+        (
+            (
+                "SELECT Name, Type, Required, InitialExpression, Parameters, "
+                "Collection, SqlFieldName, ReadOnly "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
+            ("Demo.Interop.Request",),
+        ): [
+            (
+                "GeneratedAt",
+                "%Library.String",
+                0,
+                '##class(Demo.Util.Clock).NowUTC()',
+                _iris_dict({"MAXLEN": "50"}),
+                "",
+                "GeneratedAt",
+                0,
+            ),
+            ("Request", "Demo.API.Request", 0, None, None, "", "Request", 0),
+        ],
+        (
+            (
+                "SELECT Name, Type, Required, InitialExpression, Parameters, "
+                "Collection, SqlFieldName, ReadOnly "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
+            ("Demo.API.Request",),
+        ): [
+            ("Path", "%Library.String", 1, None, _iris_dict({"MAXLEN": "128"}), "", "Path", 0),
+        ],
+    }
+
+    monkeypatch.setattr(scaffold_module, "get_runtime", lambda: _StubRuntime(rows_by_query))
+
+    basic_dir = tmp_path / "basic"
+    basic_result = scaffold_module.scaffold_from_iris(
+        "Demo.Interop.Request",
+        str(basic_dir),
+        return_result=True,
+    )
+    assert basic_result.warnings == []
+    assert basic_result.files == [str(basic_dir / "request.py")]
+    basic_text = (basic_dir / "request.py").read_text(encoding="utf-8")
+    basic_request_line = (
+        'Request: Annotated[Any | None, Field(iris_type="Demo.API.Request", required=False)]'
+    )
+    assert basic_request_line in basic_text
+    assert "initial_expression='##class(Demo.Util.Clock).NowUTC()'" in basic_text
+    assert "= ##class(Demo.Util.Clock).NowUTC()" not in basic_text
+
+    follow_dir = tmp_path / "follow"
+    follow_result = scaffold_module.scaffold_from_iris(
+        "Demo.Interop.Request",
+        str(follow_dir),
+        include_related=True,
+        return_result=True,
+    )
+    assert follow_result.warnings == []
+    assert {Path(path).name for path in follow_result.files} == {"request.py", "api_request.py"}
+
+    generated_text = (follow_dir / "request.py").read_text(encoding="utf-8")
+    assert "from api_request import APIRequest" in generated_text
+    assert (
+        'Request: Annotated[APIRequest | None, Field(iris_type="Demo.API.Request", required=False)]'
+        in generated_text
+    )
+    assert "initial_expression='##class(Demo.Util.Clock).NowUTC()'" in generated_text
+    assert "= ##class(Demo.Util.Clock).NowUTC()" not in generated_text
+
+    sys.path.insert(0, str(follow_dir))
+    try:
+        module = _load_module(follow_dir / "request.py")
+        generated_class = module.Request
+        assert generated_class._fields["GeneratedAt"].default is None
+        assert (
+            generated_class._fields["GeneratedAt"].initial_expression
+            == "##class(Demo.Util.Clock).NowUTC()"
+        )
+        assert generated_class._fields["Request"].iris_type == "Demo.API.Request"
+    finally:
+        sys.path.remove(str(follow_dir))
+        sys.modules.pop("api_request", None)
+
+
+def test_scaffold_include_related_uses_unique_names_for_same_basename_classes(
+    monkeypatch,
+    tmp_path: Path,
+):
+    rows_by_query = {
+        (
+            "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name LIKE ?",
+            ("Demo.Request",),
+        ): [
+            ("Demo.Request", "%Persistent"),
+        ],
+        (
+            "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name = ?",
+            ("VendorA.Request",),
+        ): [
+            ("VendorA.Request", "%SerialObject"),
+        ],
+        (
+            "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name = ?",
+            ("VendorB.Request",),
+        ): [
+            ("VendorB.Request", "%SerialObject"),
+        ],
+        (
+            (
+                "SELECT Name, Type, Required, InitialExpression, Parameters, "
+                "Collection, SqlFieldName, ReadOnly "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
+            ("Demo.Request",),
+        ): [
+            ("Primary", "VendorA.Request", 0, None, None, "", "Primary", 0),
+            ("Secondary", "VendorB.Request", 0, None, None, "", "Secondary", 0),
+        ],
+        (
+            (
+                "SELECT Name, Type, Required, InitialExpression, Parameters, "
+                "Collection, SqlFieldName, ReadOnly "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
+            ("VendorA.Request",),
+        ): [
+            ("Path", "%Library.String", 1, None, _iris_dict({"MAXLEN": "64"}), "", "Path", 0),
+        ],
+        (
+            (
+                "SELECT Name, Type, Required, InitialExpression, Parameters, "
+                "Collection, SqlFieldName, ReadOnly "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
+            ("VendorB.Request",),
+        ): [
+            ("Id", "%Library.String", 1, None, _iris_dict({"MAXLEN": "64"}), "", "Id", 0),
+        ],
+    }
+
+    monkeypatch.setattr(scaffold_module, "get_runtime", lambda: _StubRuntime(rows_by_query))
+
+    result = scaffold_module.scaffold_from_iris(
+        "Demo.Request",
+        str(tmp_path),
+        include_related=True,
+        return_result=True,
+    )
+
+    assert result.warnings == []
+    assert {Path(path).name for path in result.files} == {
+        "request.py",
+        "vendora_request.py",
+        "vendorb_request.py",
+    }
+
+    generated_text = (tmp_path / "request.py").read_text(encoding="utf-8")
+    assert "from vendora_request import VendorARequest" in generated_text
+    assert "from vendorb_request import VendorBRequest" in generated_text
+    assert (
+        'Primary: Annotated[VendorARequest | None, '
+        'Field(iris_type="VendorA.Request", required=False)]'
+        in generated_text
+    )
+    assert (
+        'Secondary: Annotated[VendorBRequest | None, '
+        'Field(iris_type="VendorB.Request", required=False)]'
+        in generated_text
+    )
+
+
+def test_scaffold_collection_object_properties_are_typed_as_collections(
+    monkeypatch,
+    tmp_path: Path,
+):
+    rows_by_query = {
+        (
+            "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name LIKE ?",
+            ("Demo.Batch",),
+        ): [
+            ("Demo.Batch", "%Persistent"),
+        ],
+        (
+            "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name = ?",
+            ("Demo.Item",),
+        ): [
+            ("Demo.Item", "%SerialObject"),
+        ],
+        (
+            "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name = ?",
+            ("Demo.LookupEntry",),
+        ): [
+            ("Demo.LookupEntry", "%SerialObject"),
+        ],
+        (
+            (
+                "SELECT Name, Type, Required, InitialExpression, Parameters, "
+                "Collection, SqlFieldName, ReadOnly "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
+            ("Demo.Batch",),
+        ): [
+            ("Items", "Demo.Item", 0, None, None, "list", "Items", 0),
+            ("Entries", "Demo.LookupEntry", 0, None, None, "array", "Entries", 0),
+        ],
+        (
+            (
+                "SELECT Name, Type, Required, InitialExpression, Parameters, "
+                "Collection, SqlFieldName, ReadOnly "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
+            ("Demo.Item",),
+        ): [
+            ("Code", "%Library.String", 1, None, _iris_dict({"MAXLEN": "32"}), "", "Code", 0),
+        ],
+        (
+            (
+                "SELECT Name, Type, Required, InitialExpression, Parameters, "
+                "Collection, SqlFieldName, ReadOnly "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
+            ("Demo.LookupEntry",),
+        ): [
+            ("Label", "%Library.String", 1, None, _iris_dict({"MAXLEN": "32"}), "", "Label", 0),
+        ],
+    }
+
+    monkeypatch.setattr(scaffold_module, "get_runtime", lambda: _StubRuntime(rows_by_query))
+
+    result = scaffold_module.scaffold_from_iris(
+        "Demo.Batch",
+        str(tmp_path),
+        include_related=True,
+        return_result=True,
+    )
+
+    assert result.warnings == []
+    generated_text = (tmp_path / "batch.py").read_text(encoding="utf-8")
+    assert "from item import Item" in generated_text
+    assert "from lookupentry import LookupEntry" in generated_text
+    assert (
+        'Items: Annotated[list[Item] | None, '
+        'Field(iris_type="Demo.Item", required=False, collection=\'list\')] = None'
+        in generated_text
+    )
+    assert (
+        'Entries: Annotated[dict[str, LookupEntry] | None, '
+        'Field(iris_type="Demo.LookupEntry", required=False, collection=\'array\')] = None'
+        in generated_text
+    )
+
+
+def test_scaffold_preserves_multiple_non_python_initial_expression_variants(
+    monkeypatch,
+    tmp_path: Path,
+):
+    rows_by_query = {
+        (
+            "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name LIKE ?",
+            ("Demo.InitialExpressionFixture",),
+        ): [
+            ("Demo.InitialExpressionFixture", "%Persistent"),
+        ],
+        (
+            (
+                "SELECT Name, Type, Required, InitialExpression, Parameters, "
+                "Collection, SqlFieldName, ReadOnly "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
+            ("Demo.InitialExpressionFixture",),
+        ): [
+            ("ClockValue", "%Library.String", 0, "$zu(115,10)", None, "", "ClockValue", 0),
+            ("BuiltList", "%Library.String", 0, '$listbuild("A","B")', None, "", "BuiltList", 0),
+            ("MacroFlag", "%Library.Boolean", 0, "$$$YES", None, "", "MacroFlag", 0),
+            (
+                "QuotedText",
+                "%Library.String",
+                0,
+                '"hello ""iris"""',
+                None,
+                "",
+                "QuotedText",
+                0,
+            ),
+            ("RetryCount", "%Library.Integer", 0, "42", None, "", "RetryCount", 0),
+        ],
+    }
+
+    monkeypatch.setattr(scaffold_module, "get_runtime", lambda: _StubRuntime(rows_by_query))
+
+    result = scaffold_module.scaffold_from_iris(
+        "Demo.InitialExpressionFixture",
+        str(tmp_path),
+        return_result=True,
+    )
+
+    assert result.warnings == []
+    generated_text = (tmp_path / "initialexpressionfixture.py").read_text(encoding="utf-8")
+    assert "initial_expression='$zu(115,10)'" in generated_text
+    assert 'initial_expression=\'$listbuild("A","B")\'' in generated_text
+    assert "initial_expression='$$$YES'" in generated_text
+    assert "default='hello \"iris\"'" in generated_text
+    assert "default=42" in generated_text
+    assert " = $zu(115,10)" not in generated_text
+    assert ' = $listbuild("A","B")' not in generated_text
+    assert " = $$$YES" not in generated_text
+
+    module = _load_module(tmp_path / "initialexpressionfixture.py")
+    Fixture = module.InitialExpressionFixture
+    assert Fixture._fields["ClockValue"].initial_expression == "$zu(115,10)"
+    assert Fixture._fields["BuiltList"].initial_expression == '$listbuild("A","B")'
+    assert Fixture._fields["MacroFlag"].initial_expression == "$$$YES"
+    assert Fixture._fields["QuotedText"].default == 'hello "iris"'
+    assert Fixture._fields["RetryCount"].default == 42
+
+
+def test_scaffold_include_related_recurses_two_levels(
+    monkeypatch,
+    tmp_path: Path,
+):
+    rows_by_query = {
+        (
+            "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name LIKE ?",
+            ("Demo.RootFixture",),
+        ): [
+            ("Demo.RootFixture", "%Persistent"),
+        ],
+        (
+            "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name = ?",
+            ("Demo.ChildNode",),
+        ): [
+            ("Demo.ChildNode", "%SerialObject"),
+        ],
+        (
+            "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name = ?",
+            ("Demo.GrandchildNode",),
+        ): [
+            ("Demo.GrandchildNode", "%SerialObject"),
+        ],
+        (
+            (
+                "SELECT Name, Type, Required, InitialExpression, Parameters, "
+                "Collection, SqlFieldName, ReadOnly "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
+            ("Demo.RootFixture",),
+        ): [
+            ("Child", "Demo.ChildNode", 0, None, None, "", "Child", 0),
+        ],
+        (
+            (
+                "SELECT Name, Type, Required, InitialExpression, Parameters, "
+                "Collection, SqlFieldName, ReadOnly "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
+            ("Demo.ChildNode",),
+        ): [
+            ("Grandchild", "Demo.GrandchildNode", 0, None, None, "", "Grandchild", 0),
+        ],
+        (
+            (
+                "SELECT Name, Type, Required, InitialExpression, Parameters, "
+                "Collection, SqlFieldName, ReadOnly "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
+            ("Demo.GrandchildNode",),
+        ): [
+            ("Value", "%Library.String", 1, None, _iris_dict({"MAXLEN": "24"}), "", "Value", 0),
+        ],
+    }
+
+    monkeypatch.setattr(scaffold_module, "get_runtime", lambda: _StubRuntime(rows_by_query))
+
+    result = scaffold_module.scaffold_from_iris(
+        "Demo.RootFixture",
+        str(tmp_path),
+        include_related=True,
+        return_result=True,
+    )
+
+    assert result.warnings == []
+    assert {Path(path).name for path in result.files} == {
+        "rootfixture.py",
+        "childnode.py",
+        "grandchildnode.py",
+    }
+
+    root_text = (tmp_path / "rootfixture.py").read_text(encoding="utf-8")
+    child_text = (tmp_path / "childnode.py").read_text(encoding="utf-8")
+    assert "from childnode import ChildNode" in root_text
+    assert (
+        'Child: Annotated[ChildNode | None, Field(iris_type="Demo.ChildNode", required=False)]'
+        in root_text
+    )
+    assert "from grandchildnode import GrandchildNode" in child_text
+    assert (
+        'Grandchild: Annotated[GrandchildNode | None, '
+        'Field(iris_type="Demo.GrandchildNode", required=False)]'
+        in child_text
+    )
+
+    sys.path.insert(0, str(tmp_path))
+    try:
+        root_module = _load_module(tmp_path / "rootfixture.py")
+        child_module = _load_module(tmp_path / "childnode.py")
+        assert root_module.RootFixture._fields["Child"].iris_type == "Demo.ChildNode"
+        assert child_module.ChildNode._fields["Grandchild"].iris_type == "Demo.GrandchildNode"
+    finally:
+        sys.path.remove(str(tmp_path))
+        sys.modules.pop("childnode", None)
+        sys.modules.pop("grandchildnode", None)

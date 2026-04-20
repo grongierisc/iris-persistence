@@ -9,3 +9,4 @@ waitISC.log
 
 .iris_orm
 generated_models
+.other

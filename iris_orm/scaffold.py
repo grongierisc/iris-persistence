@@ -69,6 +69,14 @@ def _sort_storage_key(item: tuple[str, str]) -> tuple[int, Any]:
     return (1, key)
 
 
+def _as_bool(value: Any) -> bool:
+    return value == 1 or value == "1" or str(value).lower() == "true"
+
+
+def _optional_str(value: Any) -> str | None:
+    return None if value is None or value == "" else str(value)
+
+
 @dataclass(frozen=True)
 class ScaffoldWarning:
     code: str
@@ -96,6 +104,9 @@ class _CompiledProperty:
     required: bool
     default: str | None
     maxlen: str | None
+    readonly: bool
+    collection: str | None
+    sql_field_name: str | None
 
 
 @dataclass(frozen=True)
@@ -109,6 +120,8 @@ class _CompiledIndex:
     name: str
     properties: str
     unique: bool
+    index_type: str | None
+    primary_key: bool
 
 
 @dataclass(frozen=True)
@@ -116,6 +129,9 @@ class _CompiledStorage:
     name: str
     data_location: str | None
     default_data: str | None
+    id_location: str | None
+    index_location: str | None
+    stream_location: str | None
     storage_type: str | None
 
 
@@ -123,6 +139,8 @@ class _CompiledStorage:
 class _CompiledStorageData:
     name: str
     structure: str | None
+    attribute: str | None
+    subscript: str | None
     values: dict[str, str]
 
 
@@ -130,12 +148,71 @@ class _CompiledStorageData:
 class _CompiledStorageProperty:
     name: str
     average_field_size: str | None
+    selectivity: str | None
 
 
 @dataclass(frozen=True)
 class _CompiledStorageSQLMap:
     name: str
     block_count: str | None
+    condition: str | None
+    condition_fields: str | None
+    conditional_with_host_vars: bool
+    global_name: str | None
+    population_pct: str | None
+    population_type: str | None
+    row_reference: str | None
+    structure: str | None
+    map_type: str | None
+    data: tuple[_CompiledStorageSQLMapData, ...]
+    row_id_specs: tuple[_CompiledStorageSQLMapRowIdSpec, ...]
+    subscripts: tuple[_CompiledStorageSQLMapSub, ...]
+
+
+@dataclass(frozen=True)
+class _CompiledStorageSQLMapData:
+    name: str
+    node: str | None
+    piece: str | None
+    delimiter: str | None
+    retrieval_code: str | None
+
+
+@dataclass(frozen=True)
+class _CompiledStorageSQLMapRowIdSpec:
+    name: str
+    field: str | None
+    expression: str | None
+
+
+@dataclass(frozen=True)
+class _CompiledStorageSQLMapSubAccessVar:
+    name: str
+    variable: str | None
+    code: str | None
+
+
+@dataclass(frozen=True)
+class _CompiledStorageSQLMapSubInvalidCondition:
+    name: str
+    expression: str | None
+
+
+@dataclass(frozen=True)
+class _CompiledStorageSQLMapSub:
+    name: str
+    access_type: str | None
+    data_access: str | None
+    delimiter: str | None
+    expression: str | None
+    loop_init_value: str | None
+    next_code: str | None
+    null_marker: str | None
+    start_value: str | None
+    stop_expression: str | None
+    stop_value: str | None
+    access_vars: tuple[_CompiledStorageSQLMapSubAccessVar, ...]
+    invalid_conditions: tuple[_CompiledStorageSQLMapSubInvalidCondition, ...]
 
 
 class _CompiledDictionaryReader:
@@ -170,13 +247,23 @@ class _CompiledDictionaryReader:
     def list_properties(self, classname: str) -> list[_CompiledProperty]:
         rows = self._fetchall(
             (
-                "SELECT Name, Type, Required, InitialExpression, Parameters "
+                "SELECT Name, Type, Required, InitialExpression, Parameters, "
+                "Collection, SqlFieldName, ReadOnly "
                 "FROM %Dictionary.CompiledProperty WHERE parent = ?"
             ),
             (classname,),
         )
         properties = []
-        for prop_name, prop_type, required, init_exp, params_raw in rows:
+        for (
+            prop_name,
+            prop_type,
+            required,
+            init_exp,
+            params_raw,
+            collection,
+            sql_field_name,
+            readonly,
+        ) in rows:
             if str(prop_name).startswith("%"):
                 continue
             parsed_params = _parse_iris_dict(params_raw) if params_raw else {}
@@ -185,9 +272,16 @@ class _CompiledDictionaryReader:
                     name=prop_name,
                     iris_type=prop_type,
                     python_type=_map_iris_type_to_python(prop_type),
-                    required=bool(required) and str(required) != "0",
+                    required=_as_bool(required),
                     default=init_exp if init_exp != '""' and init_exp else None,
                     maxlen=parsed_params.get("MAXLEN"),
+                    readonly=_as_bool(readonly),
+                    collection=_optional_str(collection),
+                    sql_field_name=(
+                        None
+                        if not sql_field_name or str(sql_field_name) == str(prop_name)
+                        else str(sql_field_name)
+                    ),
                 )
             )
         return sorted(properties, key=lambda item: item.name)
@@ -206,21 +300,34 @@ class _CompiledDictionaryReader:
 
     def list_indexes(self, classname: str) -> list[_CompiledIndex]:
         rows = self._fetchall(
-            "SELECT Name, Properties, _Unique FROM %Dictionary.CompiledIndex WHERE parent = ?",
+            (
+                "SELECT Name, Properties, _Unique, Type, PrimaryKey "
+                "FROM %Dictionary.CompiledIndex WHERE parent = ?"
+            ),
             (classname,),
         )
         indexes = []
-        for name, properties, is_unique in rows:
+        for name, properties, is_unique, index_type, primary_key in rows:
             if str(name).startswith("%") or name in ("IDKEY", "$Product"):
                 continue
-            unique = is_unique == 1 or is_unique == "1" or str(is_unique).lower() == "true"
-            indexes.append(_CompiledIndex(name=name, properties=properties, unique=unique))
+            unique = _as_bool(is_unique)
+            is_primary_key = _as_bool(primary_key)
+            indexes.append(
+                _CompiledIndex(
+                    name=name,
+                    properties=properties,
+                    unique=unique,
+                    index_type=_optional_str(index_type),
+                    primary_key=is_primary_key,
+                )
+            )
         return sorted(indexes, key=lambda item: item.name)
 
     def get_storage(self, classname: str) -> _CompiledStorage | None:
         row = self._fetchone(
             (
-                "SELECT Name, DataLocation, DefaultData, Type "
+                "SELECT Name, DataLocation, DefaultData, IdLocation, IndexLocation, "
+                "StreamLocation, Type "
                 "FROM %Dictionary.CompiledStorage WHERE parent = ?"
             ),
             (classname,),
@@ -228,16 +335,25 @@ class _CompiledDictionaryReader:
         if row is None:
             return None
         return _CompiledStorage(
-            name=row[0], data_location=row[1], default_data=row[2], storage_type=row[3]
+            name=row[0],
+            data_location=row[1],
+            default_data=row[2],
+            id_location=row[3],
+            index_location=row[4],
+            stream_location=row[5],
+            storage_type=row[6],
         )
 
     def list_storage_data(self, storage_parent: str) -> list[_CompiledStorageData]:
         rows = self._fetchall(
-            "SELECT Name, Structure FROM %Dictionary.CompiledStorageData WHERE parent = ?",
+            (
+                "SELECT Name, Structure, Attribute, Subscript "
+                "FROM %Dictionary.CompiledStorageData WHERE parent = ?"
+            ),
             (storage_parent,),
         )
         data_rows = []
-        for name, structure in rows:
+        for name, structure, attribute, subscript in rows:
             values_parent = f"{storage_parent}||{name}"
             value_rows = self._fetchall(
                 "SELECT Name, Value FROM %Dictionary.CompiledStorageDataValue WHERE parent = ?",
@@ -246,36 +362,204 @@ class _CompiledDictionaryReader:
             values = dict(
                 sorted(((str(key), str(val)) for key, val in value_rows), key=_sort_storage_key)
             )
-            data_rows.append(_CompiledStorageData(name=name, structure=structure, values=values))
+            data_rows.append(
+                _CompiledStorageData(
+                    name=name,
+                    structure=structure,
+                    attribute=attribute or None,
+                    subscript=subscript or None,
+                    values=values,
+                )
+            )
         return sorted(data_rows, key=lambda item: item.name)
 
     def list_storage_properties(self, storage_parent: str) -> list[_CompiledStorageProperty]:
         rows = self._fetchall(
             (
-                "SELECT Name, AverageFieldSize "
+                "SELECT Name, AverageFieldSize, Selectivity "
                 "FROM %Dictionary.CompiledStorageProperty WHERE parent = ?"
             ),
             (storage_parent,),
         )
         properties = [
-            _CompiledStorageProperty(name=name, average_field_size=str(avg))
-            for name, avg in rows
+            _CompiledStorageProperty(
+                name=name,
+                average_field_size=_optional_str(avg),
+                selectivity=_optional_str(selectivity),
+            )
+            for name, avg, selectivity in rows
             if not str(name).startswith("%")
+            and (_optional_str(avg) is not None or _optional_str(selectivity) is not None)
+        ]
+        return sorted(properties, key=lambda item: item.name)
+
+    def list_storage_property_definitions(
+        self, storage_parent: str
+    ) -> list[_CompiledStorageProperty]:
+        rows = self._fetchall(
+            (
+                "SELECT Name, AverageFieldSize, Selectivity "
+                "FROM %Dictionary.StoragePropertyDefinition WHERE parent = ?"
+            ),
+            (storage_parent,),
+        )
+        properties = [
+            _CompiledStorageProperty(
+                name=str(name),
+                average_field_size=_optional_str(avg),
+                selectivity=_optional_str(selectivity),
+            )
+            for name, avg, selectivity in rows
+            if not str(name).startswith("%")
+            and (_optional_str(avg) is not None or _optional_str(selectivity) is not None)
         ]
         return sorted(properties, key=lambda item: item.name)
 
     def list_storage_sql_maps(self, storage_parent: str) -> list[_CompiledStorageSQLMap]:
         rows = self._fetchall(
-            "SELECT Name, BlockCount FROM %Dictionary.CompiledStorageSQLMap WHERE parent = ?",
+            (
+                "SELECT Name, BlockCount, Condition, ConditionFields, ConditionalWithHostVars, "
+                "Global, PopulationPct, PopulationType, RowReference, Structure, Type "
+                "FROM %Dictionary.CompiledStorageSQLMap WHERE parent = ?"
+            ),
             (storage_parent,),
         )
-        return sorted(
-            (
-                _CompiledStorageSQLMap(name=name, block_count=str(block_count))
-                for name, block_count in rows
-            ),
-            key=lambda item: item.name,
-        )
+        sql_maps = []
+        for (
+            name,
+            block_count,
+            condition,
+            condition_fields,
+            conditional_with_host_vars,
+            global_name,
+            population_pct,
+            population_type,
+            row_reference,
+            structure,
+            map_type,
+        ) in rows:
+            data_parent = f"{storage_parent}||{name}"
+            data_rows = self._fetchall(
+                (
+                    "SELECT Name, Node, Piece, Delimiter, RetrievalCode "
+                    "FROM %Dictionary.CompiledStorageSQLMapData WHERE parent = ?"
+                ),
+                (data_parent,),
+            )
+            data = tuple(
+                _CompiledStorageSQLMapData(
+                    name=str(data_name),
+                    node=_optional_str(node),
+                    piece=_optional_str(piece),
+                    delimiter=_optional_str(delimiter),
+                    retrieval_code=_optional_str(retrieval_code),
+                )
+                for data_name, node, piece, delimiter, retrieval_code in data_rows
+            )
+            row_id_spec_rows = self._fetchall(
+                (
+                    "SELECT Name, Field, Expression "
+                    "FROM %Dictionary.CompiledStorageSQLMapRowIdSpec WHERE parent = ?"
+                ),
+                (data_parent,),
+            )
+            row_id_specs = tuple(
+                _CompiledStorageSQLMapRowIdSpec(
+                    name=str(spec_name),
+                    field=_optional_str(field),
+                    expression=_optional_str(expression),
+                )
+                for spec_name, field, expression in row_id_spec_rows
+            )
+            sub_rows = self._fetchall(
+                (
+                    "SELECT Name, AccessType, DataAccess, Delimiter, Expression, "
+                    "LoopInitValue, NextCode, NullMarker, StartValue, StopExpression, StopValue "
+                    "FROM %Dictionary.CompiledStorageSQLMapSub WHERE parent = ?"
+                ),
+                (data_parent,),
+            )
+            subscripts = []
+            for (
+                sub_name,
+                access_type,
+                data_access,
+                delimiter,
+                expression,
+                loop_init_value,
+                next_code,
+                null_marker,
+                start_value,
+                stop_expression,
+                stop_value,
+            ) in sub_rows:
+                sub_parent = f"{data_parent}||{sub_name}"
+                access_var_rows = self._fetchall(
+                    (
+                        "SELECT Name, Variable, Code "
+                        "FROM %Dictionary.CompiledStorageSQLMapSubAccessvar WHERE parent = ?"
+                    ),
+                    (sub_parent,),
+                )
+                access_vars = tuple(
+                    _CompiledStorageSQLMapSubAccessVar(
+                        name=str(access_name),
+                        variable=_optional_str(variable),
+                        code=_optional_str(code),
+                    )
+                    for access_name, variable, code in access_var_rows
+                )
+                invalid_condition_rows = self._fetchall(
+                    (
+                        "SELECT Name, Expression "
+                        "FROM %Dictionary.CompiledStorageSQLMapSubInvalidcondition "
+                        "WHERE parent = ?"
+                    ),
+                    (sub_parent,),
+                )
+                invalid_conditions = tuple(
+                    _CompiledStorageSQLMapSubInvalidCondition(
+                        name=str(condition_name),
+                        expression=_optional_str(invalid_expression),
+                    )
+                    for condition_name, invalid_expression in invalid_condition_rows
+                )
+                subscripts.append(
+                    _CompiledStorageSQLMapSub(
+                        name=str(sub_name),
+                        access_type=_optional_str(access_type),
+                        data_access=_optional_str(data_access),
+                        delimiter=_optional_str(delimiter),
+                        expression=_optional_str(expression),
+                        loop_init_value=_optional_str(loop_init_value),
+                        next_code=_optional_str(next_code),
+                        null_marker=_optional_str(null_marker),
+                        start_value=_optional_str(start_value),
+                        stop_expression=_optional_str(stop_expression),
+                        stop_value=_optional_str(stop_value),
+                        access_vars=access_vars,
+                        invalid_conditions=invalid_conditions,
+                    )
+                )
+            sql_maps.append(
+                _CompiledStorageSQLMap(
+                    name=str(name),
+                    block_count=_optional_str(block_count),
+                    condition=_optional_str(condition),
+                    condition_fields=_optional_str(condition_fields),
+                    conditional_with_host_vars=_as_bool(conditional_with_host_vars),
+                    global_name=_optional_str(global_name),
+                    population_pct=_optional_str(population_pct),
+                    population_type=_optional_str(population_type),
+                    row_reference=_optional_str(row_reference),
+                    structure=_optional_str(structure),
+                    map_type=_optional_str(map_type),
+                    data=data,
+                    row_id_specs=row_id_specs,
+                    subscripts=tuple(subscripts),
+                )
+            )
+        return sorted(sql_maps, key=lambda item: item.name)
 
 
 def _default_literal(default: str | None) -> tuple[str | None, str | None]:
@@ -288,6 +572,130 @@ def _default_literal(default: str | None) -> tuple[str | None, str | None]:
     if default.startswith('"') and default.endswith('"'):
         return (f"default={default}", default)
     return (f"default={default}", default)
+
+
+def _append_literal_arg(args: list[str], name: str, value: Any) -> None:
+    if value is None:
+        return
+    if isinstance(value, bool):
+        args.append(f"{name}={'True' if value else 'False'}")
+    else:
+        args.append(f"{name}={value!r}")
+
+
+def _render_storage_sql_map_data(item: _CompiledStorageSQLMapData) -> str:
+    args = [f"name={item.name!r}"]
+    _append_literal_arg(args, "node", item.node)
+    _append_literal_arg(args, "piece", item.piece)
+    _append_literal_arg(args, "delimiter", item.delimiter)
+    _append_literal_arg(args, "retrieval_code", item.retrieval_code)
+    return f"StorageSQLMapData({', '.join(args)})"
+
+
+def _render_storage_sql_map_row_id_spec(item: _CompiledStorageSQLMapRowIdSpec) -> str:
+    args = [f"name={item.name!r}"]
+    _append_literal_arg(args, "field", item.field)
+    _append_literal_arg(args, "expression", item.expression)
+    return f"StorageSQLMapRowIdSpec({', '.join(args)})"
+
+
+def _render_storage_sql_map_sub_access_var(item: _CompiledStorageSQLMapSubAccessVar) -> str:
+    args = [f"name={item.name!r}"]
+    _append_literal_arg(args, "variable", item.variable)
+    _append_literal_arg(args, "code", item.code)
+    return f"StorageSQLMapSubAccessVar({', '.join(args)})"
+
+
+def _render_storage_sql_map_sub_invalid_condition(
+    item: _CompiledStorageSQLMapSubInvalidCondition,
+) -> str:
+    args = [f"name={item.name!r}"]
+    _append_literal_arg(args, "expression", item.expression)
+    return f"StorageSQLMapSubInvalidCondition({', '.join(args)})"
+
+
+def _render_storage_sql_map_sub(item: _CompiledStorageSQLMapSub) -> list[str]:
+    args = [f"name={item.name!r}"]
+    _append_literal_arg(args, "access_type", item.access_type)
+    _append_literal_arg(args, "data_access", item.data_access)
+    _append_literal_arg(args, "delimiter", item.delimiter)
+    _append_literal_arg(args, "expression", item.expression)
+    _append_literal_arg(args, "loop_init_value", item.loop_init_value)
+    _append_literal_arg(args, "next_code", item.next_code)
+    _append_literal_arg(args, "null_marker", item.null_marker)
+    _append_literal_arg(args, "start_value", item.start_value)
+    _append_literal_arg(args, "stop_expression", item.stop_expression)
+    _append_literal_arg(args, "stop_value", item.stop_value)
+
+    has_nested = bool(item.access_vars or item.invalid_conditions)
+    first_line = f"StorageSQLMapSub({', '.join(args)}"
+    if has_nested:
+        first_line += ","
+    lines = [first_line]
+    if item.access_vars:
+        lines.append("    access_vars=(")
+        lines.extend(
+            f"        {_render_storage_sql_map_sub_access_var(access_var)},"
+            for access_var in item.access_vars
+        )
+        lines.append("    ),")
+    if item.invalid_conditions:
+        lines.append("    invalid_conditions=(")
+        lines.extend(
+            "        "
+            f"{_render_storage_sql_map_sub_invalid_condition(condition)},"
+            for condition in item.invalid_conditions
+        )
+        lines.append("    ),")
+    lines.append(")")
+    return lines
+
+
+def _render_storage_sql_map(item: _CompiledStorageSQLMap) -> list[str]:
+    args = [f"name={item.name!r}"]
+    _append_literal_arg(args, "block_count", item.block_count)
+    _append_literal_arg(args, "condition", item.condition)
+    _append_literal_arg(args, "condition_fields", item.condition_fields)
+    if item.conditional_with_host_vars:
+        args.append("conditional_with_host_vars=True")
+    _append_literal_arg(args, "global_name", item.global_name)
+    _append_literal_arg(args, "population_pct", item.population_pct)
+    _append_literal_arg(args, "population_type", item.population_type)
+    _append_literal_arg(args, "row_reference", item.row_reference)
+    _append_literal_arg(args, "structure", item.structure)
+    _append_literal_arg(args, "type", item.map_type)
+
+    has_nested = bool(item.data or item.row_id_specs or item.subscripts)
+    first_line = f"StorageSQLMap({', '.join(args)}"
+    if has_nested:
+        first_line += ","
+    lines = [first_line]
+    if item.data:
+        lines.append("    data=(")
+        lines.extend(
+            f"        {_render_storage_sql_map_data(data_item)},"
+            for data_item in item.data
+        )
+        lines.append("    ),")
+    if item.row_id_specs:
+        lines.append("    row_id_specs=(")
+        lines.extend(
+            "        "
+            f"{_render_storage_sql_map_row_id_spec(spec)},"
+            for spec in item.row_id_specs
+        )
+        lines.append("    ),")
+    if item.subscripts:
+        lines.append("    subscripts=(")
+        for sub in item.subscripts:
+            rendered_sub = _render_storage_sql_map_sub(sub)
+            lines.append(f"        {rendered_sub[0]}")
+            for sub_line in rendered_sub[1:-1]:
+                lines.append(f"        {sub_line}")
+            lines.append(f"        {rendered_sub[-1]},")
+        lines.append("    ),")
+    lines.append(")")
+    return lines
 
 
 def _render_model(
@@ -317,7 +725,9 @@ def _render_model(
         "",
         (
             "from iris_orm import Field, IRISModel, Index, StorageDefinition, "
-            "StorageData, StorageProperty, StorageSQLMap"
+            "StorageData, StorageProperty, StorageSQLMap, StorageSQLMapData, "
+            "StorageSQLMapRowIdSpec, StorageSQLMapSub, StorageSQLMapSubAccessVar, "
+            "StorageSQLMapSubInvalidCondition"
         ),
     ]
     if custom_imports:
@@ -329,9 +739,18 @@ def _render_model(
     else:
         for prop in properties:
             type_name = known_classes.get(prop.iris_type, prop.python_type)
-            field_args = [f"required={'True' if prop.required else 'False'}"]
+            field_args = [
+                f'iris_type="{prop.iris_type}"',
+                f"required={'True' if prop.required else 'False'}",
+            ]
             if prop.maxlen:
                 field_args.append(f"maxlen={prop.maxlen}")
+            if prop.readonly:
+                field_args.append("readonly=True")
+            if prop.collection:
+                field_args.append(f"collection={prop.collection!r}")
+            if prop.sql_field_name:
+                field_args.append(f"sql_field_name={prop.sql_field_name!r}")
             default_arg, default_value = _default_literal(prop.default)
             if default_arg:
                 field_args.append(default_arg)
@@ -364,8 +783,11 @@ def _render_model(
         lines.append("        indexes = [")
         lines.extend(
             "            "
-            f'Index("{index.name}", properties="{index.properties}", '
-            f'unique={"True" if index.unique else "False"}),'
+            + f'Index("{index.name}", properties="{index.properties}", '
+            + f'unique={"True" if index.unique else "False"}'
+            + (f', type="{index.index_type}"' if index.index_type else "")
+            + (", primary_key=True" if index.primary_key else "")
+            + "),"
             for index in indexes
         )
         lines.append("        ]")
@@ -375,6 +797,12 @@ def _render_model(
             lines.append(f'            data_location="{storage.data_location}",')
         if storage.default_data:
             lines.append(f'            default_data="{storage.default_data}",')
+        if storage.id_location:
+            lines.append(f'            id_location="{storage.id_location}",')
+        if storage.index_location:
+            lines.append(f'            index_location="{storage.index_location}",')
+        if storage.stream_location:
+            lines.append(f'            stream_location="{storage.stream_location}",')
         if storage.storage_type:
             lines.append(f'            type="{storage.storage_type}",')
         if storage_data:
@@ -384,30 +812,58 @@ def _render_model(
                 lines.append(f'                    name="{item.name}",')
                 if item.structure:
                     lines.append(f'                    structure="{item.structure}",')
+                if item.attribute is not None:
+                    lines.append(f"                    attribute={item.attribute!r},")
+                if item.subscript is not None:
+                    lines.append(f"                    subscript={item.subscript!r},")
                 lines.append(f"                    values={item.values!r},")
                 lines.append("                ),")
             lines.append("            ),")
         if storage_properties:
             lines.append("            properties=(")
             for item in storage_properties:
+                property_args = [f'name="{item.name}"']
+                if item.average_field_size is not None:
+                    property_args.append(
+                        f'average_field_size="{item.average_field_size}"'
+                    )
+                if item.selectivity is not None:
+                    property_args.append(f'selectivity="{item.selectivity}"')
                 lines.append(
                     "                "
-                    f'StorageProperty(name="{item.name}", '
-                    f'average_field_size="{item.average_field_size}"),'
+                    f"StorageProperty({', '.join(property_args)}),"
                 )
             lines.append("            ),")
         if storage_sql_maps:
             lines.append("            sql_maps=(")
             for item in storage_sql_maps:
-                lines.append(
-                    "                "
-                    f'StorageSQLMap(name="{item.name}", '
-                    f'block_count="{item.block_count}"),'
-                )
+                rendered_map = _render_storage_sql_map(item)
+                lines.append(f"                {rendered_map[0]}")
+                for map_line in rendered_map[1:-1]:
+                    lines.append(f"                {map_line}")
+                lines.append(f"                {rendered_map[-1]},")
             lines.append("            ),")
         lines.append("        )")
 
     return "\n".join(lines) + "\n"
+
+
+def _merge_storage_properties(
+    compiled_properties: list[_CompiledStorageProperty],
+    defined_properties: list[_CompiledStorageProperty],
+) -> list[_CompiledStorageProperty]:
+    merged = {item.name: item for item in compiled_properties}
+    for item in defined_properties:
+        current = merged.get(item.name)
+        if current is None:
+            merged[item.name] = item
+            continue
+        merged[item.name] = _CompiledStorageProperty(
+            name=current.name,
+            average_field_size=item.average_field_size or current.average_field_size,
+            selectivity=item.selectivity or current.selectivity,
+        )
+    return sorted(merged.values(), key=lambda item: item.name)
 
 
 def _record_warning(result: ScaffoldResult, code: str, classname: str, exc: Exception) -> None:
@@ -421,6 +877,7 @@ def scaffold_from_iris(
     output_dir: str,
     mode: str = "observe",
     extract_meta: bool = False,
+    scaffold_selectivity: bool = False,
     return_result: bool = False,
 ) -> list[str] | ScaffoldResult:
     """Scaffold typed models from live IRIS classes."""
@@ -463,6 +920,11 @@ def scaffold_from_iris(
                         storage_parent = f"{class_info.name}||{storage.name}"
                         storage_data = reader.list_storage_data(storage_parent)
                         storage_properties = reader.list_storage_properties(storage_parent)
+                        if scaffold_selectivity:
+                            storage_properties = _merge_storage_properties(
+                                storage_properties,
+                                reader.list_storage_property_definitions(storage_parent),
+                            )
                         storage_sql_maps = reader.list_storage_sql_maps(storage_parent)
                 except Exception as exc:
                     _record_warning(result, "storage", class_info.name, exc)

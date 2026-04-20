@@ -134,6 +134,10 @@ def test_full_circle_round_trip(tmp_path: Path):
 
     assert ScaffoldedFullCircleFixture._classname == "Demo.FullCircleFixture"
     assert ScaffoldedFullCircleFixture._sync_mode == "observe"
+    assert ScaffoldedFullCircleFixture._fields["Title"].iris_type == "%Library.String"
+    assert ScaffoldedFullCircleFixture._fields["BlobData"].iris_type == "%Stream.GlobalBinary"
+    assert ScaffoldedFullCircleFixture._fields["EventDate"].iris_type == "%Library.Date"
+    assert ScaffoldedFullCircleFixture._fields["CreatedAt"].iris_type == "%Library.TimeStamp"
     assert any(index.name == "TitleIdx" for index in ScaffoldedFullCircleFixture._indexes)
 
     storage = ScaffoldedFullCircleFixture._storage

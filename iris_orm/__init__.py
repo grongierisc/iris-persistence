@@ -14,6 +14,11 @@ from iris_orm.types import (
     StorageDefinition,
     StorageProperty,
     StorageSQLMap,
+    StorageSQLMapData,
+    StorageSQLMapRowIdSpec,
+    StorageSQLMapSub,
+    StorageSQLMapSubAccessVar,
+    StorageSQLMapSubInvalidCondition,
 )
 
 __all__ = [
@@ -23,6 +28,11 @@ __all__ = [
     "StorageData",
     "StorageProperty",
     "StorageSQLMap",
+    "StorageSQLMapData",
+    "StorageSQLMapRowIdSpec",
+    "StorageSQLMapSub",
+    "StorageSQLMapSubAccessVar",
+    "StorageSQLMapSubInvalidCondition",
     "IRISModel",
     "configure",
     "ScaffoldResult",

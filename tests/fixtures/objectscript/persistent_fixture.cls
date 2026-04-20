@@ -29,6 +29,10 @@ Storage Default
 <DefaultData>SourcePersistentFixtureDefaultData</DefaultData>
 <IdLocation>^Demo.SourcePersistentFixtureD</IdLocation>
 <IndexLocation>^Demo.SourcePersistentFixtureI</IndexLocation>
+<Property name="Title">
+<AverageFieldSize>10</AverageFieldSize>
+<Selectivity>0.001%</Selectivity>
+</Property>
 <StreamLocation>^Demo.SourcePersistentFixtureS</StreamLocation>
 <Type>%Storage.Persistent</Type>
 }

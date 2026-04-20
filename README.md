@@ -9,7 +9,7 @@
 - `class Meta` for model configuration
 - `extend`, `replace`, and `observe` schema sync modes
 - scaffold from live IRIS
-- scaffold from exported `.cls`
+- recursive references between `%Persistent` and `%SerialObject` models
 - typed `StorageDefinition` metadata
 - `iris_orm.testing.FakeAdapter` for unit tests
 - structured scaffold warnings/results for partial metadata extraction
@@ -45,6 +45,7 @@ class Product(IRISModel):
 
 
 product = Product(Name="Widget", Price=12.5, InStock=True)
+Product.sync_schema()
 product.save()
 same = Product.get(product.pk)
 rows = Product.where(Name="Widget").order_by("Name").all()
@@ -65,6 +66,15 @@ class Article(IRISModel):
 
     class Meta:
         classname = "Demo.Article"
+```
+
+If you need to force the underlying IRIS property type instead of using the Python type mapping,
+set `Field(iris_type="...")`:
+
+```python
+class Event(IRISModel):
+    Payload: Annotated[bytes, Field(iris_type="%Stream.GlobalBinary")]
+    CreatedAt: Annotated[str, Field(iris_type="%Library.TimeStamp")]
 ```
 
 Model configuration lives in an optional inner `Meta` class:
@@ -99,6 +109,7 @@ Behavior:
 - Python adds missing properties, indexes, parameters, and storage metadata
 - existing IRIS-only members are kept
 - Python-declared fields overwrite IRIS fields with the same name
+- schema changes happen when `Model.sync_schema()` is called
 
 ### replace
 
@@ -112,9 +123,9 @@ class Meta:
 
 Behavior:
 
-- IRIS class is kept in sync with the Python model on every first use
+- IRIS class is rebuilt from the Python model when `Model.sync_schema()` is called
 - properties, indexes, parameters, and storage not declared in Python are removed from IRIS
-- recompile is skipped when the schema has not changed
+- referenced `IRISModel` types are synced first so related classes exist before parent compilation
 
 ### observe
 
@@ -129,8 +140,8 @@ class Article(IRISModel):
 
 Behavior:
 
-- schema is loaded from IRIS on first use; Python fields are inferred from it
 - no schema write or compile ever happens
+- use this with explicitly declared Python fields or scaffolded models
 - typed CRUD and queries work the same as the other modes
 
 ## Storage Metadata
@@ -168,6 +179,47 @@ class Product(IRISModel):
 ```
 
 Plain dicts are still accepted for backward compatibility, but `StorageDefinition(...)` is the intended API.
+
+## Related Objects
+
+`iris_orm` supports nested model references:
+
+- `%Persistent` models can reference other `%Persistent` models
+- `%Persistent` models can embed `%SerialObject` models
+- recursive save/load works across those references
+- live IRIS scaffolding emits sibling imports when related classes are included in the scaffold pattern
+
+```python
+from typing import Annotated
+from iris_orm import Field, IRISModel
+
+
+class Address(IRISModel):
+    Street: Annotated[str, Field(required=True, maxlen=120)]
+
+    class Meta:
+        classname = "Demo.Address"
+        superclasses = "%SerialObject"
+        mode = "replace"
+
+
+class Customer(IRISModel):
+    Name: Annotated[str, Field(required=True, maxlen=120)]
+
+    class Meta:
+        classname = "Demo.Customer"
+        mode = "replace"
+
+
+class Order(IRISModel):
+    Number: Annotated[str, Field(required=True, maxlen=32)]
+    Customer: Annotated[Customer | None, Field(required=False)] = None
+    ShipTo: Annotated[Address | None, Field(required=False)] = None
+
+    class Meta:
+        classname = "Demo.Order"
+        mode = "replace"
+```
 
 ## Runtime Configuration
 
@@ -217,6 +269,18 @@ Run the live IRIS round-trip coverage:
 .venv/bin/pytest -m integration
 ```
 
+Integration tests use checked-in fixtures under `tests/fixtures/`:
+
+- `tests/fixtures/objectscript/`: one-class-per-`.cls` IRIS source fixtures plus Python fallback sidecars
+- `tests/fixtures/python/`: Python-first fixture models for round-trip coverage
+
+That fixture set covers:
+
+- `%Persistent`
+- `Ens.Request`
+- `%SerialObject`
+- recursive object graphs (`%Persistent` referencing `%Persistent` and `%SerialObject`)
+
 ## Scaffold
 
 Generate typed models from live IRIS:
@@ -230,6 +294,7 @@ result: ScaffoldResult = scaffold_from_iris(
     "Demo.*",
     "./generated_models",
     extract_meta=True,
+    scaffold_selectivity=True,
     return_result=True,
 )
 for warning in result.warnings:
@@ -244,15 +309,19 @@ from iris_orm import scaffold_from_cls
 scaffold_from_cls("./cls", "./generated_models")
 ```
 
+`scaffold_from_cls()` is reserved for future work and currently raises `NotImplementedError`.
+
 Scaffold rules:
 
 - `mode="observe"` is the default
 - generated files use `Annotated[..., Field(...)]`
 - generated files use `class Meta`
 - storage metadata is emitted as `StorageDefinition(...)`
+- `scaffold_selectivity=True` enriches `StorageProperty(..., selectivity=...)` from `%Dictionary.StoragePropertyDefinition`
 - `mode="extend"` preserves indexes and parameters in `Meta`
 - `return_result=True` returns generated file paths plus any metadata extraction warnings
 - generated model files are expected to import cleanly as a compatibility contract
+- include related classes in the scaffold pattern if you want generated models to reference each other with typed imports
 
 Runnable examples:
 
@@ -276,6 +345,6 @@ Runnable examples:
 
 Advanced:
 
-- `Model.plan()`
 - `Model.sync_schema()`
 - `iris_orm.testing.preload_schema`
+- [Advanced Schema Mapping](./docs/advanced_schema_mapping.md)

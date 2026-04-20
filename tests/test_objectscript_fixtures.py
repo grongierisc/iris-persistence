@@ -127,16 +127,29 @@ def test_objectscript_fixture_scaffold_e2e(loaded_objectscript_fixtures, tmp_pat
 
     assert PersistentFixture._superclasses in {"%Persistent", "%Library.Persistent"}
     assert any(index.name == "TitleIdx" for index in PersistentFixture._indexes)
+    assert PersistentFixture._fields["Title"].iris_type == "%Library.String"
+    assert PersistentFixture._fields["Enabled"].iris_type == "%Library.Boolean"
+    assert PersistentFixture._storage is not None
+    assert PersistentFixture._storage.id_location == "^Demo.SourcePersistentFixtureD"
+    assert PersistentFixture._storage.index_location == "^Demo.SourcePersistentFixtureI"
+    assert PersistentFixture._storage.stream_location == "^Demo.SourcePersistentFixtureS"
 
     assert RequestFixture._superclasses == "Ens.Request"
     assert RequestFixture._fields["CorrelationId"].required is True
     assert RequestFixture._fields["CorrelationId"].maxlen == 64
+    assert RequestFixture._fields["CorrelationId"].iris_type == "%Library.String"
     assert RequestFixture._fields["SourceSystem"].default == "ERP"
+    assert RequestFixture._storage is not None
+    request_data = {item.name: item for item in RequestFixture._storage.data}
+    assert request_data["SourceRequestFixtureDefaultData"].subscript == '"SourceRequestFixture"'
 
     assert SerialFixture._superclasses in {"%SerialObject", "%Library.SerialObject"}
     assert SerialFixture._fields["Street"].required is True
     assert SerialFixture._fields["Street"].maxlen == 120
+    assert SerialFixture._fields["Street"].iris_type == "%Library.String"
     assert SerialFixture._fields["Country"].default == "FR"
+    assert SerialFixture._storage is not None
+    assert SerialFixture._storage.stream_location == "^Demo.SourceSerialFixtureS"
 
 
 def test_recursive_object_reference_scaffold_e2e(loaded_objectscript_fixtures, tmp_path: Path):
@@ -184,6 +197,12 @@ def test_recursive_object_reference_scaffold_e2e(loaded_objectscript_fixtures, t
 
         assert SourceRecursiveParent._fields["Child"].required is False
         assert SourceRecursiveParent._fields["Address"].required is False
+        assert SourceRecursiveParent._fields["Child"].iris_type == "Demo.SourceRecursiveChild"
+        assert SourceRecursiveParent._fields["Address"].iris_type == "Demo.SourceRecursiveAddress"
+        assert SourceRecursiveParent._storage is not None
+        assert SourceRecursiveParent._storage.id_location == "^Demo.SourceRecursiveParentD"
+        assert SourceRecursiveParent._storage.index_location == "^Demo.SourceRecursiveParentI"
+        assert SourceRecursiveParent._storage.stream_location == "^Demo.SourceRecursiveParentS"
     finally:
         sys.path.remove(str(tmp_path))
         for module_name in (
@@ -192,3 +211,70 @@ def test_recursive_object_reference_scaffold_e2e(loaded_objectscript_fixtures, t
             "sourcerecursiveparent",
         ):
             sys.modules.pop(module_name, None)
+
+
+def test_objectscript_storage_property_selectivity_scaffold(
+    loaded_objectscript_fixtures, tmp_path: Path
+):
+    persistent_fixture = next(
+        fixture for fixture in loaded_objectscript_fixtures if fixture.name == "persistent_fixture"
+    )
+    if persistent_fixture.source != "cls":
+        pytest.skip("requires loading the ObjectScript fixture directly from .cls storage metadata")
+
+    result = scaffold_from_iris(
+        "Demo.SourcePersistentFixture",
+        str(tmp_path),
+        extract_meta=True,
+        return_result=True,
+    )
+    assert result.warnings == []
+
+    module = load_module_from_path(Path(result.files[0]))
+    PersistentFixture = module.SourcePersistentFixture
+
+    assert PersistentFixture._storage is not None
+    assert len(PersistentFixture._storage.properties) == 1
+    assert PersistentFixture._storage.properties[0].name == "Title"
+    assert PersistentFixture._storage.properties[0].average_field_size == "10"
+    assert PersistentFixture._storage.properties[0].selectivity == "0.001%"
+
+
+def test_scaffold_selectivity_option_for_demo_demo(tmp_path: Path):
+    from iris_orm.runtime import get_runtime
+
+    exists = get_runtime().call_classmethod("%Dictionary.ClassDefinition", "_ExistsId", "Demo.Demo")
+    if not exists:
+        pytest.skip("requires Demo.Demo to exist in the current IRIS namespace")
+
+    default_result = scaffold_from_iris(
+        "Demo.Demo",
+        str(tmp_path),
+        extract_meta=True,
+        return_result=True,
+    )
+    assert default_result.warnings == []
+    default_module = load_module_from_path(Path(default_result.files[0]))
+    DefaultDemo = default_module.Demo
+    assert DefaultDemo._storage is not None
+    assert DefaultDemo._storage.properties == ()
+
+    result = scaffold_from_iris(
+        "Demo.Demo",
+        str(tmp_path),
+        extract_meta=True,
+        scaffold_selectivity=True,
+        return_result=True,
+    )
+    assert result.warnings == []
+    assert result.files == [str(tmp_path / "demo.py")]
+
+    module = load_module_from_path(Path(result.files[0]))
+    Demo = module.Demo
+
+    assert Demo._storage is not None
+    properties = {item.name: item for item in Demo._storage.properties}
+    assert properties["Titi"].selectivity == "13.5593%"
+    assert properties["Toto"].selectivity == "9.3220%"
+    assert properties["dickt"].selectivity == "1"
+    assert properties["snake_case"].selectivity == "33.3333%"

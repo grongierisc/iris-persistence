@@ -53,9 +53,11 @@ def load_objectscript_fixture(name: str) -> LoadedObjectScriptFixture:
         import iris
 
         iris.runtime.configure()
-        iris.cls("%SYSTEM.OBJ").Load(str(cls_path), "ck")
+        iris.cls("%SYSTEM.OBJ").LoadDir(str(cls_path.parent), "uk")
+        iris.cls("%SYSTEM.OBJ").Compile(classnames[0],  "cb")
         return LoadedObjectScriptFixture(name=name, classnames=classnames, source="cls")
-    except Exception:
+    except Exception as e:
+        print(f"Error loading ObjectScript fixture {name}: {e}")
         for model_cls in sidecar.FIXTURE_MODELS:
             model_cls.sync_schema()
         return LoadedObjectScriptFixture(name=name, classnames=classnames, source="python")

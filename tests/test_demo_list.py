@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import importlib.util
+
 import demo_list
+import pytest
 from iris_orm.runtime import configure_default_runtime
+from iris_orm.runtime import get_runtime
 from iris_orm.testing import FakeAdapter
 
 
@@ -46,3 +50,21 @@ def test_demo_list_configure_demo_runtime_falls_back_to_fake(monkeypatch):
     backend = demo_list.configure_demo_runtime()
 
     assert backend == "fake"
+
+
+@pytest.mark.skipif(importlib.util.find_spec("iris") is None, reason="requires IRIS runtime")
+def test_demo_list_percent_list_persists_logical_value():
+    backend = demo_list.configure_demo_runtime()
+    assert backend == "iris"
+
+    result = demo_list.run_demo()
+    conn = get_runtime().get_dbapi_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT ListAttributes FROM Demo.ListFixture WHERE ID = ?",
+        [result["saved_pk"]],
+    )
+    list_attributes = cursor.fetchall()[0][0]
+
+    assert "%SYS.Python" not in list_attributes
+    assert list_attributes != ""

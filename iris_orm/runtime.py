@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 from typing import Any, Protocol
 
 
@@ -17,6 +19,7 @@ class RuntimeAdapter(Protocol):
     def get_object_id(self, obj: Any) -> str: ...
     def is_ok(self, status: Any) -> bool: ...
     def extract_python_value(self, val: Any) -> Any: ...
+    def decode_percent_list(self, value: Any) -> list[Any]: ...
     def inject_iris_value(
         self,
         obj: Any,
@@ -49,6 +52,10 @@ def _uses_iris_collection_class(field_meta: Any | None) -> bool:
         return True
     iris_type = getattr(field_meta, "iris_type", None)
     return iris_type in _IRIS_COLLECTION_CLASSES
+
+
+def _is_percent_list_field(field_meta: Any | None) -> bool:
+    return getattr(field_meta, "iris_type", None) in {"%List", "%Library.List"}
 
 
 def _collection_kind_from_field(field_meta: Any | None) -> str | None:
@@ -117,6 +124,21 @@ def configure(native_connection=None) -> None:
 
 
 class BaseIRISAdapter:
+    def _encode_percent_list(self, values: list[Any]) -> Any:
+        row = io.StringIO()
+        csv.writer(row, lineterminator="").writerow(values)
+        return self.call_classmethod("%Library.List", "OdbcToLogical", row.getvalue())
+
+    def decode_percent_list(self, value: Any) -> list[Any]:
+        if value in (None, ""):
+            return []
+
+        import iris
+
+        logical_bytes = value if isinstance(value, bytes) else str(value).encode("latin1")
+        iris_list = iris.IRISList(logical_bytes)
+        return [iris_list.get(index) for index in range(1, iris_list.count() + 1)]
+
     def _cls(self, class_name: str):
         import iris
 
@@ -204,6 +226,7 @@ class BaseIRISAdapter:
                 if first_key not in ("", None):
                     if isinstance(first_key, int):
                         items = [self.extract_python_value(first_value)]
+                        # TODO : revisit this loop with last version of IRIS to see if we can get key and value at the same time to avoid double call to GetNext
                         for _ in range(9999):
                             next_value = getattr(val, "GetNext")(key_ref)
                             next_key = key_ref.value
@@ -212,6 +235,7 @@ class BaseIRISAdapter:
                             items.append(self.extract_python_value(next_value))
                         return items
                     items = {str(first_key): self.extract_python_value(first_value)}
+                    # TODO : revisit this loop with last version of IRIS to see if we can get key and value at the same time to avoid double call to GetNext
                     for _ in range(9999):
                         next_value = getattr(val, "GetNext")(key_ref)
                         next_key = key_ref.value
@@ -237,6 +261,7 @@ class BaseIRISAdapter:
             items: dict[str, Any] = {}
             key: Any = ""
             try:
+                # TODO : revisit this loop with last version of IRIS to see if we can get key and value at the same time to avoid double call to GetNext
                 for _ in range(10000):
                     next_key = getattr(val, "GetNext")(key)
                     if next_key in ("", None):
@@ -323,11 +348,11 @@ class BaseIRISAdapter:
             except Exception:
                 self.set_property(obj, field_name, val)
         elif isinstance(val, list):
+            if _is_percent_list_field(field_meta):
+                self.set_property(obj, field_name, self._encode_percent_list(val))
+                return
             if _uses_iris_collection_class(field_meta):
                 if self._populate_collection_property(obj, field_name, val, field_meta=field_meta):
-                    return
-                if getattr(field_meta, "iris_type", None) in {"%List", "%Library.List"}:
-                    self.set_property(obj, field_name, val)
                     return
             import json
 

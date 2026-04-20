@@ -31,6 +31,10 @@ def _collection_value_type(declared_type: Any) -> tuple[str | None, Any]:
     return (None, None)
 
 
+def _is_percent_list_field(field_meta: Any | None) -> bool:
+    return getattr(field_meta, "iris_type", None) in {"%List", "%Library.List"}
+
+
 def _coerce_collection_for_load(
     collection_kind: str,
     element_type: Any,
@@ -61,8 +65,12 @@ def _build_model_from_iris_obj(
     params = {}
     hints = get_type_hints(model_cls, include_extras=True)
     for field_name in model_cls._fields:
+        field_meta = model_cls._fields[field_name]
         raw_val = runtime.get_property(iris_obj, field_name)
-        python_val = runtime.extract_python_value(raw_val)
+        if _is_percent_list_field(field_meta):
+            python_val = runtime.decode_percent_list(raw_val)
+        else:
+            python_val = runtime.extract_python_value(raw_val)
         declared_type = resolve_declared_type(hints.get(field_name))
         collection_kind, element_type = _collection_value_type(declared_type)
         if collection_kind is not None:

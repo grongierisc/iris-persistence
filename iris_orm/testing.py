@@ -95,6 +95,13 @@ class FakeAdapter(RuntimeAdapter):
     def extract_python_value(self, val: Any) -> Any:
         return val
 
+    def decode_percent_list(self, value: Any) -> list[Any]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        return [value]
+
     def inject_iris_value(
         self,
         obj: Any,

@@ -361,12 +361,14 @@ class TestNativeProxyAdapter(unittest.TestCase):
 
         self.assertEqual(value, ["A", "B", "C"])
 
-    def test_inject_percent_list_falls_back_to_direct_assignment(self):
+    def test_inject_percent_list_uses_logical_encoding(self):
         field = Field(iris_type="%List")
+
         class _PlainObj:
             MyList = ""
 
         plain_obj = _PlainObj()
+        self.adapter.call_classmethod = MagicMock(return_value="encoded-list")
 
         self.adapter.inject_iris_value(
             plain_obj,
@@ -375,7 +377,12 @@ class TestNativeProxyAdapter(unittest.TestCase):
             field_meta=field,
         )
 
-        self.assertEqual(plain_obj.MyList, ["A", "B"])
+        self.adapter.call_classmethod.assert_called_once_with(
+            "%Library.List",
+            "OdbcToLogical",
+            "A,B",
+        )
+        self.assertEqual(plain_obj.MyList, "encoded-list")
 
 
 if __name__ == "__main__":

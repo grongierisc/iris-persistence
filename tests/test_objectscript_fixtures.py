@@ -299,6 +299,53 @@ def test_scaffold_selectivity_option_for_demo_demo(tmp_path: Path):
     assert properties["snake_case"].selectivity == "33.3333%"
 
 
+def test_scaffold_storage_statistics_for_demo_product(tmp_path: Path):
+    from iris_orm.runtime import get_runtime
+
+    runtime = get_runtime()
+    exists = runtime.call_classmethod("%Dictionary.ClassDefinition", "_ExistsId", "Demo.Product")
+    if not exists:
+        pytest.skip("requires Demo.Product to exist in the current IRIS namespace")
+
+    try:
+        conn = runtime.get_dbapi_connection()
+    except Exception as exc:
+        pytest.skip(f"requires a usable IRIS DB-API connection: {exc}")
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT Name, OutlierSelectivity "
+        "FROM %Dictionary.StoragePropertyDefinition WHERE parent = ?",
+        ("Demo.Product||Default",),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    if not rows:
+        pytest.skip("Demo.Product storage property definitions are not exposed in this IRIS namespace")
+
+    try:
+        result = scaffold_from_iris(
+            "Demo.Product",
+            str(tmp_path),
+            extract_meta=True,
+            scaffold_selectivity=True,
+            return_result=True,
+        )
+    except Exception as exc:
+        pytest.skip(f"requires live IRIS scaffold access: {exc}")
+    assert result.warnings == []
+
+    module = load_module_from_path(Path(result.files[0]))
+    Product = module.Product
+
+    assert Product._storage is not None
+    assert Product._storage.extent_size == "2"
+    properties = {item.name: item for item in Product._storage.properties}
+    assert properties["InStock"].outlier_selectivity == ".999999:1"
+    assert properties["Name"].outlier_selectivity == '.999999:"Widget"'
+    assert properties["Price"].outlier_selectivity == ".999999:12.5"
+
+
 def test_healthshare_request_scaffold_handles_initial_expression_and_related_request(
     tmp_path: Path,
 ):
@@ -327,7 +374,7 @@ def test_healthshare_request_scaffold_handles_initial_expression_and_related_req
     )
     assert (
         "Request: Annotated[Any | None, "
-        'Field(iris_type="HS.FHIRServer.API.Data.Request", required=False)]'
+        'Field(iris_type="HS.FHIRServer.API.Data.Request")]'
         in default_text
     )
     assert ' = ##class(%ZHSLIB.HealthShareMgr).GetComponentVersion("HSLIB")' not in default_text
@@ -352,6 +399,6 @@ def test_healthshare_request_scaffold_handles_initial_expression_and_related_req
     assert "from data_request import DataRequest" in related_text
     assert (
         "Request: Annotated[DataRequest | None, "
-        'Field(iris_type="HS.FHIRServer.API.Data.Request", required=False)]'
+        'Field(iris_type="HS.FHIRServer.API.Data.Request")]'
         in related_text
     )

@@ -132,8 +132,8 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
         ],
         (
             (
-                "SELECT Name, DataLocation, DefaultData, IdLocation, IndexLocation, "
-                "State, StreamLocation, Type "
+                "SELECT Name, DataLocation, DefaultData, ExtentSize, IdLocation, "
+                "IndexLocation, State, StreamLocation, Type "
                 "FROM %Dictionary.CompiledStorage WHERE parent = ?"
             ),
             ("Demo.StubFixture",),
@@ -142,6 +142,7 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
                 "Default",
                 "^Demo.StubFixtureD",
                 "StubDefaultData",
+                "17",
                 "^Demo.StubFixtureD",
                 "^Demo.StubFixtureI",
                 "StubState",
@@ -171,13 +172,13 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
         ): [],
         (
             (
-                "SELECT Name, AverageFieldSize, Selectivity "
+                "SELECT Name, AverageFieldSize, Selectivity, OutlierSelectivity "
                 "FROM %Dictionary.CompiledStorageProperty WHERE parent = ?"
             ),
             ("Demo.StubFixture||Default",),
         ): [
-            ("Title", "10", "0.001%"),
-            ("%Internal", "999", "1"),
+            ("Title", "10", "0.001%", '.999999:"stub"'),
+            ("%Internal", "999", "1", None),
         ],
         (
             (
@@ -269,10 +270,22 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
     assert storage is not None
     assert storage.data_location == "^Demo.StubFixtureD"
     assert storage.default_data == "StubDefaultData"
+    assert storage.extent_size == "17"
     assert storage.id_location == "^Demo.StubFixtureD"
     assert storage.index_location == "^Demo.StubFixtureI"
     assert storage.state == "StubState"
     assert storage.stream_location == "^Demo.StubFixtureS"
+    assert storage.extent_location is None
+    assert storage.counter_location is None
+    assert storage.version_location is None
+    assert storage.id_expression is None
+    assert storage.id_function is None
+    assert storage.sql_child_sub is None
+    assert storage.sql_id_expression is None
+    assert storage.sql_row_id_name is None
+    assert storage.sql_row_id_property is None
+    assert storage.sql_table_number is None
+    assert storage.sequence_number is None
 
     storage_data = {item.name: item for item in storage.data}
     assert storage_data["StubDefaultData"].subscript == '"Stub"'
@@ -289,6 +302,12 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
     assert storage.properties[0].name == "Title"
     assert storage.properties[0].average_field_size == "10"
     assert storage.properties[0].selectivity == "0.001%"
+    assert storage.properties[0].outlier_selectivity == '.999999:"stub"'
+    assert storage.properties[0].histogram is None
+    assert storage.properties[0].child_block_count is None
+    assert storage.properties[0].child_extent_size is None
+    assert storage.properties[0].bias_queries_as_outlier is None
+    assert storage.properties[0].stream_location is None
     assert len(storage.sql_maps) == 1
     assert storage.sql_maps[0].name == "PrimaryMap"
     assert storage.sql_maps[0].condition == "x>0"
@@ -324,24 +343,37 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
 
     generated_text = (tmp_path / "stubfixture.py").read_text(encoding="utf-8")
     assert 'Field(iris_type="%Library.String", required=True, maxlen=120)' in generated_text
-    assert 'Field(iris_type="%Library.Boolean", required=False, default=True)' in generated_text
+    assert 'Field(iris_type="%Library.Boolean", default=True)' in generated_text
     assert (
-        "Field(iris_type=\"%Library.DynamicObject\", required=False, readonly=True, "
+        "Field(iris_type=\"%Library.DynamicObject\", readonly=True, "
         "sql_field_name='payload_json')"
         in generated_text
     )
     assert (
-        'Field(iris_type="%Library.String", required=False, collection=\'list\')'
+        'Field(iris_type="%Library.String", collection=\'list\')'
         in generated_text
     )
     assert 'id_location="^Demo.StubFixtureD"' in generated_text
     assert 'index_location="^Demo.StubFixtureI"' in generated_text
     assert 'state="StubState"' in generated_text
     assert 'stream_location="^Demo.StubFixtureS"' in generated_text
+    assert 'extent_size="17"' in generated_text
+    assert 'extent_location=' not in generated_text
+    assert 'counter_location=' not in generated_text
+    assert 'version_location=' not in generated_text
+    assert 'id_expression=' not in generated_text
+    assert 'id_function=' not in generated_text
+    assert 'sql_child_sub=' not in generated_text
+    assert 'sql_id_expression=' not in generated_text
+    assert 'sql_row_id_name=' not in generated_text
+    assert 'sql_row_id_property=' not in generated_text
+    assert 'sql_table_number=' not in generated_text
+    assert 'sequence_number=' not in generated_text
     assert 'subscript=\'"Stub"\'' in generated_text
     assert "attribute='Payload'" in generated_text
     assert (
-        'StorageProperty(name="Title", average_field_size="10", selectivity="0.001%")'
+        'StorageProperty(name="Title", average_field_size="10", selectivity="0.001%", '
+        'outlier_selectivity=".999999:\\"stub\\"")'
         in generated_text
     )
     assert (
@@ -389,8 +421,8 @@ def test_scaffold_from_iris_reports_metadata_warnings(monkeypatch, tmp_path: Pat
         ): [],
         (
             (
-                "SELECT Name, DataLocation, DefaultData, IdLocation, IndexLocation, "
-                "State, StreamLocation, Type "
+                "SELECT Name, DataLocation, DefaultData, ExtentSize, IdLocation, "
+                "IndexLocation, State, StreamLocation, Type "
                 "FROM %Dictionary.CompiledStorage WHERE parent = ?"
             ),
             ("Demo.WarnFixture",),
@@ -443,8 +475,8 @@ def test_scaffold_selectivity_merges_storage_property_definitions(monkeypatch, t
         ): [],
         (
             (
-                "SELECT Name, DataLocation, DefaultData, IdLocation, IndexLocation, "
-                "State, StreamLocation, Type "
+                "SELECT Name, DataLocation, DefaultData, ExtentSize, IdLocation, "
+                "IndexLocation, State, StreamLocation, Type "
                 "FROM %Dictionary.CompiledStorage WHERE parent = ?"
             ),
             ("Demo.SelectivityFixture",),
@@ -453,6 +485,7 @@ def test_scaffold_selectivity_merges_storage_property_definitions(monkeypatch, t
                 "Default",
                 "^Demo.SelectivityFixtureD",
                 "SelectivityFixtureDefaultData",
+                "21",
                 "^Demo.SelectivityFixtureD",
                 "^Demo.SelectivityFixtureI",
                 None,
@@ -477,23 +510,23 @@ def test_scaffold_selectivity_merges_storage_property_definitions(monkeypatch, t
         ],
         (
             (
-                "SELECT Name, AverageFieldSize, Selectivity "
+                "SELECT Name, AverageFieldSize, Selectivity, OutlierSelectivity "
                 "FROM %Dictionary.CompiledStorageProperty WHERE parent = ?"
             ),
             ("Demo.SelectivityFixture||Default",),
         ): [
-            ("Count", "", ""),
+            ("Count", "", "", None),
         ],
         (
             (
-                "SELECT Name, AverageFieldSize, Selectivity "
+                "SELECT Name, AverageFieldSize, Selectivity, OutlierSelectivity "
                 "FROM %Dictionary.StoragePropertyDefinition WHERE parent = ?"
             ),
             ("Demo.SelectivityFixture||Default",),
         ): [
-            ("%%CLASSNAME", "2", "0.0001%"),
-            ("Title", "7.09", "9.3220%"),
-            ("Count", "2.73", "13.5593%"),
+            ("%%CLASSNAME", "2", "0.0001%", None),
+            ("Title", "7.09", "9.3220%", '.999999:"Title"'),
+            ("Count", "2.73", "13.5593%", ".999999:4"),
         ],
         (
             "SELECT Name, BlockCount, Condition, ConditionFields, ConditionalWithHostVars, "
@@ -519,10 +552,159 @@ def test_scaffold_selectivity_merges_storage_property_definitions(monkeypatch, t
     assert result.warnings == []
     assert SelectivityFixture._storage is not None
     properties = {item.name: item for item in SelectivityFixture._storage.properties}
+    assert SelectivityFixture._storage.extent_size == "21"
     assert properties["Title"].average_field_size == "7.09"
     assert properties["Title"].selectivity == "9.3220%"
+    assert properties["Title"].outlier_selectivity == '.999999:"Title"'
+    assert properties["Title"].histogram is None
+    assert properties["Title"].child_block_count is None
+    assert properties["Title"].child_extent_size is None
+    assert properties["Title"].bias_queries_as_outlier is None
+    assert properties["Title"].stream_location is None
     assert properties["Count"].average_field_size == "2.73"
     assert properties["Count"].selectivity == "13.5593%"
+    assert properties["Count"].outlier_selectivity == ".999999:4"
+    assert properties["Count"].histogram is None
+    assert properties["Count"].child_block_count is None
+    assert properties["Count"].child_extent_size is None
+    assert properties["Count"].bias_queries_as_outlier is None
+    assert properties["Count"].stream_location is None
+
+
+def test_scaffold_can_extract_hidden_storage_metadata(monkeypatch, tmp_path: Path):
+    rows_by_query = {
+        (
+            "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name LIKE ?",
+            ("Demo.HiddenFixture",),
+        ): [
+            ("Demo.HiddenFixture", "%Persistent"),
+        ],
+        (
+            (
+                "SELECT Name, Type, Required, InitialExpression, Parameters, "
+                "Collection, SqlFieldName, ReadOnly "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
+            ("Demo.HiddenFixture",),
+        ): [
+            ("Title", "%Library.String", 1, None, _iris_dict({"MAXLEN": "120"}), "", "Title", 0),
+        ],
+        (
+            "SELECT Name, Default FROM %Dictionary.CompiledParameter WHERE parent = ?",
+            ("Demo.HiddenFixture",),
+        ): [],
+        (
+            "SELECT Name, Properties, _Unique, Type, PrimaryKey "
+            "FROM %Dictionary.CompiledIndex WHERE parent = ?",
+            ("Demo.HiddenFixture",),
+        ): [],
+        (
+            (
+                "SELECT Name, DataLocation, DefaultData, ExtentLocation, ExtentSize, "
+                "CounterLocation, VersionLocation, IdLocation, IdExpression, IdFunction, "
+                "IndexLocation, State, StreamLocation, SqlChildSub, SqlIdExpression, "
+                "SqlRowIdName, SqlRowIdProperty, SqlTableNumber, SequenceNumber, Type "
+                "FROM %Dictionary.CompiledStorage WHERE parent = ?"
+            ),
+            ("Demo.HiddenFixture",),
+        ): [
+            (
+                "Default",
+                "^Demo.HiddenFixtureD",
+                "HiddenFixtureDefaultData",
+                "^Demo.HiddenFixtureExtent",
+                "31",
+                "^Demo.HiddenFixtureCounter",
+                "^Demo.HiddenFixtureVersion",
+                "^Demo.HiddenFixtureD",
+                "{Title}",
+                "Demo.HiddenFixtureId",
+                "^Demo.HiddenFixtureI",
+                "HiddenState",
+                "^Demo.HiddenFixtureS",
+                "child",
+                "{%%ID}+99",
+                "RowID",
+                "Title",
+                "451",
+                "12",
+                "%Storage.Persistent",
+            ),
+        ],
+        (
+            "SELECT Name, Structure, Attribute, Subscript "
+            "FROM %Dictionary.CompiledStorageData WHERE parent = ?",
+            ("Demo.HiddenFixture||Default",),
+        ): [],
+        (
+            (
+                "SELECT Name, AverageFieldSize, Selectivity, OutlierSelectivity, Histogram, "
+                "ChildBlockCount, ChildExtentSize, BiasQueriesAsOutlier, StreamLocation "
+                "FROM %Dictionary.CompiledStorageProperty WHERE parent = ?"
+            ),
+            ("Demo.HiddenFixture||Default",),
+        ): [
+            ("Title", "10", "0.001%", '.999999:"hidden"', "1:5,2:8", "4", "16", 1, "^Demo.TitleS"),
+        ],
+        (
+            "SELECT Name, BlockCount, Condition, ConditionFields, ConditionalWithHostVars, "
+            "Global, PopulationPct, PopulationType, RowReference, Structure, Type "
+            "FROM %Dictionary.CompiledStorageSQLMap WHERE parent = ?",
+            ("Demo.HiddenFixture||Default",),
+        ): [],
+    }
+
+    monkeypatch.setattr(scaffold_module, "get_runtime", lambda: _StubRuntime(rows_by_query))
+
+    result = scaffold_module.scaffold_from_iris(
+        "Demo.HiddenFixture",
+        str(tmp_path),
+        extract_meta=True,
+        extract_hidden_meta=True,
+        return_result=True,
+    )
+
+    assert result.warnings == []
+    module = _load_module(tmp_path / "hiddenfixture.py")
+    HiddenFixture = module.HiddenFixture
+
+    assert HiddenFixture._storage is not None
+    assert HiddenFixture._storage.extent_location == "^Demo.HiddenFixtureExtent"
+    assert HiddenFixture._storage.counter_location == "^Demo.HiddenFixtureCounter"
+    assert HiddenFixture._storage.version_location == "^Demo.HiddenFixtureVersion"
+    assert HiddenFixture._storage.id_expression == "{Title}"
+    assert HiddenFixture._storage.id_function == "Demo.HiddenFixtureId"
+    assert HiddenFixture._storage.sql_child_sub == "child"
+    assert HiddenFixture._storage.sql_id_expression == "{%%ID}+99"
+    assert HiddenFixture._storage.sql_row_id_name == "RowID"
+    assert HiddenFixture._storage.sql_row_id_property == "Title"
+    assert HiddenFixture._storage.sql_table_number == "451"
+    assert HiddenFixture._storage.sequence_number == "12"
+    assert HiddenFixture._storage.properties[0].histogram == "1:5,2:8"
+    assert HiddenFixture._storage.properties[0].child_block_count == "4"
+    assert HiddenFixture._storage.properties[0].child_extent_size == "16"
+    assert HiddenFixture._storage.properties[0].bias_queries_as_outlier is True
+    assert HiddenFixture._storage.properties[0].stream_location == "^Demo.TitleS"
+
+    generated_text = (tmp_path / "hiddenfixture.py").read_text(encoding="utf-8")
+    assert 'extent_location="^Demo.HiddenFixtureExtent"' in generated_text
+    assert 'counter_location="^Demo.HiddenFixtureCounter"' in generated_text
+    assert 'version_location="^Demo.HiddenFixtureVersion"' in generated_text
+    assert 'id_expression="{Title}"' in generated_text
+    assert 'id_function="Demo.HiddenFixtureId"' in generated_text
+    assert 'sql_child_sub="child"' in generated_text
+    assert 'sql_id_expression="{%%ID}+99"' in generated_text
+    assert 'sql_row_id_name="RowID"' in generated_text
+    assert 'sql_row_id_property="Title"' in generated_text
+    assert 'sql_table_number="451"' in generated_text
+    assert 'sequence_number="12"' in generated_text
+    assert (
+        'StorageProperty(name="Title", average_field_size="10", selectivity="0.001%", '
+        'outlier_selectivity=".999999:\\"hidden\\"", histogram="1:5,2:8", '
+        'child_block_count="4", child_extent_size="16", '
+        'bias_queries_as_outlier=True, stream_location="^Demo.TitleS")'
+        in generated_text
+    )
 
 
 def test_scaffold_preserves_objectscript_initial_expression_and_can_follow_related_classes(
@@ -585,9 +767,7 @@ def test_scaffold_preserves_objectscript_initial_expression_and_can_follow_relat
     assert basic_result.warnings == []
     assert basic_result.files == [str(basic_dir / "request.py")]
     basic_text = (basic_dir / "request.py").read_text(encoding="utf-8")
-    basic_request_line = (
-        'Request: Annotated[Any | None, Field(iris_type="Demo.API.Request", required=False)]'
-    )
+    basic_request_line = 'Request: Annotated[Any | None, Field(iris_type="Demo.API.Request")]'
     assert basic_request_line in basic_text
     assert "initial_expression='##class(Demo.Util.Clock).NowUTC()'" in basic_text
     assert "= ##class(Demo.Util.Clock).NowUTC()" not in basic_text
@@ -605,7 +785,7 @@ def test_scaffold_preserves_objectscript_initial_expression_and_can_follow_relat
     generated_text = (follow_dir / "request.py").read_text(encoding="utf-8")
     assert "from api_request import APIRequest" in generated_text
     assert (
-        'Request: Annotated[APIRequest | None, Field(iris_type="Demo.API.Request", required=False)]'
+        'Request: Annotated[APIRequest | None, Field(iris_type="Demo.API.Request")]'
         in generated_text
     )
     assert "initial_expression='##class(Demo.Util.Clock).NowUTC()'" in generated_text
@@ -703,12 +883,12 @@ def test_scaffold_include_related_uses_unique_names_for_same_basename_classes(
     assert "from vendorb_request import VendorBRequest" in generated_text
     assert (
         'Primary: Annotated[VendorARequest | None, '
-        'Field(iris_type="VendorA.Request", required=False)]'
+        'Field(iris_type="VendorA.Request")]'
         in generated_text
     )
     assert (
         'Secondary: Annotated[VendorBRequest | None, '
-        'Field(iris_type="VendorB.Request", required=False)]'
+        'Field(iris_type="VendorB.Request")]'
         in generated_text
     )
 
@@ -784,12 +964,12 @@ def test_scaffold_collection_object_properties_are_typed_as_collections(
     assert "from lookupentry import LookupEntry" in generated_text
     assert (
         'Items: Annotated[list[Item] | None, '
-        'Field(iris_type="Demo.Item", required=False, collection=\'list\')] = None'
+        'Field(iris_type="Demo.Item", collection=\'list\')] = None'
         in generated_text
     )
     assert (
         'Entries: Annotated[dict[str, LookupEntry] | None, '
-        'Field(iris_type="Demo.LookupEntry", required=False, collection=\'array\')] = None'
+        'Field(iris_type="Demo.LookupEntry", collection=\'array\')] = None'
         in generated_text
     )
 
@@ -932,14 +1112,11 @@ def test_scaffold_include_related_recurses_two_levels(
     root_text = (tmp_path / "rootfixture.py").read_text(encoding="utf-8")
     child_text = (tmp_path / "childnode.py").read_text(encoding="utf-8")
     assert "from childnode import ChildNode" in root_text
-    assert (
-        'Child: Annotated[ChildNode | None, Field(iris_type="Demo.ChildNode", required=False)]'
-        in root_text
-    )
+    assert 'Child: Annotated[ChildNode | None, Field(iris_type="Demo.ChildNode")]' in root_text
     assert "from grandchildnode import GrandchildNode" in child_text
     assert (
         'Grandchild: Annotated[GrandchildNode | None, '
-        'Field(iris_type="Demo.GrandchildNode", required=False)]'
+        'Field(iris_type="Demo.GrandchildNode")]'
         in child_text
     )
 

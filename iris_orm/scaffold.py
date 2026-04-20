@@ -82,6 +82,32 @@ def _optional_str(value: Any) -> str | None:
     return None if value is None or value == "" else str(value)
 
 
+def _has_storage_property_metadata(
+    *,
+    average_field_size: str | None,
+    selectivity: str | None,
+    outlier_selectivity: str | None,
+    histogram: str | None,
+    child_block_count: str | None,
+    child_extent_size: str | None,
+    bias_queries_as_outlier: bool | None,
+    stream_location: str | None,
+) -> bool:
+    return any(
+        value is not None
+        for value in (
+            average_field_size,
+            selectivity,
+            outlier_selectivity,
+            histogram,
+            child_block_count,
+            child_extent_size,
+            bias_queries_as_outlier,
+            stream_location,
+        )
+    )
+
+
 @dataclass(frozen=True)
 class ScaffoldWarning:
     code: str
@@ -134,10 +160,22 @@ class _CompiledStorage:
     name: str
     data_location: str | None
     default_data: str | None
+    extent_location: str | None
+    extent_size: str | None
+    counter_location: str | None
+    version_location: str | None
     id_location: str | None
+    id_expression: str | None
+    id_function: str | None
     index_location: str | None
     state: str | None
     stream_location: str | None
+    sql_child_sub: str | None
+    sql_id_expression: str | None
+    sql_row_id_name: str | None
+    sql_row_id_property: str | None
+    sql_table_number: str | None
+    sequence_number: str | None
     storage_type: str | None
 
 
@@ -155,6 +193,12 @@ class _CompiledStorageProperty:
     name: str
     average_field_size: str | None
     selectivity: str | None
+    outlier_selectivity: str | None
+    histogram: str | None
+    child_block_count: str | None
+    child_extent_size: str | None
+    bias_queries_as_outlier: bool | None
+    stream_location: str | None
 
 
 @dataclass(frozen=True)
@@ -338,26 +382,78 @@ class _CompiledDictionaryReader:
             )
         return sorted(indexes, key=lambda item: item.name)
 
-    def get_storage(self, classname: str) -> _CompiledStorage | None:
-        row = self._fetchone(
-            (
-                "SELECT Name, DataLocation, DefaultData, IdLocation, IndexLocation, "
-                "State, StreamLocation, Type "
-                "FROM %Dictionary.CompiledStorage WHERE parent = ?"
-            ),
-            (classname,),
-        )
+    def get_storage(
+        self,
+        classname: str,
+        *,
+        include_hidden: bool = False,
+    ) -> _CompiledStorage | None:
+        if include_hidden:
+            row = self._fetchone(
+                (
+                    "SELECT Name, DataLocation, DefaultData, ExtentLocation, ExtentSize, "
+                    "CounterLocation, VersionLocation, IdLocation, IdExpression, IdFunction, "
+                    "IndexLocation, State, StreamLocation, SqlChildSub, SqlIdExpression, "
+                    "SqlRowIdName, SqlRowIdProperty, SqlTableNumber, SequenceNumber, Type "
+                    "FROM %Dictionary.CompiledStorage WHERE parent = ?"
+                ),
+                (classname,),
+            )
+        else:
+            row = self._fetchone(
+                (
+                    "SELECT Name, DataLocation, DefaultData, ExtentSize, IdLocation, "
+                    "IndexLocation, State, StreamLocation, Type "
+                    "FROM %Dictionary.CompiledStorage WHERE parent = ?"
+                ),
+                (classname,),
+            )
         if row is None:
             return None
+        if not include_hidden:
+            return _CompiledStorage(
+                name=str(row[0]),
+                data_location=_optional_str(row[1]),
+                default_data=_optional_str(row[2]),
+                extent_location=None,
+                extent_size=_optional_str(row[3]),
+                counter_location=None,
+                version_location=None,
+                id_location=_optional_str(row[4]),
+                id_expression=None,
+                id_function=None,
+                index_location=_optional_str(row[5]),
+                state=_optional_str(row[6]),
+                stream_location=_optional_str(row[7]),
+                sql_child_sub=None,
+                sql_id_expression=None,
+                sql_row_id_name=None,
+                sql_row_id_property=None,
+                sql_table_number=None,
+                sequence_number=None,
+                storage_type=_optional_str(row[8]),
+            )
         return _CompiledStorage(
-            name=row[0],
-            data_location=row[1],
-            default_data=row[2],
-            id_location=row[3],
-            index_location=row[4],
-            state=row[5],
-            stream_location=row[6],
-            storage_type=row[7],
+            name=str(row[0]),
+            data_location=_optional_str(row[1]),
+            default_data=_optional_str(row[2]),
+            extent_location=_optional_str(row[3]),
+            extent_size=_optional_str(row[4]),
+            counter_location=_optional_str(row[5]),
+            version_location=_optional_str(row[6]),
+            id_location=_optional_str(row[7]),
+            id_expression=_optional_str(row[8]),
+            id_function=_optional_str(row[9]),
+            index_location=_optional_str(row[10]),
+            state=_optional_str(row[11]),
+            stream_location=_optional_str(row[12]),
+            sql_child_sub=_optional_str(row[13]),
+            sql_id_expression=_optional_str(row[14]),
+            sql_row_id_name=_optional_str(row[15]),
+            sql_row_id_property=_optional_str(row[16]),
+            sql_table_number=_optional_str(row[17]),
+            sequence_number=_optional_str(row[18]),
+            storage_type=_optional_str(row[19]),
         )
 
     def list_storage_data(self, storage_parent: str) -> list[_CompiledStorageData]:
@@ -389,46 +485,168 @@ class _CompiledDictionaryReader:
             )
         return sorted(data_rows, key=lambda item: item.name)
 
-    def list_storage_properties(self, storage_parent: str) -> list[_CompiledStorageProperty]:
-        rows = self._fetchall(
-            (
-                "SELECT Name, AverageFieldSize, Selectivity "
-                "FROM %Dictionary.CompiledStorageProperty WHERE parent = ?"
-            ),
-            (storage_parent,),
-        )
-        properties = [
-            _CompiledStorageProperty(
-                name=name,
-                average_field_size=_optional_str(avg),
-                selectivity=_optional_str(selectivity),
+    def list_storage_properties(
+        self,
+        storage_parent: str,
+        *,
+        include_hidden: bool = False,
+    ) -> list[_CompiledStorageProperty]:
+        if include_hidden:
+            rows = self._fetchall(
+                (
+                    "SELECT Name, AverageFieldSize, Selectivity, OutlierSelectivity, Histogram, "
+                    "ChildBlockCount, ChildExtentSize, BiasQueriesAsOutlier, StreamLocation "
+                    "FROM %Dictionary.CompiledStorageProperty WHERE parent = ?"
+                ),
+                (storage_parent,),
             )
-            for name, avg, selectivity in rows
-            if not str(name).startswith("%")
-            and (_optional_str(avg) is not None or _optional_str(selectivity) is not None)
-        ]
+        else:
+            rows = self._fetchall(
+                (
+                    "SELECT Name, AverageFieldSize, Selectivity, OutlierSelectivity "
+                    "FROM %Dictionary.CompiledStorageProperty WHERE parent = ?"
+                ),
+                (storage_parent,),
+            )
+        properties = []
+        for row in rows:
+            if include_hidden:
+                (
+                    name,
+                    avg,
+                    selectivity,
+                    outlier_selectivity,
+                    histogram,
+                    child_block_count,
+                    child_extent_size,
+                    bias_queries_as_outlier,
+                    stream_location,
+                ) = row
+            else:
+                name, avg, selectivity, outlier_selectivity = row
+                histogram = None
+                child_block_count = None
+                child_extent_size = None
+                bias_queries_as_outlier = None
+                stream_location = None
+            average_field_size = _optional_str(avg)
+            selectivity_value = _optional_str(selectivity)
+            outlier_selectivity_value = _optional_str(outlier_selectivity)
+            histogram_value = _optional_str(histogram)
+            child_block_count_value = _optional_str(child_block_count)
+            child_extent_size_value = _optional_str(child_extent_size)
+            bias_queries_as_outlier_value = (
+                _as_bool(bias_queries_as_outlier)
+                if bias_queries_as_outlier is not None and bias_queries_as_outlier != ""
+                else None
+            )
+            stream_location_value = _optional_str(stream_location)
+            if str(name).startswith("%") or not _has_storage_property_metadata(
+                average_field_size=average_field_size,
+                selectivity=selectivity_value,
+                outlier_selectivity=outlier_selectivity_value,
+                histogram=histogram_value,
+                child_block_count=child_block_count_value,
+                child_extent_size=child_extent_size_value,
+                bias_queries_as_outlier=bias_queries_as_outlier_value,
+                stream_location=stream_location_value,
+            ):
+                continue
+            properties.append(
+                _CompiledStorageProperty(
+                    name=str(name),
+                    average_field_size=average_field_size,
+                    selectivity=selectivity_value,
+                    outlier_selectivity=outlier_selectivity_value,
+                    histogram=histogram_value,
+                    child_block_count=child_block_count_value,
+                    child_extent_size=child_extent_size_value,
+                    bias_queries_as_outlier=bias_queries_as_outlier_value,
+                    stream_location=stream_location_value,
+                )
+            )
         return sorted(properties, key=lambda item: item.name)
 
     def list_storage_property_definitions(
-        self, storage_parent: str
+        self,
+        storage_parent: str,
+        *,
+        include_hidden: bool = False,
     ) -> list[_CompiledStorageProperty]:
-        rows = self._fetchall(
-            (
-                "SELECT Name, AverageFieldSize, Selectivity "
-                "FROM %Dictionary.StoragePropertyDefinition WHERE parent = ?"
-            ),
-            (storage_parent,),
-        )
-        properties = [
-            _CompiledStorageProperty(
-                name=str(name),
-                average_field_size=_optional_str(avg),
-                selectivity=_optional_str(selectivity),
+        if include_hidden:
+            rows = self._fetchall(
+                (
+                    "SELECT Name, AverageFieldSize, Selectivity, OutlierSelectivity, Histogram, "
+                    "ChildBlockCount, ChildExtentSize, BiasQueriesAsOutlier, StreamLocation "
+                    "FROM %Dictionary.StoragePropertyDefinition WHERE parent = ?"
+                ),
+                (storage_parent,),
             )
-            for name, avg, selectivity in rows
-            if not str(name).startswith("%")
-            and (_optional_str(avg) is not None or _optional_str(selectivity) is not None)
-        ]
+        else:
+            rows = self._fetchall(
+                (
+                    "SELECT Name, AverageFieldSize, Selectivity, OutlierSelectivity "
+                    "FROM %Dictionary.StoragePropertyDefinition WHERE parent = ?"
+                ),
+                (storage_parent,),
+            )
+        properties = []
+        for row in rows:
+            if include_hidden:
+                (
+                    name,
+                    avg,
+                    selectivity,
+                    outlier_selectivity,
+                    histogram,
+                    child_block_count,
+                    child_extent_size,
+                    bias_queries_as_outlier,
+                    stream_location,
+                ) = row
+            else:
+                name, avg, selectivity, outlier_selectivity = row
+                histogram = None
+                child_block_count = None
+                child_extent_size = None
+                bias_queries_as_outlier = None
+                stream_location = None
+            average_field_size = _optional_str(avg)
+            selectivity_value = _optional_str(selectivity)
+            outlier_selectivity_value = _optional_str(outlier_selectivity)
+            histogram_value = _optional_str(histogram)
+            child_block_count_value = _optional_str(child_block_count)
+            child_extent_size_value = _optional_str(child_extent_size)
+            bias_queries_as_outlier_value = (
+                _as_bool(bias_queries_as_outlier)
+                if bias_queries_as_outlier is not None and bias_queries_as_outlier != ""
+                else None
+            )
+            stream_location_value = _optional_str(stream_location)
+            if str(name).startswith("%") or not _has_storage_property_metadata(
+                average_field_size=average_field_size,
+                selectivity=selectivity_value,
+                outlier_selectivity=outlier_selectivity_value,
+                histogram=histogram_value,
+                child_block_count=child_block_count_value,
+                child_extent_size=child_extent_size_value,
+                bias_queries_as_outlier=bias_queries_as_outlier_value,
+                stream_location=stream_location_value,
+            ):
+                continue
+            properties.append(
+                _CompiledStorageProperty(
+                    name=str(name),
+                    average_field_size=average_field_size,
+                    selectivity=selectivity_value,
+                    outlier_selectivity=outlier_selectivity_value,
+                    histogram=histogram_value,
+                    child_block_count=child_block_count_value,
+                    child_extent_size=child_extent_size_value,
+                    bias_queries_as_outlier=bias_queries_as_outlier_value,
+                    stream_location=stream_location_value,
+                )
+            )
         return sorted(properties, key=lambda item: item.name)
 
     def list_storage_sql_maps(self, storage_parent: str) -> list[_CompiledStorageSQLMap]:
@@ -704,6 +922,11 @@ def _append_literal_arg(args: list[str], name: str, value: Any) -> None:
         args.append(f"{name}={value!r}")
 
 
+def _double_quoted_literal(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 def _render_property_type(
     prop: _CompiledProperty,
     python_class_names: dict[str, str],
@@ -879,10 +1102,9 @@ def _render_model(
     else:
         for prop in properties:
             type_name = _render_property_type(prop, python_class_names)
-            field_args = [
-                f'iris_type="{prop.iris_type}"',
-                f"required={'True' if prop.required else 'False'}",
-            ]
+            field_args = [f'iris_type="{prop.iris_type}"']
+            if prop.required:
+                field_args.append("required=True")
             if prop.maxlen:
                 field_args.append(f"maxlen={prop.maxlen}")
             if prop.readonly:
@@ -935,20 +1157,80 @@ def _render_model(
         lines.append("        ]")
     if storage:
         lines.append("        storage = StorageDefinition(")
-        if storage.data_location:
-            lines.append(f'            data_location="{storage.data_location}",')
-        if storage.default_data:
-            lines.append(f'            default_data="{storage.default_data}",')
-        if storage.id_location:
-            lines.append(f'            id_location="{storage.id_location}",')
-        if storage.index_location:
-            lines.append(f'            index_location="{storage.index_location}",')
-        if storage.state:
-            lines.append(f'            state="{storage.state}",')
-        if storage.stream_location:
-            lines.append(f'            stream_location="{storage.stream_location}",')
-        if storage.storage_type:
-            lines.append(f'            type="{storage.storage_type}",')
+        if storage.data_location is not None:
+            lines.append(
+                f"            data_location={_double_quoted_literal(storage.data_location)},"
+            )
+        if storage.default_data is not None:
+            lines.append(
+                f"            default_data={_double_quoted_literal(storage.default_data)},"
+            )
+        if storage.extent_location is not None:
+            lines.append(
+                f"            extent_location={_double_quoted_literal(storage.extent_location)},"
+            )
+        if storage.extent_size is not None:
+            lines.append(
+                f"            extent_size={_double_quoted_literal(storage.extent_size)},"
+            )
+        if storage.counter_location is not None:
+            lines.append(
+                f"            counter_location={_double_quoted_literal(storage.counter_location)},"
+            )
+        if storage.version_location is not None:
+            lines.append(
+                f"            version_location={_double_quoted_literal(storage.version_location)},"
+            )
+        if storage.id_location is not None:
+            lines.append(
+                f"            id_location={_double_quoted_literal(storage.id_location)},"
+            )
+        if storage.id_expression is not None:
+            lines.append(
+                f"            id_expression={_double_quoted_literal(storage.id_expression)},"
+            )
+        if storage.id_function is not None:
+            lines.append(
+                f"            id_function={_double_quoted_literal(storage.id_function)},"
+            )
+        if storage.index_location is not None:
+            lines.append(
+                f"            index_location={_double_quoted_literal(storage.index_location)},"
+            )
+        if storage.state is not None:
+            lines.append(f"            state={_double_quoted_literal(storage.state)},")
+        if storage.stream_location is not None:
+            lines.append(
+                f"            stream_location={_double_quoted_literal(storage.stream_location)},"
+            )
+        if storage.sql_child_sub is not None:
+            lines.append(
+                f"            sql_child_sub={_double_quoted_literal(storage.sql_child_sub)},"
+            )
+        if storage.sql_id_expression is not None:
+            lines.append(
+                "            "
+                f"sql_id_expression={_double_quoted_literal(storage.sql_id_expression)},"
+            )
+        if storage.sql_row_id_name is not None:
+            lines.append(
+                f"            sql_row_id_name={_double_quoted_literal(storage.sql_row_id_name)},"
+            )
+        if storage.sql_row_id_property is not None:
+            lines.append(
+                "            "
+                f"sql_row_id_property={_double_quoted_literal(storage.sql_row_id_property)},"
+            )
+        if storage.sql_table_number is not None:
+            lines.append(
+                f"            sql_table_number={_double_quoted_literal(storage.sql_table_number)},"
+            )
+        if storage.sequence_number is not None:
+            lines.append(
+                f"            sequence_number={_double_quoted_literal(storage.sequence_number)},"
+            )
+        if storage.storage_type is not None:
+            lines.append(f"            type={_double_quoted_literal(storage.storage_type)},")
         if storage_data:
             lines.append("            data=(")
             for item in storage_data:
@@ -966,13 +1248,45 @@ def _render_model(
         if storage_properties:
             lines.append("            properties=(")
             for item in storage_properties:
-                property_args = [f'name="{item.name}"']
+                property_args = [f"name={_double_quoted_literal(item.name)}"]
                 if item.average_field_size is not None:
                     property_args.append(
-                        f'average_field_size="{item.average_field_size}"'
+                        "average_field_size="
+                        f"{_double_quoted_literal(item.average_field_size)}"
                     )
                 if item.selectivity is not None:
-                    property_args.append(f'selectivity="{item.selectivity}"')
+                    property_args.append(
+                        f"selectivity={_double_quoted_literal(item.selectivity)}"
+                    )
+                if item.outlier_selectivity is not None:
+                    property_args.append(
+                        "outlier_selectivity="
+                        f"{_double_quoted_literal(item.outlier_selectivity)}"
+                    )
+                if item.histogram is not None:
+                    property_args.append(
+                        f"histogram={_double_quoted_literal(item.histogram)}"
+                    )
+                if item.child_block_count is not None:
+                    property_args.append(
+                        "child_block_count="
+                        f"{_double_quoted_literal(item.child_block_count)}"
+                    )
+                if item.child_extent_size is not None:
+                    property_args.append(
+                        "child_extent_size="
+                        f"{_double_quoted_literal(item.child_extent_size)}"
+                    )
+                if item.bias_queries_as_outlier is not None:
+                    property_args.append(
+                        "bias_queries_as_outlier="
+                        f'{"True" if item.bias_queries_as_outlier else "False"}'
+                    )
+                if item.stream_location is not None:
+                    property_args.append(
+                        "stream_location="
+                        f"{_double_quoted_literal(item.stream_location)}"
+                    )
                 lines.append(
                     "                "
                     f"StorageProperty({', '.join(property_args)}),"
@@ -1006,6 +1320,16 @@ def _merge_storage_properties(
             name=current.name,
             average_field_size=item.average_field_size or current.average_field_size,
             selectivity=item.selectivity or current.selectivity,
+            outlier_selectivity=item.outlier_selectivity or current.outlier_selectivity,
+            histogram=item.histogram or current.histogram,
+            child_block_count=item.child_block_count or current.child_block_count,
+            child_extent_size=item.child_extent_size or current.child_extent_size,
+            bias_queries_as_outlier=(
+                item.bias_queries_as_outlier
+                if item.bias_queries_as_outlier is not None
+                else current.bias_queries_as_outlier
+            ),
+            stream_location=item.stream_location or current.stream_location,
         )
     return sorted(merged.values(), key=lambda item: item.name)
 
@@ -1021,6 +1345,7 @@ def scaffold_from_iris(
     output_dir: str,
     mode: str = "observe",
     extract_meta: bool = False,
+    extract_hidden_meta: bool = False,
     include_related: bool = False,
     scaffold_selectivity: bool = False,
     return_result: bool = False,
@@ -1068,15 +1393,24 @@ def scaffold_from_iris(
                 except Exception as exc:
                     _record_warning(result, "indexes", class_info.name, exc)
                 try:
-                    storage = reader.get_storage(class_info.name)
+                    storage = reader.get_storage(
+                        class_info.name,
+                        include_hidden=extract_hidden_meta,
+                    )
                     if storage:
                         storage_parent = f"{class_info.name}||{storage.name}"
                         storage_data = reader.list_storage_data(storage_parent)
-                        storage_properties = reader.list_storage_properties(storage_parent)
+                        storage_properties = reader.list_storage_properties(
+                            storage_parent,
+                            include_hidden=extract_hidden_meta,
+                        )
                         if scaffold_selectivity:
                             storage_properties = _merge_storage_properties(
                                 storage_properties,
-                                reader.list_storage_property_definitions(storage_parent),
+                                reader.list_storage_property_definitions(
+                                    storage_parent,
+                                    include_hidden=extract_hidden_meta,
+                                ),
                             )
                         storage_sql_maps = reader.list_storage_sql_maps(storage_parent)
                 except Exception as exc:

@@ -148,10 +148,22 @@ class SchemaMetadataFixture(IRISModel):
         storage = StorageDefinition(
             data_location="^Demo.SchemaMetadataFixtureD",
             default_data="SchemaMetadataFixtureDefaultData",
+            extent_location="^Demo.SchemaMetadataFixtureExtent",
+            extent_size="17",
+            counter_location="^Demo.SchemaMetadataFixtureCounter",
+            version_location="^Demo.SchemaMetadataFixtureVersion",
             id_location="^Demo.SchemaMetadataFixtureD",
+            id_expression="{Payload}",
+            id_function="Demo.SchemaMetadataFixtureId",
             index_location="^Demo.SchemaMetadataFixtureI",
             state="SchemaMetadataFixtureState",
             stream_location="^Demo.SchemaMetadataFixtureS",
+            sql_child_sub="child",
+            sql_id_expression="{%%ID}+1000",
+            sql_row_id_name="RowID",
+            sql_row_id_property="Payload",
+            sql_table_number="42",
+            sequence_number="9",
             data=(
                 StorageData(
                     name="SchemaMetadataFixtureDefaultData",
@@ -166,6 +178,12 @@ class SchemaMetadataFixture(IRISModel):
                     name="Payload",
                     average_field_size="10",
                     selectivity="0.001%",
+                    outlier_selectivity='.999999:"payload"',
+                    histogram="1:4,2:8",
+                    child_block_count="3",
+                    child_extent_size="11",
+                    bias_queries_as_outlier=True,
+                    stream_location="^Demo.SchemaMetadataFixturePayloadS",
                 ),
             ),
             sql_maps=(
@@ -257,10 +275,22 @@ def test_sync_schema_writes_extended_metadata(monkeypatch):
     storage = class_def.Storages.items[0]
     assert storage.DataLocation == "^Demo.SchemaMetadataFixtureD"
     assert storage.DefaultData == "SchemaMetadataFixtureDefaultData"
+    assert storage.ExtentLocation == "^Demo.SchemaMetadataFixtureExtent"
+    assert storage.ExtentSize == "17"
+    assert storage.CounterLocation == "^Demo.SchemaMetadataFixtureCounter"
+    assert storage.VersionLocation == "^Demo.SchemaMetadataFixtureVersion"
     assert storage.IdLocation == "^Demo.SchemaMetadataFixtureD"
+    assert storage.IdExpression == "{Payload}"
+    assert storage.IdFunction == "Demo.SchemaMetadataFixtureId"
     assert storage.IndexLocation == "^Demo.SchemaMetadataFixtureI"
     assert storage.State == "SchemaMetadataFixtureState"
     assert storage.StreamLocation == "^Demo.SchemaMetadataFixtureS"
+    assert storage.SqlChildSub == "child"
+    assert storage.SqlIdExpression == "{%%ID}+1000"
+    assert storage.SqlRowIdName == "RowID"
+    assert storage.SqlRowIdProperty == "Payload"
+    assert storage.SqlTableNumber == "42"
+    assert storage.SequenceNumber == "9"
 
     storage_data = storage.Data.items[0]
     assert storage_data.Attribute == "Payload"
@@ -270,6 +300,12 @@ def test_sync_schema_writes_extended_metadata(monkeypatch):
     assert storage_property.Name == "Payload"
     assert storage_property.AverageFieldSize == "10"
     assert storage_property.Selectivity == "0.001%"
+    assert storage_property.OutlierSelectivity == '.999999:"payload"'
+    assert storage_property.Histogram == "1:4,2:8"
+    assert storage_property.ChildBlockCount == "3"
+    assert storage_property.ChildExtentSize == "11"
+    assert storage_property.BiasQueriesAsOutlier == 1
+    assert storage_property.StreamLocation == "^Demo.SchemaMetadataFixturePayloadS"
 
     sql_map = storage.SQLMaps.items[0]
     assert sql_map.Name == "PayloadMap"

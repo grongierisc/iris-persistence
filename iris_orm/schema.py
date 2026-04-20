@@ -175,20 +175,44 @@ def sync_schema(model_cls: Type[Any], _seen: set[str] | None = None) -> None:
         runtime.set_property(stor_def, "parent", classname)
         runtime.set_property(cd, "StorageStrategy", stor_def_name)
 
-        if getattr(storage_meta, "type", None):
+        if getattr(storage_meta, "type", None) is not None:
             runtime.set_property(stor_def, "Type", storage_meta.type)
-        if getattr(storage_meta, "data_location", None):
+        if getattr(storage_meta, "data_location", None) is not None:
             runtime.set_property(stor_def, "DataLocation", storage_meta.data_location)
-        if getattr(storage_meta, "default_data", None):
+        if getattr(storage_meta, "default_data", None) is not None:
             runtime.set_property(stor_def, "DefaultData", storage_meta.default_data)
-        if getattr(storage_meta, "id_location", None):
+        if getattr(storage_meta, "extent_location", None) is not None:
+            runtime.set_property(stor_def, "ExtentLocation", storage_meta.extent_location)
+        if getattr(storage_meta, "extent_size", None) is not None:
+            runtime.set_property(stor_def, "ExtentSize", storage_meta.extent_size)
+        if getattr(storage_meta, "counter_location", None) is not None:
+            runtime.set_property(stor_def, "CounterLocation", storage_meta.counter_location)
+        if getattr(storage_meta, "version_location", None) is not None:
+            runtime.set_property(stor_def, "VersionLocation", storage_meta.version_location)
+        if getattr(storage_meta, "id_location", None) is not None:
             runtime.set_property(stor_def, "IdLocation", storage_meta.id_location)
-        if getattr(storage_meta, "index_location", None):
+        if getattr(storage_meta, "id_expression", None) is not None:
+            runtime.set_property(stor_def, "IdExpression", storage_meta.id_expression)
+        if getattr(storage_meta, "id_function", None) is not None:
+            runtime.set_property(stor_def, "IdFunction", storage_meta.id_function)
+        if getattr(storage_meta, "index_location", None) is not None:
             runtime.set_property(stor_def, "IndexLocation", storage_meta.index_location)
-        if getattr(storage_meta, "state", None):
+        if getattr(storage_meta, "state", None) is not None:
             runtime.set_property(stor_def, "State", storage_meta.state)
-        if getattr(storage_meta, "stream_location", None):
+        if getattr(storage_meta, "stream_location", None) is not None:
             runtime.set_property(stor_def, "StreamLocation", storage_meta.stream_location)
+        if getattr(storage_meta, "sql_child_sub", None) is not None:
+            runtime.set_property(stor_def, "SqlChildSub", storage_meta.sql_child_sub)
+        if getattr(storage_meta, "sql_id_expression", None) is not None:
+            runtime.set_property(stor_def, "SqlIdExpression", storage_meta.sql_id_expression)
+        if getattr(storage_meta, "sql_row_id_name", None) is not None:
+            runtime.set_property(stor_def, "SqlRowIdName", storage_meta.sql_row_id_name)
+        if getattr(storage_meta, "sql_row_id_property", None) is not None:
+            runtime.set_property(stor_def, "SqlRowIdProperty", storage_meta.sql_row_id_property)
+        if getattr(storage_meta, "sql_table_number", None) is not None:
+            runtime.set_property(stor_def, "SqlTableNumber", storage_meta.sql_table_number)
+        if getattr(storage_meta, "sequence_number", None) is not None:
+            runtime.set_property(stor_def, "SequenceNumber", storage_meta.sequence_number)
 
         # Add StorageData items
         data_list = runtime.get_property(stor_def, "Data")
@@ -227,6 +251,32 @@ def sync_schema(model_cls: Type[Any], _seen: set[str] | None = None) -> None:
                 )
             if getattr(property_meta, "selectivity", None) is not None:
                 runtime.set_property(storage_property, "Selectivity", property_meta.selectivity)
+            if getattr(property_meta, "outlier_selectivity", None) is not None:
+                runtime.set_property(
+                    storage_property,
+                    "OutlierSelectivity",
+                    property_meta.outlier_selectivity,
+                )
+            if getattr(property_meta, "histogram", None) is not None:
+                runtime.set_property(storage_property, "Histogram", property_meta.histogram)
+            if getattr(property_meta, "child_block_count", None) is not None:
+                runtime.set_property(
+                    storage_property, "ChildBlockCount", property_meta.child_block_count
+                )
+            if getattr(property_meta, "child_extent_size", None) is not None:
+                runtime.set_property(
+                    storage_property, "ChildExtentSize", property_meta.child_extent_size
+                )
+            if getattr(property_meta, "bias_queries_as_outlier", None) is not None:
+                runtime.set_property(
+                    storage_property,
+                    "BiasQueriesAsOutlier",
+                    1 if property_meta.bias_queries_as_outlier else 0,
+                )
+            if getattr(property_meta, "stream_location", None) is not None:
+                runtime.set_property(
+                    storage_property, "StreamLocation", property_meta.stream_location
+                )
             runtime.invoke_method(properties_list, "Insert", storage_property)
 
         sql_maps_list = runtime.get_property(stor_def, "SQLMaps")

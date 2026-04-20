@@ -47,6 +47,12 @@ class StorageProperty:
     name: str
     average_field_size: Optional[str] = None
     selectivity: Optional[str] = None
+    outlier_selectivity: Optional[str] = None
+    histogram: Optional[str] = None
+    child_block_count: Optional[str] = None
+    child_extent_size: Optional[str] = None
+    bias_queries_as_outlier: Optional[bool] = None
+    stream_location: Optional[str] = None
 
 
 @dataclass
@@ -127,10 +133,22 @@ class StorageDefinition:
     type: str = "%Storage.Persistent"
     data_location: Optional[str] = None
     default_data: Optional[str] = None
+    extent_location: Optional[str] = None
+    extent_size: Optional[str] = None
+    counter_location: Optional[str] = None
+    version_location: Optional[str] = None
     id_location: Optional[str] = None
+    id_expression: Optional[str] = None
+    id_function: Optional[str] = None
     index_location: Optional[str] = None
     state: Optional[str] = None
     stream_location: Optional[str] = None
+    sql_child_sub: Optional[str] = None
+    sql_id_expression: Optional[str] = None
+    sql_row_id_name: Optional[str] = None
+    sql_row_id_property: Optional[str] = None
+    sql_table_number: Optional[str] = None
+    sequence_number: Optional[str] = None
     data: Tuple[StorageData, ...] = ()
     properties: Tuple[StorageProperty, ...] = ()
     sql_maps: Tuple[StorageSQLMap, ...] = ()

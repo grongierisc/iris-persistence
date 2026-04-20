@@ -92,6 +92,9 @@ class FakeAdapter(RuntimeAdapter):
     def is_ok(self, status: Any) -> bool:
         return status is True
 
+    def format_status(self, status: Any) -> str:
+        return str(status)
+
     def extract_python_value(self, val: Any) -> Any:
         return val
 

@@ -151,9 +151,20 @@ def sync_schema(model_cls: Type[Any], _seen: set[str] | None = None) -> None:
         runtime.invoke_method(props_oref_list, "Insert", prop)
 
     indexes = getattr(model_cls, "_indexes", [])
-    if isinstance(indexes, list) and mode == "replace":
+    if isinstance(indexes, list) and mode in {"extend", "replace"}:
         idx_list = runtime.get_property(cd, "Indices")
+        existing_indexes = set()
+
+        if mode == "extend":
+            count = runtime.invoke_method(idx_list, "Count")
+            for i in range(1, count + 1):
+                idx = runtime.invoke_method(idx_list, "GetAt", i)
+                existing_indexes.add(runtime.get_property(idx, "Name"))
+
         for index_meta in indexes:
+            if mode == "extend" and index_meta.name in existing_indexes:
+                continue
+
             idx_def = runtime.create_object("%Dictionary.IndexDefinition")
             runtime.set_property(idx_def, "Name", index_meta.name)
             runtime.set_property(idx_def, "parent", classname)
@@ -239,6 +250,19 @@ def sync_schema(model_cls: Type[Any], _seen: set[str] | None = None) -> None:
                     runtime.invoke_method(val_list, "Insert", sdv)
 
             runtime.invoke_method(data_list, "Insert", sd)
+
+        indices_list = runtime.get_property(stor_def, "Indices")
+        for index_meta in getattr(storage_meta, "indices", ()) or ():
+            storage_index = runtime.create_object("%Dictionary.StorageIndexDefinition")
+            runtime.set_property(storage_index, "Name", index_meta.name)
+            runtime.set_property(storage_index, "parent", f"{classname}||{stor_def_name}")
+            if getattr(index_meta, "location", None) is not None:
+                runtime.set_property(storage_index, "Location", index_meta.location)
+            if getattr(index_meta, "small_chunk_size", None) is not None:
+                runtime.set_property(
+                    storage_index, "SmallChunkSize", index_meta.small_chunk_size
+                )
+            runtime.invoke_method(indices_list, "Insert", storage_index)
 
         properties_list = runtime.get_property(stor_def, "Properties")
         for property_meta in getattr(storage_meta, "properties", []):

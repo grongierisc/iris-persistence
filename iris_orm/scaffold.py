@@ -235,6 +235,13 @@ class _CompiledStorageProperty:
 
 
 @dataclass(frozen=True)
+class _CompiledStorageIndex:
+    name: str
+    location: str | None
+    small_chunk_size: str | None
+
+
+@dataclass(frozen=True)
 class _CompiledStorageSQLMap:
     name: str
     block_count: str | None
@@ -682,6 +689,26 @@ class _CompiledDictionaryReader:
             )
         return sorted(properties, key=lambda item: item.name)
 
+    def list_storage_indices(self, storage_parent: str) -> list[_CompiledStorageIndex]:
+        rows = self._fetchall(
+            (
+                "SELECT Name, Location, SmallChunkSize "
+                "FROM %Dictionary.CompiledStorageIndex WHERE parent = ?"
+            ),
+            (storage_parent,),
+        )
+        return sorted(
+            (
+                _CompiledStorageIndex(
+                    name=str(name),
+                    location=_optional_str(location),
+                    small_chunk_size=_optional_str(small_chunk_size),
+                )
+                for name, location, small_chunk_size in rows
+            ),
+            key=lambda item: item.name,
+        )
+
     def list_storage_sql_maps(self, storage_parent: str) -> list[_CompiledStorageSQLMap]:
         rows = self._fetchall(
             (
@@ -1094,6 +1121,15 @@ def _render_storage_sql_map(item: _CompiledStorageSQLMap) -> list[str]:
     return lines
 
 
+def _render_storage_index(item: _CompiledStorageIndex) -> str:
+    args = [f"name={_double_quoted_literal(item.name)}"]
+    if item.location is not None:
+        args.append(f"location={_double_quoted_literal(item.location)}")
+    if item.small_chunk_size is not None:
+        args.append(f"small_chunk_size={_double_quoted_literal(item.small_chunk_size)}")
+    return f"StorageIndex({', '.join(args)})"
+
+
 def _render_model(
     class_info: _CompiledClass,
     properties: list[_CompiledProperty],
@@ -1102,6 +1138,7 @@ def _render_model(
     indexes: list[_CompiledIndex],
     storage: _CompiledStorage | None,
     storage_data: list[_CompiledStorageData],
+    storage_indices: list[_CompiledStorageIndex],
     storage_properties: list[_CompiledStorageProperty],
     storage_sql_maps: list[_CompiledStorageSQLMap],
     python_class_names: dict[str, str],
@@ -1122,7 +1159,7 @@ def _render_model(
         "",
         (
             "from iris_orm import Field, IRISModel, Index, StorageDefinition, "
-            "StorageData, StorageProperty, StorageSQLMap, StorageSQLMapData, "
+            "StorageData, StorageIndex, StorageProperty, StorageSQLMap, StorageSQLMapData, "
             "StorageSQLMapRowIdSpec, StorageSQLMapSub, StorageSQLMapSubAccessVar, "
             "StorageSQLMapSubInvalidCondition"
         ),
@@ -1279,6 +1316,11 @@ def _render_model(
                 lines.append(f"                    values={item.values!r},")
                 lines.append("                ),")
             lines.append("            ),")
+        if storage_indices:
+            lines.append("            indices=(")
+            for item in storage_indices:
+                lines.append(f"                {_render_storage_index(item)},")
+            lines.append("            ),")
         if storage_properties:
             lines.append("            properties=(")
             for item in storage_properties:
@@ -1414,6 +1456,7 @@ def scaffold_from_iris(
             indexes: list[_CompiledIndex] = []
             storage: _CompiledStorage | None = None
             storage_data: list[_CompiledStorageData] = []
+            storage_indices: list[_CompiledStorageIndex] = []
             storage_properties: list[_CompiledStorageProperty] = []
             storage_sql_maps: list[_CompiledStorageSQLMap] = []
 
@@ -1434,6 +1477,7 @@ def scaffold_from_iris(
                     if storage:
                         storage_parent = f"{class_info.name}||{storage.name}"
                         storage_data = reader.list_storage_data(storage_parent)
+                        storage_indices = reader.list_storage_indices(storage_parent)
                         storage_properties = reader.list_storage_properties(
                             storage_parent,
                             include_hidden=extract_hidden_meta,
@@ -1459,6 +1503,7 @@ def scaffold_from_iris(
                 indexes=indexes,
                 storage=storage,
                 storage_data=storage_data,
+                storage_indices=storage_indices,
                 storage_properties=storage_properties,
                 storage_sql_maps=storage_sql_maps,
                 python_class_names=python_class_names,

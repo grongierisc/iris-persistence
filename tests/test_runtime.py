@@ -384,6 +384,45 @@ class TestNativeProxyAdapter(unittest.TestCase):
         )
         self.assertEqual(plain_obj.MyList, "encoded-list")
 
+    def test_missing_class_error_is_rewritten_with_context(self):
+        fake_iris = SimpleNamespace(
+            cls=MagicMock(side_effect=RuntimeError("iris.cls: error finding class"))
+        )
+
+        with patch.dict("sys.modules", {"iris": fake_iris}):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"IRIS class 'Demo\.Demo' does not exist in the current namespace",
+            ) as exc_info:
+                self.adapter.create_object("Demo.Demo")
+
+        self.assertIn("Model.sync_schema()", str(exc_info.exception))
+        self.assertIn("Meta.classname", str(exc_info.exception))
+
+    def test_format_status_uses_system_status_error_text(self):
+        self.adapter.call_classmethod = MagicMock(
+            return_value='ERROR #5808: Key not unique: Demo.Demo:TotoIdx:^Demo.DemoI("TotoIdx"," HELLO")'
+        )
+
+        message = self.adapter.format_status("0 raw-status")
+
+        self.adapter.call_classmethod.assert_called_once_with(
+            "%SYSTEM.Status",
+            "GetErrorText",
+            "0 raw-status",
+        )
+        self.assertEqual(
+            message,
+            'ERROR #5808: Key not unique: Demo.Demo:TotoIdx:^Demo.DemoI("TotoIdx"," HELLO")',
+        )
+
+    def test_format_status_falls_back_to_raw_status_text(self):
+        self.adapter.call_classmethod = MagicMock(side_effect=RuntimeError("status lookup failed"))
+
+        message = self.adapter.format_status("0 raw-status")
+
+        self.assertEqual(message, "0 raw-status")
+
 
 if __name__ == "__main__":
     unittest.main()

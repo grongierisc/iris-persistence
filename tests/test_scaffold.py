@@ -159,6 +159,14 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
             ("Payload", "node", "Payload", "\"Payload\""),
         ],
         (
+            "SELECT Name, Location, SmallChunkSize "
+            "FROM %Dictionary.CompiledStorageIndex WHERE parent = ?",
+            ("Demo.StubFixture||Default",),
+        ): [
+            ("IDKEY", "^Demo.StubFixtureI(\"IDKEY\")", "0"),
+            ("TitleIdx", "^Demo.StubFixtureI(\"TitleIdx\")", "32"),
+        ],
+        (
             "SELECT Name, Value FROM %Dictionary.CompiledStorageDataValue WHERE parent = ?",
             ("Demo.StubFixture||Default||StubDefaultData",),
         ): [
@@ -298,6 +306,12 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
     assert storage_data["Payload"].subscript == '"Payload"'
     assert storage_data["Payload"].values == {}
 
+    storage_indices = {item.name: item for item in storage.indices}
+    assert storage_indices["IDKEY"].location == '^Demo.StubFixtureI("IDKEY")'
+    assert storage_indices["IDKEY"].small_chunk_size == "0"
+    assert storage_indices["TitleIdx"].location == '^Demo.StubFixtureI("TitleIdx")'
+    assert storage_indices["TitleIdx"].small_chunk_size == "32"
+
     assert len(storage.properties) == 1
     assert storage.properties[0].name == "Title"
     assert storage.properties[0].average_field_size == "10"
@@ -358,6 +372,8 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
     assert 'state="StubState"' in generated_text
     assert 'stream_location="^Demo.StubFixtureS"' in generated_text
     assert 'extent_size="17"' in generated_text
+    assert 'StorageIndex(name="IDKEY", location="^Demo.StubFixtureI(\\"IDKEY\\")", small_chunk_size="0")' in generated_text
+    assert 'StorageIndex(name="TitleIdx", location="^Demo.StubFixtureI(\\"TitleIdx\\")", small_chunk_size="32")' in generated_text
     assert 'extent_location=' not in generated_text
     assert 'counter_location=' not in generated_text
     assert 'version_location=' not in generated_text

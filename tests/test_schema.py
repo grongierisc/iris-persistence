@@ -7,6 +7,7 @@ from iris_orm import (
     IRISModel,
     StorageData,
     StorageDefinition,
+    StorageIndex,
     StorageProperty,
     StorageSQLMap,
     StorageSQLMapData,
@@ -59,6 +60,7 @@ class _RecordingObject:
             self.Parameters = _ListWrapper()
         elif class_name == "%Dictionary.StorageDefinition":
             self.Data = _ListWrapper()
+            self.Indices = _ListWrapper()
             self.Properties = _ListWrapper()
             self.SQLMaps = _ListWrapper()
         elif class_name == "%Dictionary.StorageDataDefinition":
@@ -126,6 +128,31 @@ class _RecordingRuntime:
     def inject_iris_value(self, obj, field_name, val):
         setattr(obj, field_name, val)
 
+    def decode_percent_list(self, value):
+        return value
+
+
+class _ExistingClassRuntime(_RecordingRuntime):
+    def __init__(self):
+        super().__init__()
+        self.class_definition = _RecordingObject("%Dictionary.ClassDefinition")
+
+    def call_classmethod(self, class_name, method_name, *args):
+        self.calls.append((class_name, method_name, args))
+        if class_name == "%Dictionary.ClassDefinition" and method_name == "_ExistsId":
+            return True
+        return 1
+
+    def create_object(self, class_name):
+        obj = _RecordingObject(class_name)
+        self.created.append((class_name, obj))
+        return obj
+
+    def get_object(self, class_name, obj_id):
+        if class_name == "%Dictionary.ClassDefinition":
+            return self.class_definition
+        raise AssertionError(f"unexpected get_object({class_name!r}, {obj_id!r})")
+
 
 class SchemaMetadataFixture(IRISModel):
     Payload: Annotated[
@@ -171,6 +198,13 @@ class SchemaMetadataFixture(IRISModel):
                     attribute="Payload",
                     subscript='"Payload"',
                     values={"1": "Payload"},
+                ),
+            ),
+            indices=(
+                StorageIndex(
+                    name="PayloadStorageIdx",
+                    location="^Demo.SchemaMetadataFixtureI(\"Payload\")",
+                    small_chunk_size="64",
                 ),
             ),
             properties=(
@@ -248,6 +282,18 @@ class SchemaMetadataFixture(IRISModel):
         )
 
 
+class ExtendIndexFixture(IRISModel):
+    Payload: Annotated[str | None, Field(required=False)] = None
+
+    class Meta:
+        classname = "Demo.ExtendIndexFixture"
+        mode = "extend"
+        indexes = [
+            Index("ExistingIdx", properties="Payload"),
+            Index("PayloadIdx", properties="Payload", unique=True),
+        ]
+
+
 def test_sync_schema_writes_extended_metadata(monkeypatch):
     runtime = _RecordingRuntime()
     monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
@@ -295,6 +341,11 @@ def test_sync_schema_writes_extended_metadata(monkeypatch):
     storage_data = storage.Data.items[0]
     assert storage_data.Attribute == "Payload"
     assert storage_data.Subscript == '"Payload"'
+
+    storage_index = storage.Indices.items[0]
+    assert storage_index.Name == "PayloadStorageIdx"
+    assert storage_index.Location == '^Demo.SchemaMetadataFixtureI("Payload")'
+    assert storage_index.SmallChunkSize == "64"
 
     storage_property = storage.Properties.items[0]
     assert storage_property.Name == "Payload"
@@ -348,3 +399,22 @@ def test_sync_schema_writes_extended_metadata(monkeypatch):
     invalid_condition = subscript.Invalidconditions.items[0]
     assert invalid_condition.Name == "1"
     assert invalid_condition.Expression == "i<1"
+
+
+def test_sync_schema_extend_adds_missing_indexes_without_duplication(monkeypatch):
+    runtime = _ExistingClassRuntime()
+    existing_index = _RecordingObject("%Dictionary.IndexDefinition")
+    existing_index.Name = "ExistingIdx"
+    existing_index.Properties = "Payload"
+    runtime.class_definition.Indices.Insert(existing_index)
+
+    monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
+
+    ExtendIndexFixture.sync_schema()
+
+    indices = runtime.class_definition.Indices.items
+    assert [index.Name for index in indices] == ["ExistingIdx", "PayloadIdx"]
+
+    new_index = indices[1]
+    assert new_index.Properties == "Payload"
+    assert new_index.Unique == 1

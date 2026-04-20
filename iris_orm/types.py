@@ -56,6 +56,13 @@ class StorageProperty:
 
 
 @dataclass
+class StorageIndex:
+    name: str
+    location: Optional[str] = None
+    small_chunk_size: Optional[str] = None
+
+
+@dataclass
 class StorageData:
     name: str
     structure: str
@@ -150,5 +157,6 @@ class StorageDefinition:
     sql_table_number: Optional[str] = None
     sequence_number: Optional[str] = None
     data: Tuple[StorageData, ...] = ()
+    indices: Tuple[StorageIndex, ...] = ()
     properties: Tuple[StorageProperty, ...] = ()
     sql_maps: Tuple[StorageSQLMap, ...] = ()

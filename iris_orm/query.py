@@ -151,6 +151,25 @@ def _resolve_sql_field_name(model_cls: Type[TModel], field_name: str) -> str:
     return field_name
 
 
+def _maybe_auto_sync_schema(model_cls: Type[TModel]) -> None:
+    if not getattr(model_cls, "_auto_sync", False):
+        return
+
+    mode = getattr(model_cls, "_sync_mode", "extend")
+    if mode == "observe":
+        raise RuntimeError(
+            f"{model_cls.__name__} enables `Meta.auto_sync`, but mode='observe' never writes schema. "
+            "Disable auto-sync or call `Model.sync_schema()` explicitly in a writable mode."
+        )
+    if mode == "replace":
+        raise RuntimeError(
+            f"{model_cls.__name__} enables `Meta.auto_sync`, but mode='replace' is destructive. "
+            "Call `Model.sync_schema()` explicitly instead of auto-syncing on save."
+        )
+
+    model_cls.sync_schema()
+
+
 class QuerySet(Generic[TModel]):
     def __init__(
         self,
@@ -209,6 +228,8 @@ def save_model(instance: TModel) -> None:
     classname = instance._classname
     hints = get_type_hints(instance.__class__, include_extras=True)
 
+    _maybe_auto_sync_schema(instance.__class__)
+
     if instance._pk:
         iris_obj = runtime.get_object(classname, instance._pk)
     else:
@@ -232,7 +253,7 @@ def save_model(instance: TModel) -> None:
     st = runtime.save_object(iris_obj)
 
     if not runtime.is_ok(st):
-        raise RuntimeError(f"Save failed: {st}")
+        raise RuntimeError(f"Save failed for {classname}: {runtime.format_status(st)}")
 
     pk = runtime.get_object_id(iris_obj)
     if pk:

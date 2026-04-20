@@ -50,6 +50,7 @@ class ModelMeta(type):
         meta_inner = namespace.get("Meta", None)
         setattr(cls, "_classname", getattr(meta_inner, "classname", name))
         setattr(cls, "_sync_mode", getattr(meta_inner, "mode", "extend"))
+        setattr(cls, "_auto_sync", getattr(meta_inner, "auto_sync", False))
         setattr(cls, "_superclasses", getattr(meta_inner, "superclasses", "%Persistent"))
         setattr(cls, "_storage", getattr(meta_inner, "storage", None))
         setattr(cls, "_indexes", getattr(meta_inner, "indexes", []))
@@ -60,6 +61,7 @@ class IRISModel(metaclass=ModelMeta):
     _fields: dict[str, Field]
     _classname: str
     _sync_mode: str
+    _auto_sync: bool
 
     def __init__(self, **kwargs):
         self._pk: Optional[str] = None

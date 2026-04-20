@@ -18,6 +18,7 @@ class RuntimeAdapter(Protocol):
     def invoke_method(self, obj: Any, method_name: str, *args: Any) -> Any: ...
     def get_object_id(self, obj: Any) -> str: ...
     def is_ok(self, status: Any) -> bool: ...
+    def format_status(self, status: Any) -> str: ...
     def extract_python_value(self, val: Any) -> Any: ...
     def decode_percent_list(self, value: Any) -> list[Any]: ...
     def inject_iris_value(
@@ -44,6 +45,19 @@ _IRIS_COLLECTION_CLASSES = {
     "%Library.ArrayOfDataTypes",
     "%Library.ArrayOfObjects",
 }
+
+
+def _is_missing_class_error(exc: BaseException) -> bool:
+    message = str(exc)
+    return "iris.cls: error finding class" in message
+
+
+def _format_missing_class_error(class_name: str) -> str:
+    return (
+        f"IRIS class {class_name!r} does not exist in the current namespace. "
+        "If this model is defined in Python, run `Model.sync_schema()` first. "
+        "Otherwise verify `Meta.classname` and the active IRIS namespace."
+    )
 
 
 def _uses_iris_collection_class(field_meta: Any | None) -> bool:
@@ -142,7 +156,12 @@ class BaseIRISAdapter:
     def _cls(self, class_name: str):
         import iris
 
-        return iris.cls(class_name)
+        try:
+            return iris.cls(class_name)
+        except RuntimeError as exc:
+            if _is_missing_class_error(exc):
+                raise RuntimeError(_format_missing_class_error(class_name)) from exc
+            raise
 
     def call_classmethod(self, class_name: str, method_name: str, *args: Any) -> Any:
         cls_ref = self._cls(class_name)
@@ -156,6 +175,17 @@ class BaseIRISAdapter:
 
     def save_object(self, obj: Any) -> Any:
         return obj._Save()
+
+    def format_status(self, status: Any) -> str:
+        try:
+            message = self.call_classmethod("%SYSTEM.Status", "GetErrorText", status)
+            if isinstance(message, str):
+                message = message.strip()
+                if message:
+                    return message
+        except Exception:
+            pass
+        return str(status)
 
     def get_object(self, class_name: str, obj_id: str) -> Any:
         cls_ref = self._cls(class_name)

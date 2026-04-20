@@ -481,7 +481,7 @@ class _CompiledDictionaryReader:
 
     def list_parameters(self, classname: str) -> list[_CompiledParameter]:
         rows = self._fetchall(
-            "SELECT Name, Default FROM %Dictionary.CompiledParameter WHERE parent = ?",
+            "SELECT Name, _Default FROM %Dictionary.CompiledParameter WHERE parent = ?",
             (classname,),
         )
         params = []
@@ -826,7 +826,7 @@ class _CompiledDictionaryReader:
         rows = self._fetchall(
             (
                 "SELECT Name, BlockCount, Condition, ConditionFields, ConditionalWithHostVars, "
-                "Global, PopulationPct, PopulationType, RowReference, Structure, Type "
+                "_Global, PopulationPct, PopulationType, RowReference, Structure, Type "
                 "FROM %Dictionary.CompiledStorageSQLMap WHERE parent = ?"
             ),
             (storage_parent,),

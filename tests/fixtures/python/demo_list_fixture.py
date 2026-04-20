@@ -33,7 +33,10 @@ def reset_fixture_data() -> None:
     conn = runtime.get_dbapi_connection()
     cursor = conn.cursor()
     cursor.execute(f"DELETE FROM {ListFixture._classname}")
-    cursor.execute(f"DELETE FROM {ListFixtureItem._classname}")
+    try:
+        cursor.execute(f"DELETE FROM {ListFixtureItem._classname}")
+    except Exception:
+        pass
     commit = getattr(conn, "commit", None)
     if callable(commit):
         commit()

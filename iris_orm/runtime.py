@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 from typing import Any, Protocol
 
 
@@ -127,7 +128,7 @@ def configure(native_connection=None) -> None:
 
     if native_connection:
         iris.runtime.configure(mode="native", native_connection=native_connection)
-        configure_default_runtime(NativeProxyAdapter())
+        configure_default_runtime(NativeProxyAdapter(native_connection))
     else:
         iris.runtime.configure()
         mode = getattr(iris.runtime, "mode", "embedded")
@@ -398,6 +399,30 @@ class BaseIRISAdapter:
 
 
 class NativeProxyAdapter(BaseIRISAdapter):
+    def __init__(self, native_connection: Any | None = None):
+        self._native_connection = native_connection
+
+    def get_dbapi_connection(self) -> Any:
+        import iris
+
+        connection = self._native_connection
+        hostname = getattr(connection, "hostname", None)
+        port = getattr(connection, "port", None)
+        namespace = getattr(connection, "namespace", None)
+        username = os.environ.get("IRISUSERNAME")
+        password = os.environ.get("IRISPASSWORD")
+
+        if hostname and port and namespace and username and password:
+            return iris.dbapi.connect(
+                hostname=hostname,
+                port=port,
+                namespace=namespace,
+                username=username,
+                password=password,
+            )
+
+        return iris.dbapi.connect(mode="auto")
+
     def inject_iris_value(
         self,
         obj: Any,

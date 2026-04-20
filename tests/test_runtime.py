@@ -384,6 +384,29 @@ class TestNativeProxyAdapter(unittest.TestCase):
         )
         self.assertEqual(plain_obj.MyList, "encoded-list")
 
+    def test_get_dbapi_connection_uses_explicit_remote_credentials(self):
+        fake_dbapi = SimpleNamespace(connect=MagicMock(return_value="dbapi-conn"))
+        fake_iris = SimpleNamespace(dbapi=fake_dbapi)
+        connection = SimpleNamespace(hostname="localhost", port=1972, namespace="IRISAPP")
+        adapter = NativeProxyAdapter(connection)
+
+        with patch.dict(
+            "os.environ",
+            {"IRISUSERNAME": "SuperUser", "IRISPASSWORD": "SYS"},
+            clear=False,
+        ):
+            with patch.dict("sys.modules", {"iris": fake_iris}):
+                result = adapter.get_dbapi_connection()
+
+        fake_dbapi.connect.assert_called_once_with(
+            hostname="localhost",
+            port=1972,
+            namespace="IRISAPP",
+            username="SuperUser",
+            password="SYS",
+        )
+        self.assertEqual(result, "dbapi-conn")
+
     def test_missing_class_error_is_rewritten_with_context(self):
         fake_iris = SimpleNamespace(
             cls=MagicMock(side_effect=RuntimeError("iris.cls: error finding class"))

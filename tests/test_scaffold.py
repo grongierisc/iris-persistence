@@ -115,7 +115,7 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
             ("%Internal", "%Library.String", 0, None, None, "", "%Internal", 0),
         ],
         (
-            "SELECT Name, Default FROM %Dictionary.CompiledParameter WHERE parent = ?",
+            "SELECT Name, _Default FROM %Dictionary.CompiledParameter WHERE parent = ?",
             ("Demo.StubFixture",),
         ): [
             ("CUSTOM", "demo"),
@@ -191,7 +191,7 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
         (
             (
                 "SELECT Name, BlockCount, Condition, ConditionFields, ConditionalWithHostVars, "
-                "Global, PopulationPct, PopulationType, RowReference, Structure, Type "
+                "_Global, PopulationPct, PopulationType, RowReference, Structure, Type "
                 "FROM %Dictionary.CompiledStorageSQLMap WHERE parent = ?"
             ),
             ("Demo.StubFixture||Default",),
@@ -636,7 +636,7 @@ def test_scaffold_from_iris_reports_metadata_warnings(monkeypatch, tmp_path: Pat
             ("Title", "%Library.String", 1, None, None, "", "Title", 0),
         ],
         (
-            "SELECT Name, Default FROM %Dictionary.CompiledParameter WHERE parent = ?",
+            "SELECT Name, _Default FROM %Dictionary.CompiledParameter WHERE parent = ?",
             ("Demo.WarnFixture",),
         ): RuntimeError("parameter lookup failed"),
         (

@@ -203,6 +203,24 @@ def test_meta_fixture_reverse_engineers_query_level_metadata(
     assert ("Titles", "1", "1", "SourceMetaFixtureTitlesView") in query_rows
 
 
+def test_demo_demo_scaffold_reads_class_parameters_via_definition_fallback(tmp_path: Path):
+    from iris_orm.runtime import get_runtime
+
+    exists = get_runtime().call_classmethod("%Dictionary.ClassDefinition", "_ExistsId", "Demo.Demo")
+    if not exists:
+        pytest.skip("requires Demo.Demo to exist in the current IRIS namespace")
+
+    result = scaffold_from_iris(
+        "Demo.Demo",
+        str(tmp_path),
+        extract_meta=True,
+        return_result=True,
+    )
+    assert result.warnings == []
+    module = load_module_from_path(Path(result.files[0]))
+    assert module.Demo._parameters.get("TITI") == "TOTO"
+
+
 def test_recursive_object_reference_scaffold_e2e(loaded_objectscript_fixtures, tmp_path: Path):
     result = scaffold_from_iris(
         "Demo.SourceRecursive%",

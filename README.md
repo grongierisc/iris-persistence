@@ -89,6 +89,11 @@ class Meta:
     parameters = {"DEFAULTGLOBAL": "^Demo.ArticleD"}
 ```
 
+`Meta.parameters` is written into IRIS class parameters during `sync_schema()`.
+When scaffolding with `extract_meta=True`, `iris_orm` reads parameters from
+`%Dictionary.CompiledParameter` and falls back to the live
+`%Dictionary.ClassDefinition.Parameters` collection if the SQL dictionary view is empty.
+
 ## Ownership Modes
 
 ### extend (default)

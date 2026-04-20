@@ -97,6 +97,25 @@ def sync_schema(model_cls: Type[Any], _seen: set[str] | None = None) -> None:
         if getattr(class_metadata, "procedure_block", False):
             runtime.set_property(cd, "ProcedureBlock", 1)
 
+    parameters = getattr(model_cls, "_parameters", {}) or {}
+    if isinstance(parameters, dict) and mode in {"extend", "replace"}:
+        param_list = runtime.get_property(cd, "Parameters")
+        existing_parameters = set()
+        if mode == "extend" and param_list is not None:
+            count = runtime.invoke_method(param_list, "Count")
+            for i in range(1, count + 1):
+                param = runtime.invoke_method(param_list, "GetAt", i)
+                existing_parameters.add(runtime.get_property(param, "Name"))
+        if param_list is not None:
+            for param_name, param_default in parameters.items():
+                if mode == "extend" and param_name in existing_parameters:
+                    continue
+                param_def = runtime.create_object("%Dictionary.ParameterDefinition")
+                runtime.set_property(param_def, "Name", param_name)
+                runtime.set_property(param_def, "parent", classname)
+                runtime.set_property(param_def, "Default", str(param_default))
+                runtime.invoke_method(param_list, "Insert", param_def)
+
     props_oref_list = runtime.get_property(cd, "Properties")
     existing_props = {}
 
@@ -157,6 +176,16 @@ def sync_schema(model_cls: Type[Any], _seen: set[str] | None = None) -> None:
             runtime.set_property(prop, "Storable", 0)
         if getattr(field_meta, "multi_dimensional", False):
             runtime.set_property(prop, "MultiDimensional", 1)
+        if getattr(field_meta, "sql_list_delimiter", None) is not None:
+            runtime.set_property(prop, "SqlListDelimiter", field_meta.sql_list_delimiter)
+        if getattr(field_meta, "sql_list_type", None) is not None:
+            runtime.set_property(prop, "SqlListType", field_meta.sql_list_type)
+        if getattr(field_meta, "sql_compute_code", None) is not None:
+            runtime.set_property(prop, "SqlComputeCode", field_meta.sql_compute_code)
+        if getattr(field_meta, "sql_compute_on_change", None) is not None:
+            runtime.set_property(prop, "SqlComputeOnChange", field_meta.sql_compute_on_change)
+        if getattr(field_meta, "sql_computed", False):
+            runtime.set_property(prop, "SqlComputed", 1)
 
         if getattr(field_meta, "initial_expression", None) is not None:
             runtime.set_property(prop, "InitialExpression", field_meta.initial_expression)

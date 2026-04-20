@@ -475,6 +475,74 @@ def test_scaffold_reads_property_relationship_metadata(monkeypatch, tmp_path: Pa
     assert module.RelationshipFixture._fields["IdentityCode"].identity is True
 
 
+def test_scaffold_reads_property_sql_projection_metadata(monkeypatch, tmp_path: Path):
+    rows_by_query = {
+        (
+            "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name LIKE ?",
+            ("Demo.SqlProjectionFixture",),
+        ): [
+            ("Demo.SqlProjectionFixture", "%Persistent"),
+        ],
+        (
+            (
+                "SELECT Name, Type, Required, InitialExpression, Parameters, "
+                "Collection, SqlFieldName, ReadOnly "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
+            ("Demo.SqlProjectionFixture",),
+        ): [
+            ("Tags", "%List", 0, None, None, "", "Tags", 0),
+            ("TitleUpper", "%Library.String", 0, None, None, "", "TitleUpper", 0),
+        ],
+        (
+            (
+                "SELECT Name, SqlListDelimiter, SqlListType, SqlComputeCode, "
+                "SqlComputeOnChange, SqlComputed "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
+            ("Demo.SqlProjectionFixture",),
+        ): [
+            ("Tags", "|", "DELIMITED", None, None, 0),
+            (
+                "TitleUpper",
+                None,
+                None,
+                "Set {*} = {Title}",
+                "Title",
+                1,
+            ),
+        ],
+    }
+
+    monkeypatch.setattr(scaffold_module, "get_runtime", lambda: _StubRuntime(rows_by_query))
+
+    result = scaffold_module.scaffold_from_iris(
+        "Demo.SqlProjectionFixture",
+        str(tmp_path),
+        return_result=True,
+    )
+
+    assert result.warnings == []
+    module_path = Path(result.files[0])
+    generated_text = module_path.read_text(encoding="utf-8")
+    assert (
+        'Field(iris_type="%List", sql_list_delimiter=\'|\', sql_list_type=\'DELIMITED\')'
+        in generated_text
+    )
+    assert (
+        'Field(iris_type="%Library.String", sql_compute_code=\'Set {*} = {Title}\', '
+        "sql_compute_on_change='Title', sql_computed=True)"
+        in generated_text
+    )
+
+    module = _load_module(module_path)
+    assert module.SqlProjectionFixture._fields["Tags"].sql_list_delimiter == "|"
+    assert module.SqlProjectionFixture._fields["Tags"].sql_list_type == "DELIMITED"
+    assert module.SqlProjectionFixture._fields["TitleUpper"].sql_compute_code == "Set {*} = {Title}"
+    assert module.SqlProjectionFixture._fields["TitleUpper"].sql_compute_on_change == "Title"
+    assert module.SqlProjectionFixture._fields["TitleUpper"].sql_computed is True
+
+
 def test_scaffold_reads_class_metadata(monkeypatch, tmp_path: Path):
     rows_by_query = {
         (

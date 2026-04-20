@@ -183,6 +183,11 @@ class _CompiledProperty:
     transient: bool
     storable: bool
     multi_dimensional: bool
+    sql_list_delimiter: str | None
+    sql_list_type: str | None
+    sql_compute_code: str | None
+    sql_compute_on_change: str | None
+    sql_computed: bool
 
 
 @dataclass(frozen=True)
@@ -384,7 +389,7 @@ class _CompiledDictionaryReader:
             ),
             (classname,),
         )
-        metadata_by_name: dict[str, tuple[Any, ...]] = {}
+        metadata_by_name: dict[str, dict[str, Any]] = {}
         try:
             metadata_rows = self._fetchall(
                 (
@@ -394,9 +399,36 @@ class _CompiledDictionaryReader:
                 ),
                 (classname,),
             )
-            metadata_by_name = {str(row[0]): row[1:] for row in metadata_rows}
+            for row in metadata_rows:
+                metadata_by_name[str(row[0])] = {
+                    "identity": row[1],
+                    "relationship": row[2],
+                    "on_delete": row[3],
+                    "inverse": row[4],
+                    "transient": row[5],
+                    "storable": row[6],
+                    "multi_dimensional": row[7],
+                }
         except Exception:
             metadata_by_name = {}
+        try:
+            sql_projection_rows = self._fetchall(
+                (
+                    "SELECT Name, SqlListDelimiter, SqlListType, SqlComputeCode, "
+                    "SqlComputeOnChange, SqlComputed "
+                    "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+                ),
+                (classname,),
+            )
+            for row in sql_projection_rows:
+                item = metadata_by_name.setdefault(str(row[0]), {})
+                item["sql_list_delimiter"] = row[1]
+                item["sql_list_type"] = row[2]
+                item["sql_compute_code"] = row[3]
+                item["sql_compute_on_change"] = row[4]
+                item["sql_computed"] = row[5]
+        except Exception:
+            pass
         properties = []
         for (
             prop_name,
@@ -411,18 +443,7 @@ class _CompiledDictionaryReader:
             if str(prop_name).startswith("%"):
                 continue
             parsed_params = _parse_iris_dict(params_raw) if params_raw else {}
-            (
-                identity,
-                relationship,
-                on_delete,
-                inverse,
-                transient,
-                storable,
-                multi_dimensional,
-            ) = metadata_by_name.get(
-                str(prop_name),
-                (None, None, None, None, None, None, None),
-            )
+            metadata = metadata_by_name.get(str(prop_name), {})
             properties.append(
                 _CompiledProperty(
                     name=prop_name,
@@ -438,13 +459,22 @@ class _CompiledDictionaryReader:
                         if not sql_field_name or str(sql_field_name) == str(prop_name)
                         else str(sql_field_name)
                     ),
-                    identity=_as_bool(identity),
-                    relationship=_optional_str(relationship),
-                    on_delete=_optional_str(on_delete),
-                    inverse=_optional_str(inverse),
-                    transient=_as_bool(transient),
-                    storable=True if storable is None else _as_bool(storable),
-                    multi_dimensional=_as_bool(multi_dimensional),
+                    identity=_as_bool(metadata.get("identity")),
+                    relationship=_optional_str(metadata.get("relationship")),
+                    on_delete=_optional_str(metadata.get("on_delete")),
+                    inverse=_optional_str(metadata.get("inverse")),
+                    transient=_as_bool(metadata.get("transient")),
+                    storable=(
+                        True
+                        if metadata.get("storable") is None
+                        else _as_bool(metadata.get("storable"))
+                    ),
+                    multi_dimensional=_as_bool(metadata.get("multi_dimensional")),
+                    sql_list_delimiter=_optional_str(metadata.get("sql_list_delimiter")),
+                    sql_list_type=_optional_str(metadata.get("sql_list_type")),
+                    sql_compute_code=_optional_str(metadata.get("sql_compute_code")),
+                    sql_compute_on_change=_optional_str(metadata.get("sql_compute_on_change")),
+                    sql_computed=_as_bool(metadata.get("sql_computed")),
                 )
             )
         return sorted(properties, key=lambda item: item.name)
@@ -459,6 +489,25 @@ class _CompiledDictionaryReader:
             if str(name).startswith("%") or name == "GUID":
                 continue
             params.append(_CompiledParameter(name=name, default=str(default)))
+        if not params:
+            try:
+                runtime = get_runtime()
+                class_def = runtime.get_object("%Dictionary.ClassDefinition", classname)
+                if class_def is not None:
+                    param_list = runtime.get_property(class_def, "Parameters")
+                    if param_list is not None:
+                        count = runtime.invoke_method(param_list, "Count")
+                        for index in range(1, count + 1):
+                            param = runtime.invoke_method(param_list, "GetAt", index)
+                            name = runtime.get_property(param, "Name")
+                            default = runtime.get_property(param, "Default")
+                            if str(name).startswith("%") or name == "GUID":
+                                continue
+                            params.append(
+                                _CompiledParameter(name=str(name), default=str(default))
+                            )
+            except Exception:
+                pass
         return sorted(params, key=lambda item: item.name)
 
     def list_indexes(self, classname: str) -> list[_CompiledIndex]:
@@ -1274,6 +1323,16 @@ def _render_model(
                 field_args.append("storable=False")
             if prop.multi_dimensional:
                 field_args.append("multi_dimensional=True")
+            if prop.sql_list_delimiter:
+                field_args.append(f"sql_list_delimiter={prop.sql_list_delimiter!r}")
+            if prop.sql_list_type:
+                field_args.append(f"sql_list_type={prop.sql_list_type!r}")
+            if prop.sql_compute_code:
+                field_args.append(f"sql_compute_code={prop.sql_compute_code!r}")
+            if prop.sql_compute_on_change:
+                field_args.append(f"sql_compute_on_change={prop.sql_compute_on_change!r}")
+            if prop.sql_computed:
+                field_args.append("sql_computed=True")
             default_arg, default_value = _python_default_literal(prop)
             if default_arg:
                 field_args.append(default_arg)

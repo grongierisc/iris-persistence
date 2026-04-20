@@ -5,6 +5,7 @@ import importlib.util
 import sys
 import uuid
 from pathlib import Path
+from typing import Annotated
 
 import pytest
 
@@ -46,6 +47,30 @@ class ClassMetadataRoundTripFixture(IRISModel):
             sql_table_name="Demo_ClassMetadataRoundTripFixture",
             procedure_block=True,
         )
+
+
+class SQLProjectionRoundTripFixture(IRISModel):
+    Title: str
+    Tags: Annotated[
+        list[str] | None,
+        Field(
+            iris_type="%List",
+            sql_list_delimiter="|",
+            sql_list_type="DELIMITED",
+        ),
+    ] = None
+    TitleUpper: Annotated[
+        str | None,
+        Field(
+            sql_compute_code="Set {*} = {Title}",
+            sql_compute_on_change="Title",
+            sql_computed=True,
+        ),
+    ] = None
+
+    class Meta:
+        classname = "Demo.SQLProjectionRoundTripFixture"
+        mode = "replace"
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -188,3 +213,23 @@ def test_class_metadata_round_trip(tmp_path: Path):
         == "Demo_ClassMetadataRoundTripFixture"
     )
     assert ScaffoldedFixture._class_metadata.procedure_block is True
+
+
+def test_sql_projection_metadata_round_trip(tmp_path: Path):
+    SQLProjectionRoundTripFixture.sync_schema()
+
+    generated_files = scaffold_from_iris(
+        "Demo.SQLProjectionRoundTripFixture",
+        str(tmp_path),
+        extract_meta=False,
+    )
+    assert generated_files == [str(tmp_path / "sqlprojectionroundtripfixture.py")]
+
+    scaffolded_module = _load_module(tmp_path / "sqlprojectionroundtripfixture.py")
+    ScaffoldedFixture = scaffolded_module.SQLProjectionRoundTripFixture
+
+    assert ScaffoldedFixture._fields["Tags"].sql_list_delimiter == "|"
+    assert ScaffoldedFixture._fields["Tags"].sql_list_type == "DELIMITED"
+    assert ScaffoldedFixture._fields["TitleUpper"].sql_compute_code == "Set {*} = {Title}"
+    assert ScaffoldedFixture._fields["TitleUpper"].sql_compute_on_change == "Title"
+    assert ScaffoldedFixture._fields["TitleUpper"].sql_computed is True

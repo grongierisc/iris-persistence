@@ -39,6 +39,11 @@ class Field:
     transient: bool = False
     storable: bool = True
     multi_dimensional: bool = False
+    sql_list_delimiter: Optional[str] = None
+    sql_list_type: Optional[str] = None
+    sql_compute_code: Optional[str] = None
+    sql_compute_on_change: Optional[str] = None
+    sql_computed: bool = False
 
     def __post_init__(self) -> None:
         if self.iris_type is None and self.sql_type is not None:

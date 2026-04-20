@@ -54,6 +54,7 @@ class _RecordingObject:
     def __init__(self, class_name):
         self.__class_name = class_name
         if class_name == "%Dictionary.ClassDefinition":
+            self.Parameters = _ListWrapper()
             self.Properties = _ListWrapper()
             self.Indices = _ListWrapper()
             self.Storages = _ListWrapper()
@@ -295,6 +296,15 @@ class ExtendIndexFixture(IRISModel):
         ]
 
 
+class ParameterFixture(IRISModel):
+    Payload: Annotated[str | None, Field()] = None
+
+    class Meta:
+        classname = "Demo.ParameterFixture"
+        mode = "replace"
+        parameters = {"TITI": "TOTO"}
+
+
 class RelationshipMetadataFixture(IRISModel):
     Owner: Annotated[
         str | None,
@@ -312,6 +322,29 @@ class RelationshipMetadataFixture(IRISModel):
 
     class Meta:
         classname = "Demo.RelationshipMetadataFixture"
+        mode = "replace"
+
+
+class SQLProjectionMetadataFixture(IRISModel):
+    Tags: Annotated[
+        list[str] | None,
+        Field(
+            iris_type="%List",
+            sql_list_delimiter="|",
+            sql_list_type="DELIMITED",
+        ),
+    ] = None
+    TitleUpper: Annotated[
+        str | None,
+        Field(
+            sql_compute_code="Set {*} = {Title}",
+            sql_compute_on_change="Title",
+            sql_computed=True,
+        ),
+    ] = None
+
+    class Meta:
+        classname = "Demo.SQLProjectionMetadataFixture"
         mode = "replace"
 
 
@@ -453,6 +486,38 @@ def test_sync_schema_writes_relationship_property_metadata(monkeypatch):
     assert prop.Transient == 1
     assert prop.Storable == 0
     assert prop.MultiDimensional == 1
+
+
+def test_sync_schema_writes_class_parameters(monkeypatch):
+    runtime = _RecordingRuntime()
+    monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
+
+    ParameterFixture.sync_schema()
+
+    parameter = runtime.class_definition.Parameters.items[0]
+    assert parameter.Name == "TITI"
+    assert parameter.Default == "TOTO"
+
+
+def test_sync_schema_writes_sql_projection_property_metadata(monkeypatch):
+    runtime = _RecordingRuntime()
+    monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
+
+    SQLProjectionMetadataFixture.sync_schema()
+
+    tags_prop = runtime.class_definition.Properties.items[0]
+    title_upper_prop = runtime.class_definition.Properties.items[1]
+
+    assert tags_prop.Name == "Tags"
+    assert tags_prop.Type == "%List"
+    assert tags_prop.SqlListDelimiter == "|"
+    assert tags_prop.SqlListType == "DELIMITED"
+
+    assert title_upper_prop.Name == "TitleUpper"
+    assert title_upper_prop.Type == "%Library.String"
+    assert title_upper_prop.SqlComputeCode == "Set {*} = {Title}"
+    assert title_upper_prop.SqlComputeOnChange == "Title"
+    assert title_upper_prop.SqlComputed == 1
 
 
 def test_sync_schema_writes_class_metadata(monkeypatch):

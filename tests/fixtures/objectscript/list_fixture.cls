@@ -4,11 +4,11 @@ Class Demo.ListFixture Extends %Persistent
 
     Property ListDataType As %ListOfDataTypes;
 
-    Property ArrayDataType As %ListOfDataTypes;
+    Property ArrayDataType As %ArrayOfDataTypes;
 
-    Property ListOfObjects As %ListOfObjects;
+    Property ListOfObjects As list Of Demo.ListFixtureItem;
 
-    Property ArrayOfObjects As %ArrayOfObjects;
+    Property ArrayOfObjects As array Of Demo.ListFixtureItem;
 
 Storage Default
 {

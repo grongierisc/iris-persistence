@@ -974,6 +974,74 @@ def test_scaffold_collection_object_properties_are_typed_as_collections(
     )
 
 
+def test_scaffold_collection_class_types_are_typed_as_collections_without_collection_flag(
+    monkeypatch,
+    tmp_path: Path,
+):
+    rows_by_query = {
+        (
+            "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name LIKE ?",
+            ("Demo.ListFixture",),
+        ): [
+            ("Demo.ListFixture", "%Persistent"),
+        ],
+        (
+            (
+                "SELECT Name, Type, Required, InitialExpression, Parameters, "
+                "Collection, SqlFieldName, ReadOnly "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
+            ("Demo.ListFixture",),
+        ): [
+            ("ListAttributes", "%List", 0, None, None, "", "ListAttributes", 0),
+            ("ListDataType", "%ListOfDataTypes", 0, None, None, "", "ListDataType", 0),
+            ("ArrayDataType", "%ArrayOfDataTypes", 0, None, None, "", "ArrayDataType", 0),
+            ("ListOfObjects", "%ListOfObjects", 0, None, None, "", "ListOfObjects", 0),
+            ("ArrayOfObjects", "%ArrayOfObjects", 0, None, None, "", "ArrayOfObjects", 0),
+        ],
+    }
+
+    monkeypatch.setattr(scaffold_module, "get_runtime", lambda: _StubRuntime(rows_by_query))
+
+    result = scaffold_module.scaffold_from_iris(
+        "Demo.ListFixture",
+        str(tmp_path),
+        return_result=True,
+    )
+
+    assert result.warnings == []
+    generated_text = (tmp_path / "listfixture.py").read_text(encoding="utf-8")
+    assert 'ListAttributes: Annotated[list[Any] | None, Field(iris_type="%List")] = None' in generated_text
+    assert (
+        'ListDataType: Annotated[list[Any] | None, '
+        'Field(iris_type="%ListOfDataTypes")] = None'
+        in generated_text
+    )
+    assert (
+        'ArrayDataType: Annotated[dict[str, Any] | None, '
+        'Field(iris_type="%ArrayOfDataTypes")] = None'
+        in generated_text
+    )
+    assert (
+        'ListOfObjects: Annotated[list[Any] | None, '
+        'Field(iris_type="%ListOfObjects")] = None'
+        in generated_text
+    )
+    assert (
+        'ArrayOfObjects: Annotated[dict[str, Any] | None, '
+        'Field(iris_type="%ArrayOfObjects")] = None'
+        in generated_text
+    )
+
+    module = _load_module(tmp_path / "listfixture.py")
+    ListFixture = module.ListFixture
+    assert ListFixture._fields["ListAttributes"].iris_type == "%List"
+    assert ListFixture._fields["ListDataType"].iris_type == "%ListOfDataTypes"
+    assert ListFixture._fields["ArrayDataType"].iris_type == "%ArrayOfDataTypes"
+    assert ListFixture._fields["ListOfObjects"].iris_type == "%ListOfObjects"
+    assert ListFixture._fields["ArrayOfObjects"].iris_type == "%ArrayOfObjects"
+
+
 def test_scaffold_preserves_multiple_non_python_initial_expression_variants(
     monkeypatch,
     tmp_path: Path,

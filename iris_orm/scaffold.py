@@ -34,9 +34,42 @@ def _map_iris_type_to_python(iris_type: str) -> str:
 
     if iris_type in mapping:
         return mapping[iris_type]
+    if iris_type in {
+        "%List",
+        "%ListOfDataTypes",
+        "%ListOfObjects",
+        "%ArrayOfDataTypes",
+        "%ArrayOfObjects",
+        "%Library.List",
+        "%Library.ListOfDataTypes",
+        "%Library.ListOfObjects",
+        "%Library.ArrayOfDataTypes",
+        "%Library.ArrayOfObjects",
+    }:
+        return "Any"
     if iris_type.startswith("%"):
         return "str"
     return "Any"
+
+
+def _collection_from_iris_type(iris_type: str | None) -> str | None:
+    if iris_type in {
+        "%List",
+        "%ListOfDataTypes",
+        "%ListOfObjects",
+        "%Library.List",
+        "%Library.ListOfDataTypes",
+        "%Library.ListOfObjects",
+    }:
+        return "list"
+    if iris_type in {
+        "%ArrayOfDataTypes",
+        "%ArrayOfObjects",
+        "%Library.ArrayOfDataTypes",
+        "%Library.ArrayOfObjects",
+    }:
+        return "array"
+    return None
 
 
 def _parse_iris_list(value: Any) -> list[Any]:
@@ -938,9 +971,10 @@ def _render_property_type(
     else:
         base_type = prop.python_type
 
-    if prop.collection == "list":
+    collection = prop.collection or _collection_from_iris_type(prop.iris_type)
+    if collection == "list":
         return f"list[{base_type}]"
-    if prop.collection == "array":
+    if collection == "array":
         return f"dict[str, {base_type}]"
     return base_type
 

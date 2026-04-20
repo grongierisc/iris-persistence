@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Generic, List, Optional, Type, TypeVar, get_type_hints
+from typing import Any, Dict, Generic, List, Optional, Type, TypeVar, get_args, get_origin, get_type_hints
 
 import iris_orm.models
 from iris_orm.codecs import coerce_value_for_load, coerce_value_for_save, resolve_declared_type
@@ -18,6 +18,38 @@ def _is_serial_type(model_cls: Type[iris_orm.models.IRISModel]) -> bool:
     return "SerialObject" in superclasses
 
 
+def _collection_value_type(declared_type: Any) -> tuple[str | None, Any]:
+    origin = get_origin(declared_type)
+    if origin in (list, List):
+        args = get_args(declared_type)
+        element_type = resolve_declared_type(args[0]) if args else Any
+        return ("list", element_type)
+    if origin in (dict, Dict):
+        args = get_args(declared_type)
+        element_type = resolve_declared_type(args[1]) if len(args) == 2 else Any
+        return ("array", element_type)
+    return (None, None)
+
+
+def _coerce_collection_for_load(
+    collection_kind: str,
+    element_type: Any,
+    value: Any,
+) -> Any:
+    if collection_kind == "list" and isinstance(value, list):
+        if _is_model_type(element_type):
+            return [_build_model_from_iris_obj(element_type, item) for item in value]
+        return [coerce_value_for_load(element_type, item) for item in value]
+    if collection_kind == "array" and isinstance(value, dict):
+        if _is_model_type(element_type):
+            return {
+                str(key): _build_model_from_iris_obj(element_type, item)
+                for key, item in value.items()
+            }
+        return {str(key): coerce_value_for_load(element_type, item) for key, item in value.items()}
+    return value
+
+
 def _build_model_from_iris_obj(
     model_cls: Type[TModel],
     iris_obj: Any,
@@ -32,7 +64,14 @@ def _build_model_from_iris_obj(
         raw_val = runtime.get_property(iris_obj, field_name)
         python_val = runtime.extract_python_value(raw_val)
         declared_type = resolve_declared_type(hints.get(field_name))
-        if _is_model_type(declared_type):
+        collection_kind, element_type = _collection_value_type(declared_type)
+        if collection_kind is not None:
+            params[field_name] = _coerce_collection_for_load(
+                collection_kind,
+                element_type,
+                python_val,
+            )
+        elif _is_model_type(declared_type):
             params[field_name] = _build_model_from_iris_obj(declared_type, python_val)
         else:
             params[field_name] = coerce_value_for_load(declared_type, python_val)
@@ -49,6 +88,21 @@ def _build_model_from_iris_obj(
 def _materialize_related_value(runtime: Any, declared_type: Any, value: Any) -> Any:
     if value is None:
         return None
+    collection_kind, element_type = _collection_value_type(declared_type)
+    if collection_kind == "list" and isinstance(value, list):
+        if _is_model_type(element_type):
+            return [
+                _materialize_related_value(runtime, element_type, item)
+                for item in value
+            ]
+        return [coerce_value_for_save(element_type, item) for item in value]
+    if collection_kind == "array" and isinstance(value, dict):
+        if _is_model_type(element_type):
+            return {
+                str(key): _materialize_related_value(runtime, element_type, item)
+                for key, item in value.items()
+            }
+        return {str(key): coerce_value_for_save(element_type, item) for key, item in value.items()}
     if not _is_model_type(declared_type):
         return coerce_value_for_save(declared_type, value)
 
@@ -164,6 +218,7 @@ def save_model(instance: TModel) -> None:
                 iris_obj,
                 field_name,
                 _materialize_related_value(runtime, declared_type, val),
+                field_meta=field_meta,
             )
 
     st = runtime.save_object(iris_obj)

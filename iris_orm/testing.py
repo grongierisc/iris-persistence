@@ -95,7 +95,13 @@ class FakeAdapter(RuntimeAdapter):
     def extract_python_value(self, val: Any) -> Any:
         return val
 
-    def inject_iris_value(self, obj: Any, field_name: str, val: Any) -> None:
+    def inject_iris_value(
+        self,
+        obj: Any,
+        field_name: str,
+        val: Any,
+        field_meta: Any | None = None,
+    ) -> None:
         setattr(obj, field_name, val)
 
     def get_dbapi_connection(self) -> Any:

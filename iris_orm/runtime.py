@@ -17,10 +17,63 @@ class RuntimeAdapter(Protocol):
     def get_object_id(self, obj: Any) -> str: ...
     def is_ok(self, status: Any) -> bool: ...
     def extract_python_value(self, val: Any) -> Any: ...
-    def inject_iris_value(self, obj: Any, field_name: str, val: Any) -> None: ...
+    def inject_iris_value(
+        self,
+        obj: Any,
+        field_name: str,
+        val: Any,
+        field_meta: Any | None = None,
+    ) -> None: ...
 
 
 _active_runtime: RuntimeAdapter | None = None
+
+
+_IRIS_COLLECTION_CLASSES = {
+    "%List",
+    "%ListOfDataTypes",
+    "%ListOfObjects",
+    "%ArrayOfDataTypes",
+    "%ArrayOfObjects",
+    "%Library.List",
+    "%Library.ListOfDataTypes",
+    "%Library.ListOfObjects",
+    "%Library.ArrayOfDataTypes",
+    "%Library.ArrayOfObjects",
+}
+
+
+def _uses_iris_collection_class(field_meta: Any | None) -> bool:
+    collection = getattr(field_meta, "collection", None)
+    if collection in {"list", "array"}:
+        return True
+    iris_type = getattr(field_meta, "iris_type", None)
+    return iris_type in _IRIS_COLLECTION_CLASSES
+
+
+def _collection_kind_from_field(field_meta: Any | None) -> str | None:
+    collection = getattr(field_meta, "collection", None)
+    if collection in {"list", "array"}:
+        return collection
+
+    iris_type = getattr(field_meta, "iris_type", None)
+    if iris_type in {
+        "%List",
+        "%ListOfDataTypes",
+        "%ListOfObjects",
+        "%Library.List",
+        "%Library.ListOfDataTypes",
+        "%Library.ListOfObjects",
+    }:
+        return "list"
+    if iris_type in {
+        "%ArrayOfDataTypes",
+        "%ArrayOfObjects",
+        "%Library.ArrayOfDataTypes",
+        "%Library.ArrayOfObjects",
+    }:
+        return "array"
+    return None
 
 
 def get_runtime() -> RuntimeAdapter:
@@ -102,7 +155,106 @@ class BaseIRISAdapter:
         else:
             return getattr(obj, method_name)()
 
+    def _populate_collection_property(
+        self,
+        obj: Any,
+        field_name: str,
+        val: Any,
+        field_meta: Any | None = None,
+    ) -> bool:
+        collection_kind = _collection_kind_from_field(field_meta)
+        if collection_kind is None:
+            return False
+
+        current_prop = self.get_property(obj, field_name)
+        if current_prop is None:
+            return False
+
+        try:
+            clear = getattr(current_prop, "Clear", None)
+            if callable(clear):
+                clear()
+
+            if collection_kind == "list" and isinstance(val, list):
+                if not callable(getattr(current_prop, "Insert", None)):
+                    return False
+                for item in val:
+                    getattr(current_prop, "Insert")(item)
+                return True
+
+            if collection_kind == "array" and isinstance(val, dict):
+                if not callable(getattr(current_prop, "SetAt", None)):
+                    return False
+                for key, item in val.items():
+                    getattr(current_prop, "SetAt")(item, str(key))
+                return True
+        except Exception:
+            return False
+
+        return False
+
+    def _extract_collection_value(self, val: Any) -> Any:
+        if callable(getattr(val, "GetNext", None)):
+            try:
+                import iris
+
+                key_ref = iris.ref("")
+                first_value = getattr(val, "GetNext")(key_ref)
+                first_key = key_ref.value
+                if first_key not in ("", None):
+                    if isinstance(first_key, int):
+                        items = [self.extract_python_value(first_value)]
+                        for _ in range(9999):
+                            next_value = getattr(val, "GetNext")(key_ref)
+                            next_key = key_ref.value
+                            if next_key in ("", None):
+                                return items
+                            items.append(self.extract_python_value(next_value))
+                        return items
+                    items = {str(first_key): self.extract_python_value(first_value)}
+                    for _ in range(9999):
+                        next_value = getattr(val, "GetNext")(key_ref)
+                        next_key = key_ref.value
+                        if next_key in ("", None):
+                            return items
+                        items[str(next_key)] = self.extract_python_value(next_value)
+                    return items
+            except Exception:
+                pass
+
+        if callable(getattr(val, "Count", None)) and callable(getattr(val, "GetAt", None)):
+            try:
+                total = getattr(val, "Count")()
+                if isinstance(total, int):
+                    return [
+                        self.extract_python_value(getattr(val, "GetAt")(index))
+                        for index in range(1, total + 1)
+                    ]
+            except Exception:
+                pass
+
+        if callable(getattr(val, "GetNext", None)) and callable(getattr(val, "GetAt", None)):
+            items: dict[str, Any] = {}
+            key: Any = ""
+            try:
+                for _ in range(10000):
+                    next_key = getattr(val, "GetNext")(key)
+                    if next_key in ("", None):
+                        return items
+                    if not isinstance(next_key, (str, int)):
+                        break
+                    items[str(next_key)] = self.extract_python_value(getattr(val, "GetAt")(next_key))
+                    key = next_key
+            except Exception:
+                pass
+
+        return None
+
     def extract_python_value(self, val: Any) -> Any:
+        extracted_collection = self._extract_collection_value(val)
+        if extracted_collection is not None:
+            return extracted_collection
+
         iris_class = None
         if hasattr(val, "_ClassName"):
             try:
@@ -140,7 +292,13 @@ class BaseIRISAdapter:
                 pass
         return val
 
-    def inject_iris_value(self, obj: Any, field_name: str, val: Any) -> None:
+    def inject_iris_value(
+        self,
+        obj: Any,
+        field_name: str,
+        val: Any,
+        field_meta: Any | None = None,
+    ) -> None:
         if isinstance(val, (bytes, bytearray)):
             current_prop = self.get_property(obj, field_name)
             if hasattr(current_prop, "Write"):
@@ -149,6 +307,12 @@ class BaseIRISAdapter:
             else:
                 self.set_property(obj, field_name, val)
         elif isinstance(val, dict):
+            if _uses_iris_collection_class(field_meta):
+                if self._populate_collection_property(obj, field_name, val, field_meta=field_meta):
+                    return
+                if getattr(field_meta, "iris_type", None) in {"%List", "%Library.List"}:
+                    self.set_property(obj, field_name, val)
+                    return
             import json
 
             try:
@@ -159,6 +323,12 @@ class BaseIRISAdapter:
             except Exception:
                 self.set_property(obj, field_name, val)
         elif isinstance(val, list):
+            if _uses_iris_collection_class(field_meta):
+                if self._populate_collection_property(obj, field_name, val, field_meta=field_meta):
+                    return
+                if getattr(field_meta, "iris_type", None) in {"%List", "%Library.List"}:
+                    self.set_property(obj, field_name, val)
+                    return
             import json
 
             try:
@@ -173,14 +343,20 @@ class BaseIRISAdapter:
 
 
 class NativeProxyAdapter(BaseIRISAdapter):
-    def inject_iris_value(self, obj: Any, field_name: str, val: Any) -> None:
+    def inject_iris_value(
+        self,
+        obj: Any,
+        field_name: str,
+        val: Any,
+        field_meta: Any | None = None,
+    ) -> None:
         import json
 
         oref = obj._oref if hasattr(obj, "_oref") else obj
         db = obj._db if hasattr(obj, "_db") else None
 
         if db is None:
-            return super().inject_iris_value(obj, field_name, val)
+            return super().inject_iris_value(obj, field_name, val, field_meta=field_meta)
 
         use_core_methods = hasattr(oref, "invoke")
 
@@ -196,6 +372,8 @@ class NativeProxyAdapter(BaseIRISAdapter):
             except Exception:
                 self.set_property(obj, field_name, val)
         elif isinstance(val, dict):
+            if _uses_iris_collection_class(field_meta):
+                return super().inject_iris_value(obj, field_name, val, field_meta=field_meta)
             try:
                 dyn_obj = db.classMethodValue(
                     "%Library.DynamicObject", "%FromJSON", json.dumps(val)
@@ -208,6 +386,8 @@ class NativeProxyAdapter(BaseIRISAdapter):
             except Exception:
                 self.set_property(obj, field_name, val)
         elif isinstance(val, list):
+            if _uses_iris_collection_class(field_meta):
+                return super().inject_iris_value(obj, field_name, val, field_meta=field_meta)
             try:
                 dyn_obj = db.classMethodValue("%Library.DynamicArray", "%FromJSON", json.dumps(val))
 

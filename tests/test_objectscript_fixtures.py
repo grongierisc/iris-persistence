@@ -35,6 +35,7 @@ def configure_live_runtime():
 @pytest.fixture()
 def loaded_objectscript_fixtures():
     loaded = [
+        load_objectscript_fixture("list_fixture"),
         load_objectscript_fixture("persistent_fixture"),
         load_objectscript_fixture("recursive_child_fixture"),
         load_objectscript_fixture("recursive_address_fixture"),
@@ -51,6 +52,9 @@ def loaded_objectscript_fixtures():
 
 def test_objectscript_fixture_sources_are_present():
     expected = [
+        OBJECTSCRIPT_FIXTURES / "list_fixture.cls",
+        OBJECTSCRIPT_FIXTURES / "list_fixture.py",
+        OBJECTSCRIPT_FIXTURES / "list_fixture_item.cls",
         OBJECTSCRIPT_FIXTURES / "persistent_fixture.cls",
         OBJECTSCRIPT_FIXTURES / "persistent_fixture.py",
         OBJECTSCRIPT_FIXTURES / "recursive_child_fixture.cls",
@@ -93,6 +97,7 @@ def test_objectscript_fixture_scaffold_e2e(loaded_objectscript_fixtures, tmp_pat
     generated_files = [path for result in results for path in result.files]
     assert len(generated_files) == 3
     assert {fixture.name for fixture in loaded_objectscript_fixtures} == {
+        "list_fixture",
         "persistent_fixture",
         "recursive_child_fixture",
         "recursive_address_fixture",
@@ -212,6 +217,74 @@ def test_recursive_object_reference_scaffold_e2e(loaded_objectscript_fixtures, t
             "sourcerecursiveparent",
         ):
             sys.modules.pop(module_name, None)
+
+
+def test_list_fixture_scaffold_round_trip(loaded_objectscript_fixtures, tmp_path: Path):
+    list_fixture = next(
+        fixture for fixture in loaded_objectscript_fixtures if fixture.name == "list_fixture"
+    )
+    if list_fixture.source != "cls":
+        pytest.skip("requires loading the ObjectScript list fixture directly from .cls metadata")
+
+    try:
+        result = scaffold_from_iris(
+            "Demo.ListFixture",
+            str(tmp_path),
+            extract_meta=True,
+            include_related=True,
+            return_result=True,
+        )
+    except Exception as exc:
+        pytest.skip(f"requires live IRIS scaffold access: {exc}")
+
+    assert result.warnings == []
+    assert {Path(path).name for path in result.files} >= {"listfixture.py", "listfixtureitem.py"}
+
+    sys.path.insert(0, str(tmp_path))
+    try:
+        fixture_module = importlib.import_module("listfixture")
+        item_module = importlib.import_module("listfixtureitem")
+        ListFixture = fixture_module.ListFixture
+        ListFixtureItem = item_module.ListFixtureItem
+
+        row = ListFixture(
+            ListAttributes=["alpha", "beta"],
+            ListDataType=["one", 2, True],
+            ArrayDataType={"first": "one", "second": 2},
+            ListOfObjects=[ListFixtureItem(Value="left"), ListFixtureItem(Value="right")],
+            ArrayOfObjects={
+                "a": ListFixtureItem(Value="A"),
+                "b": ListFixtureItem(Value="B"),
+            },
+        )
+        row.save()
+        assert row.pk is not None
+
+        loaded = ListFixture.get(row.pk)
+        assert loaded is not None
+        assert loaded.ListAttributes == ["alpha", "beta"]
+        assert loaded.ListDataType == ["one", 2, True]
+        assert loaded.ArrayDataType == {"first": "one", "second": 2}
+        assert [item.Value for item in loaded.ListOfObjects] == ["left", "right"]
+        assert {key: item.Value for key, item in loaded.ArrayOfObjects.items()} == {
+            "a": "A",
+            "b": "B",
+        }
+
+        assert isinstance(loaded.ListAttributes, list)
+        assert isinstance(loaded.ListDataType, list)
+        assert isinstance(loaded.ArrayDataType, dict)
+        assert isinstance(loaded.ListOfObjects, list)
+        assert isinstance(loaded.ArrayOfObjects, dict)
+        assert ListFixture._fields["ListAttributes"].iris_type == "%List"
+        assert ListFixture._fields["ListDataType"].iris_type == "%ListOfDataTypes"
+        assert ListFixture._fields["ArrayDataType"].iris_type == "%ArrayOfDataTypes"
+        assert ListFixture._fields["ListOfObjects"].iris_type == "Demo.ListFixtureItem"
+        assert ListFixture._fields["ArrayOfObjects"].iris_type == "Demo.ListFixtureItem"
+    finally:
+        sys.path.remove(str(tmp_path))
+        sys.modules.pop("listfixture", None)
+        sys.modules.pop("listfixtureitem", None)
 
 
 def test_objectscript_storage_property_selectivity_scaffold(

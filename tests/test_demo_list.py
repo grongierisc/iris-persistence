@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import importlib.util
 
-import demo_list
 import pytest
-from iris_orm.runtime import configure_default_runtime
 from iris_orm.runtime import get_runtime
-from iris_orm.testing import FakeAdapter
+from tests.fixtures.python.demo_list_fixture import (
+    configure_fixture_runtime,
+    run_list_fixture_round_trip,
+)
 
 
 def test_demo_list_round_trip_with_fake_runtime():
-    configure_default_runtime(FakeAdapter())
-
-    result = demo_list.run_demo()
+    configure_fixture_runtime(backend="fake")
+    result = run_list_fixture_round_trip()
     loaded = result["loaded"]
     all_fixtures = result["all_fixtures"]
 
@@ -29,10 +29,9 @@ def test_demo_list_round_trip_with_fake_runtime():
 
 
 def test_demo_list_run_demo_resets_previous_rows_in_fake_runtime():
-    configure_default_runtime(FakeAdapter())
-
-    first = demo_list.run_demo()
-    second = demo_list.run_demo()
+    configure_fixture_runtime(backend="fake")
+    first = run_list_fixture_round_trip()
+    second = run_list_fixture_round_trip()
 
     assert len(first["all_fixtures"]) == 1
     assert len(second["all_fixtures"]) == 1
@@ -40,24 +39,26 @@ def test_demo_list_run_demo_resets_previous_rows_in_fake_runtime():
 
 
 def test_demo_list_configure_demo_runtime_falls_back_to_fake(monkeypatch):
-    monkeypatch.setattr(demo_list.iris_orm, "configure", lambda: None)
+    import tests.fixtures.python.demo_list_fixture as demo_list_fixture
+
+    monkeypatch.setattr(demo_list_fixture.iris_orm, "configure", lambda: None)
     monkeypatch.setattr(
-        demo_list,
+        demo_list_fixture,
         "get_runtime",
         lambda: type("BrokenRuntime", (), {"get_dbapi_connection": lambda self: (_ for _ in ()).throw(RuntimeError("no dbapi"))})(),
     )
 
-    backend = demo_list.configure_demo_runtime()
+    backend = configure_fixture_runtime()
 
     assert backend == "fake"
 
 
 @pytest.mark.skipif(importlib.util.find_spec("iris") is None, reason="requires IRIS runtime")
 def test_demo_list_percent_list_persists_logical_value():
-    backend = demo_list.configure_demo_runtime()
+    backend = configure_fixture_runtime()
     assert backend == "iris"
 
-    result = demo_list.run_demo()
+    result = run_list_fixture_round_trip(sync_schema=True)
     conn = get_runtime().get_dbapi_connection()
     cursor = conn.cursor()
     cursor.execute(

@@ -54,7 +54,8 @@ def load_objectscript_fixture(name: str) -> LoadedObjectScriptFixture:
 
         iris.runtime.configure()
         iris.cls("%SYSTEM.OBJ").LoadDir(str(cls_path.parent), "uk")
-        iris.cls("%SYSTEM.OBJ").Compile(classnames[0],  "cb")
+        for classname in classnames:
+            iris.cls("%SYSTEM.OBJ").Compile(classname, "cb")
         return LoadedObjectScriptFixture(name=name, classnames=classnames, source="cls")
     except Exception as e:
         print(f"Error loading ObjectScript fixture {name}: {e}")

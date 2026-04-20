@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import re
 
-import demo
 from iris_orm.runtime import configure_default_runtime
 from iris_orm.testing import FakeAdapter
+from tests.fixtures.python.demo_fixture import make_demo_toto, run_demo_fixture
 
 
 def test_make_demo_toto_is_unique_and_prefixed():
-    first = demo.make_demo_toto()
-    second = demo.make_demo_toto()
+    first = make_demo_toto()
+    second = make_demo_toto()
 
     assert first != second
     assert re.fullmatch(r"Hello-[0-9A-F]{8}", first)
@@ -19,7 +19,7 @@ def test_make_demo_toto_is_unique_and_prefixed():
 def test_run_demo_round_trip_with_fake_runtime():
     configure_default_runtime(FakeAdapter())
 
-    result = demo.run_demo(toto="Hello-UNIT0001", sync_schema=False)
+    result = run_demo_fixture(toto="Hello-UNIT0001", sync_schema=False)
     loaded = result["loaded"]
     all_demos = result["all_demos"]
 

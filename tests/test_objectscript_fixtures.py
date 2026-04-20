@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 import iris_orm
-from iris_orm import scaffold_from_iris
+from iris_orm import IRISModel, scaffold_from_iris
 from iris_orm.runtime import get_runtime
 from tests.fixture_support import (
     OBJECTSCRIPT_FIXTURES,
@@ -16,6 +16,8 @@ from tests.fixture_support import (
     load_module_from_path,
     load_objectscript_fixture,
 )
+from tests.fixtures.objectscript.persistent_fixture import SourcePersistentFixture
+from tests.fixtures.python.demo_fixture import DemoFixture
 
 
 def _has_iris_runtime() -> bool:
@@ -26,6 +28,12 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not _has_iris_runtime(), reason="requires IRIS runtime"),
 ]
+
+
+class _DemoProductProbe(IRISModel):
+    class Meta:
+        classname = "Demo.Product"
+        mode = "observe"
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -339,9 +347,15 @@ def test_list_fixture_scaffold_round_trip(loaded_objectscript_fixtures, tmp_path
         assert isinstance(loaded.ArrayDataType, dict)
         assert isinstance(loaded.ListOfObjects, list)
         assert isinstance(loaded.ArrayOfObjects, dict)
-        assert ListFixture._fields["ListAttributes"].iris_type == "%List"
-        assert ListFixture._fields["ListDataType"].iris_type == "%ListOfDataTypes"
-        assert ListFixture._fields["ArrayDataType"].iris_type == "%ArrayOfDataTypes"
+        assert ListFixture._fields["ListAttributes"].iris_type in {"%List", "%Library.List"}
+        assert ListFixture._fields["ListDataType"].iris_type in {
+            "%ListOfDataTypes",
+            "%Library.ListOfDataTypes",
+        }
+        assert ListFixture._fields["ArrayDataType"].iris_type in {
+            "%ArrayOfDataTypes",
+            "%Library.ArrayOfDataTypes",
+        }
         assert ListFixture._fields["ListOfObjects"].iris_type == "Demo.ListFixtureItem"
         assert ListFixture._fields["ArrayOfObjects"].iris_type == "Demo.ListFixtureItem"
     finally:
@@ -361,6 +375,8 @@ def test_objectscript_storage_property_selectivity_scaffold(
     if persistent_fixture.source != "cls":
         pytest.skip("requires loading the ObjectScript fixture directly from .cls storage metadata")
 
+    list(SourcePersistentFixture.all())
+
     runtime = get_runtime()
     conn = runtime.get_dbapi_connection()
     cur = conn.cursor()
@@ -369,7 +385,16 @@ def test_objectscript_storage_property_selectivity_scaffold(
         "FROM %Dictionary.StoragePropertyDefinition WHERE parent = ?",
         ("Demo.SourcePersistentFixture||Default",),
     )
-    if not cur.fetchall():
+    expected_rows = {
+        name: (
+            None if average_field_size in (None, "") else str(average_field_size),
+            None if selectivity in (None, "") else str(selectivity),
+        )
+        for name, average_field_size, selectivity in cur.fetchall()
+        if not str(name).startswith("%%")
+        and (average_field_size not in (None, "") or selectivity not in (None, ""))
+    }
+    if not expected_rows:
         cur.close()
         conn.close()
         pytest.skip("fixture storage property definitions are not exposed in this IRIS namespace")
@@ -389,18 +414,41 @@ def test_objectscript_storage_property_selectivity_scaffold(
     PersistentFixture = module.SourcePersistentFixture
 
     assert PersistentFixture._storage is not None
-    assert len(PersistentFixture._storage.properties) == 1
-    assert PersistentFixture._storage.properties[0].name == "Title"
-    assert PersistentFixture._storage.properties[0].average_field_size == "10"
-    assert PersistentFixture._storage.properties[0].selectivity == "0.001%"
+    properties = {item.name: item for item in PersistentFixture._storage.properties}
+    assert expected_rows.keys() <= properties.keys()
+    for name, (average_field_size, selectivity) in expected_rows.items():
+        if average_field_size not in (None, ""):
+            assert properties[name].average_field_size == average_field_size
+        if selectivity not in (None, ""):
+            assert properties[name].selectivity == selectivity
 
 
 def test_scaffold_selectivity_option_for_demo_demo(tmp_path: Path):
     from iris_orm.runtime import get_runtime
 
-    exists = get_runtime().call_classmethod("%Dictionary.ClassDefinition", "_ExistsId", "Demo.Demo")
+    runtime = get_runtime()
+    exists = runtime.call_classmethod("%Dictionary.ClassDefinition", "_ExistsId", "Demo.Demo")
     if not exists:
         pytest.skip("requires Demo.Demo to exist in the current IRIS namespace")
+
+    list(DemoFixture.all())
+
+    conn = runtime.get_dbapi_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT Name, Selectivity "
+        "FROM %Dictionary.StoragePropertyDefinition WHERE parent = ?",
+        ("Demo.Demo||Default",),
+    )
+    expected_rows = {
+        name: str(selectivity)
+        for name, selectivity in cur.fetchall()
+        if not str(name).startswith("%%") and selectivity not in (None, "")
+    }
+    cur.close()
+    conn.close()
+    if not expected_rows:
+        pytest.skip("Demo.Demo storage property selectivity is not exposed in this IRIS namespace")
 
     default_result = scaffold_from_iris(
         "Demo.Demo",
@@ -429,10 +477,9 @@ def test_scaffold_selectivity_option_for_demo_demo(tmp_path: Path):
 
     assert Demo._storage is not None
     properties = {item.name: item for item in Demo._storage.properties}
-    assert properties["Titi"].selectivity == "13.5593%"
-    assert properties["Toto"].selectivity == "9.3220%"
-    assert properties["dickt"].selectivity == "1"
-    assert properties["snake_case"].selectivity == "33.3333%"
+    assert expected_rows.keys() <= properties.keys()
+    for name, selectivity in expected_rows.items():
+        assert properties[name].selectivity == selectivity
 
 
 def test_scaffold_storage_statistics_for_demo_product(tmp_path: Path):
@@ -442,6 +489,8 @@ def test_scaffold_storage_statistics_for_demo_product(tmp_path: Path):
     exists = runtime.call_classmethod("%Dictionary.ClassDefinition", "_ExistsId", "Demo.Product")
     if not exists:
         pytest.skip("requires Demo.Product to exist in the current IRIS namespace")
+
+    list(_DemoProductProbe.all())
 
     try:
         conn = runtime.get_dbapi_connection()

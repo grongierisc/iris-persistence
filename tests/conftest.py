@@ -12,16 +12,13 @@ def pytest_addoption(parser):
         "--iris-backend",
         action="store",
         default="embedded",
-        choices=("embedded", "remote", "all"),
+        choices=("embedded", "remote"),
         help="Select live IRIS backend for integration tests.",
     )
 
 
 def _selected_iris_backends(config) -> list[str]:
-    option = config.getoption("--iris-backend")
-    if option == "all":
-        return ["embedded", "remote"]
-    return [option]
+    return [config.getoption("--iris-backend")]
 
 
 def pytest_generate_tests(metafunc):
@@ -63,7 +60,17 @@ def configured_iris_runtime(request):
             )
         connection = iris.connect(host, int(port), namespace, username, password)
         iris_orm.configure(connection)
-        return "remote"
+        try:
+            yield "remote"
+        finally:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
+            try:
+                iris_orm.configure()
+            except Exception:
+                pass
+        return
 
     iris_orm.configure()
-    return "embedded"
+    yield "embedded"

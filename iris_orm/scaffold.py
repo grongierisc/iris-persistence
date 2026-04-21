@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import warnings as py_warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -477,6 +477,38 @@ class _CompiledDictionaryReader:
                     sql_computed=_as_bool(metadata.get("sql_computed")),
                 )
             )
+        if properties and any(item.maxlen is None for item in properties):
+            try:
+                runtime = get_runtime()
+                class_def = runtime.get_object("%Dictionary.ClassDefinition", classname)
+                if class_def is not None:
+                    prop_list = runtime.get_property(class_def, "Properties")
+                    if prop_list is not None:
+                        count = runtime.invoke_method(prop_list, "Count")
+                        maxlen_by_name: dict[str, str] = {}
+                        for index in range(1, count + 1):
+                            prop = runtime.invoke_method(prop_list, "GetAt", index)
+                            name = runtime.get_property(prop, "Name")
+                            if not name:
+                                continue
+                            params = runtime.get_property(prop, "Parameters")
+                            if params is None:
+                                continue
+                            try:
+                                maxlen = runtime.invoke_method(params, "GetAt", "MAXLEN")
+                            except Exception:
+                                maxlen = None
+                            if maxlen not in (None, ""):
+                                maxlen_by_name[str(name)] = str(maxlen)
+                        if maxlen_by_name:
+                            properties = [
+                                item
+                                if item.maxlen is not None or item.name not in maxlen_by_name
+                                else replace(item, maxlen=maxlen_by_name[item.name])
+                                for item in properties
+                            ]
+            except Exception:
+                pass
         return sorted(properties, key=lambda item: item.name)
 
     def list_parameters(self, classname: str) -> list[_CompiledParameter]:

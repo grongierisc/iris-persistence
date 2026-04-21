@@ -8,6 +8,7 @@ from tests.fixtures.python.demo_list_fixture import (
     configure_fixture_runtime,
     run_list_fixture_round_trip,
 )
+from tests.fixtures.python.demo_list_models import DemoListFixture
 
 
 def test_demo_list_round_trip_with_fake_runtime():
@@ -62,7 +63,7 @@ def test_demo_list_percent_list_persists_logical_value(configured_iris_runtime):
     conn = get_runtime().get_dbapi_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT ListAttributes FROM Demo.ListFixture WHERE ID = ?",
+        f"SELECT ListAttributes FROM {DemoListFixture._classname} WHERE ID = ?",
         [result["saved_pk"]],
     )
     list_attributes = cursor.fetchall()[0][0]

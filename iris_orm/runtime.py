@@ -247,6 +247,25 @@ class BaseIRISAdapter:
         return False
 
     def _extract_collection_value(self, val: Any) -> Any:
+        if (
+            callable(getattr(val, "Count", None))
+            and callable(getattr(val, "Next", None))
+            and callable(getattr(val, "GetAt", None))
+        ):
+            try:
+                key = getattr(val, "Next")("")
+                if isinstance(key, str) and key not in ("", None):
+                    first_value = getattr(val, "GetAt")(key)
+                    if first_value is not None:
+                        items: dict[str, Any] = {}
+                        while key not in ("", None):
+                            items[str(key)] = self.extract_python_value(getattr(val, "GetAt")(key))
+                            key = getattr(val, "Next")(key)
+                        if items:
+                            return items
+            except Exception:
+                pass
+
         if callable(getattr(val, "GetNext", None)):
             try:
                 import iris

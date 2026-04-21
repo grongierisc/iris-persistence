@@ -35,6 +35,17 @@ def _is_percent_list_field(field_meta: Any | None) -> bool:
     return getattr(field_meta, "iris_type", None) in {"%List", "%Library.List"}
 
 
+def _is_scalar_string_field(field_meta: Any | None) -> bool:
+    if field_meta is None or getattr(field_meta, "collection", None):
+        return False
+    return getattr(field_meta, "iris_type", None) in {
+        "%String",
+        "%RawString",
+        "%Library.String",
+        "%Library.RawString",
+    }
+
+
 def _coerce_collection_for_load(
     collection_kind: str,
     element_type: Any,
@@ -71,6 +82,8 @@ def _build_model_from_iris_obj(
             python_val = runtime.decode_percent_list(raw_val)
         else:
             python_val = runtime.extract_python_value(raw_val)
+            if python_val is None and _is_scalar_string_field(field_meta):
+                python_val = ""
         declared_type = resolve_declared_type(hints.get(field_name))
         collection_kind, element_type = _collection_value_type(declared_type)
         if collection_kind is not None:

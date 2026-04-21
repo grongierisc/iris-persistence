@@ -5,34 +5,29 @@ from typing import Annotated, Any
 from iris_orm import Field, IRISModel
 
 
-class ListFixtureItem(IRISModel):
+class DemoListFixtureItem(IRISModel):
     Value: Annotated[str | None, Field(maxlen=120)] = None
 
     class Meta:
-        classname = "Demo.ListFixtureItem"
+        classname = "Demo.DemoListFixtureItem"
         superclasses = "%Library.SerialObject"
         mode = "replace"
 
 
-class ListFixture(IRISModel):
+class DemoListFixture(IRISModel):
     ListAttributes: Annotated[list[Any] | None, Field(iris_type="%List")] = None
     ListDataType: Annotated[list[Any] | None, Field(iris_type="%ListOfDataTypes")] = None
     ArrayDataType: Annotated[dict[str, Any] | None, Field(iris_type="%ArrayOfDataTypes")] = None
     ListOfObjects: Annotated[
-        list[ListFixtureItem] | None,
-        Field(iris_type="Demo.ListFixtureItem", collection="list"),
+        list[DemoListFixtureItem] | None,
+        Field(iris_type="Demo.DemoListFixtureItem", collection="list"),
     ] = None
     ArrayOfObjects: Annotated[
-        dict[str, ListFixtureItem] | None,
-        Field(iris_type="Demo.ListFixtureItem", collection="array"),
+        dict[str, DemoListFixtureItem] | None,
+        Field(iris_type="Demo.DemoListFixtureItem", collection="array"),
     ] = None
 
     class Meta:
-        classname = "Demo.ListFixture"
+        classname = "Demo.DemoListFixture"
         superclasses = "%Library.Persistent"
         mode = "replace"
-
-
-FIXTURE_MODELS = [ListFixtureItem, ListFixture]
-FIXTURE_CLASSNAMES = [model._classname for model in FIXTURE_MODELS]
-FIXTURE_SOURCE_FILES = ["list_fixture_item.cls", "list_fixture.cls"]

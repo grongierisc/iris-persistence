@@ -15,8 +15,8 @@ from tests.fixture_support import (
     OBJECTSCRIPT_FIXTURES,
     OBJECTSCRIPT_PYTHON_FIXTURES,
     delete_iris_classes,
+    load_objectscript_fixtures,
     load_module_from_path,
-    load_objectscript_fixture,
 )
 from tests.fixtures.objectscript.python.persistent_fixture import SourcePersistentFixture
 from tests.fixtures.python.demo_fixture import DemoFixture
@@ -36,16 +36,18 @@ pytestmark = [
 
 @pytest.fixture()
 def loaded_objectscript_fixtures():
-    loaded = [
-        load_objectscript_fixture("list_fixture"),
-        load_objectscript_fixture("meta_fixture"),
-        load_objectscript_fixture("persistent_fixture"),
-        load_objectscript_fixture("recursive_child_fixture"),
-        load_objectscript_fixture("recursive_address_fixture"),
-        load_objectscript_fixture("recursive_parent_fixture"),
-        load_objectscript_fixture("request_fixture"),
-        load_objectscript_fixture("serial_fixture"),
-    ]
+    loaded = load_objectscript_fixtures(
+        [
+            "list_fixture",
+            "meta_fixture",
+            "persistent_fixture",
+            "recursive_child_fixture",
+            "recursive_address_fixture",
+            "recursive_parent_fixture",
+            "request_fixture",
+            "serial_fixture",
+        ]
+    )
     try:
         yield loaded
     finally:
@@ -201,7 +203,12 @@ def test_meta_fixture_reverse_engineers_query_level_metadata(
         ["Demo.SourceMetaFixture"],
     )
     query_rows = [
-        (name, str(internal), str(sql_view), sql_view_name)
+        (
+            name,
+            "1" if str(internal).lower() in {"1", "true"} else "0",
+            "1" if str(sql_view).lower() in {"1", "true"} else "0",
+            sql_view_name,
+        )
         for name, internal, sql_view, sql_view_name in cursor.fetchall()
     ]
     assert ("Titles", "1", "1", "SourceMetaFixtureTitlesView") in query_rows

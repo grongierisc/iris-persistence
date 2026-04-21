@@ -62,6 +62,17 @@ class TestNativeProxyAdapter(unittest.TestCase):
         # Should set the newly created oref back
         self.mock_oref.set.assert_called_once_with("MyList", self.mock_dyn_obj)
 
+    def test_inject_list_without_native_db_uses_base_dispatch(self):
+        plain_obj = SimpleNamespace(MyList=None)
+        self.adapter.call_classmethod = MagicMock(return_value="dyn-array")
+
+        self.adapter.inject_iris_value(plain_obj, "MyList", [1, 2, 3])
+
+        self.adapter.call_classmethod.assert_called_once_with(
+            "%Library.DynamicArray", "_FromJSON", "[1, 2, 3]"
+        )
+        self.assertEqual(plain_obj.MyList, "dyn-array")
+
     def test_inject_collection_class_dict_bypasses_dynamic_object(self):
         field = Field(iris_type="%ArrayOfDataTypes")
         calls = []

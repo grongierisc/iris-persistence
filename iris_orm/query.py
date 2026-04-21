@@ -183,10 +183,11 @@ def _resolve_sql_table_name(model_cls: Type[TModel]) -> str:
                 (model_cls._classname,),
             )
             if hasattr(cursor, "fetchone"):
-                row = cursor.fetchone()
+                fetched_row = cursor.fetchone()
+                row = tuple(fetched_row) if fetched_row is not None else None
             elif hasattr(cursor, "fetchall"):
                 rows = cursor.fetchall()
-                row = rows[0] if rows else None
+                row = tuple(rows[0]) if rows else None
         finally:
             close = getattr(cursor, "close", None)
             if callable(close):

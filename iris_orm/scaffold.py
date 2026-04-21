@@ -1353,11 +1353,9 @@ def _render_model_declaration(
     return (f"class {class_name}(Model):", class_info.superclasses is not None)
 
 
-def _render_model(
+def _collect_model_imports(
     class_info: _CompiledClass,
     properties: list[_CompiledProperty],
-    mode: str,
-    parameters: list[_CompiledParameter],
     indexes: list[_CompiledIndex],
     storage: _CompiledStorage | None,
     storage_data: list[_CompiledStorageData],
@@ -1366,15 +1364,16 @@ def _render_model(
     storage_sql_maps: list[_CompiledStorageSQLMap],
     python_class_names: dict[str, str],
     module_names: dict[str, str],
-) -> str:
-    custom_imports = []
+) -> tuple[list[str], set[str], bool, set[str]]:
+    custom_imports: list[str] = []
     typing_imports: set[str] = set()
     needs_datetime = False
+
     for prop in properties:
         if prop.iris_type in python_class_names and prop.iris_type != class_info.name:
-            module_name = module_names[prop.iris_type]
-            class_name = python_class_names[prop.iris_type]
-            custom_imports.append(f"from {module_name} import {class_name}")
+            custom_imports.append(
+                f"from {module_names[prop.iris_type]} import {python_class_names[prop.iris_type]}"
+            )
         rendered_type = _render_property_type(prop, python_class_names)
         if "Any" in rendered_type:
             typing_imports.add("Any")
@@ -1406,6 +1405,274 @@ def _render_model(
             }
         )
 
+    return (sorted(set(custom_imports)), typing_imports, needs_datetime, iris_imports)
+
+
+def _render_property_field(
+    prop: _CompiledProperty,
+    python_class_names: dict[str, str],
+) -> str:
+    type_name = _render_property_type(prop, python_class_names)
+    field_args = [f'iris_type="{prop.iris_type}"']
+    if prop.required:
+        field_args.append("required=True")
+    if prop.maxlen:
+        field_args.append(f"max_length={prop.maxlen}")
+    if prop.readonly:
+        field_args.append("readonly=True")
+    if prop.collection:
+        field_args.append(f"collection={prop.collection!r}")
+    if prop.sql_field_name and prop.sql_field_name != prop.name:
+        field_args.append(f"sql_field_name={prop.sql_field_name!r}")
+    if prop.identity:
+        field_args.append("identity=True")
+    if prop.relationship:
+        field_args.append(f"relationship={prop.relationship!r}")
+    if prop.on_delete:
+        field_args.append(f"on_delete={prop.on_delete!r}")
+    if prop.inverse:
+        field_args.append(f"inverse={prop.inverse!r}")
+    if prop.transient:
+        field_args.append("transient=True")
+    if not prop.storable:
+        field_args.append("storable=False")
+    if prop.multi_dimensional:
+        field_args.append("multi_dimensional=True")
+    if prop.sql_list_delimiter:
+        field_args.append(f"sql_list_delimiter={prop.sql_list_delimiter!r}")
+    if prop.sql_list_type:
+        field_args.append(f"sql_list_type={prop.sql_list_type!r}")
+    if prop.sql_compute_code:
+        field_args.append(f"sql_compute_code={prop.sql_compute_code!r}")
+    if prop.sql_compute_on_change:
+        field_args.append(f"sql_compute_on_change={prop.sql_compute_on_change!r}")
+    if prop.sql_computed:
+        field_args.append("sql_computed=True")
+    default_arg, _default_value = _python_default_literal(prop)
+    if default_arg:
+        field_args.append(default_arg)
+    elif prop.default is not None:
+        field_args.append(f"initial_expression={prop.default!r}")
+    if not prop.required and default_arg is None:
+        field_args.append("default=None")
+
+    annotation = type_name if prop.required else f"{type_name} | None"
+    return f"    {prop.name}: {annotation} = Field({', '.join(field_args)})"
+
+
+def _render_class_metadata_lines(class_info: _CompiledClass) -> list[str]:
+    lines = ["        metadata = ClassMetadata("]
+    if class_info.description is not None:
+        lines.append(
+            f"            description={_double_quoted_literal(class_info.description)},"
+        )
+    if class_info.deprecated:
+        lines.append("            deprecated=True,")
+    if class_info.final:
+        lines.append("            final=True,")
+    if class_info.sql_table_name is not None:
+        lines.append(
+            f"            sql_table_name={_double_quoted_literal(class_info.sql_table_name)},"
+        )
+    if class_info.procedure_block:
+        lines.append("            procedure_block=True,")
+    lines.append("        )")
+    return lines
+
+
+def _render_parameter_lines(parameters: list[_CompiledParameter]) -> list[str]:
+    lines = ["        parameters = {"]
+    lines.extend(f'            "{param.name}": "{param.default}",' for param in parameters)
+    lines.append("        }")
+    return lines
+
+
+def _render_index_lines(indexes: list[_CompiledIndex]) -> list[str]:
+    lines = ["        indexes = ["]
+    lines.extend(
+        "            "
+        + f'Index("{index.name}", properties="{index.properties}", '
+        + f'unique={"True" if index.unique else "False"}'
+        + (f', type="{index.index_type}"' if index.index_type else "")
+        + (", primary_key=True" if index.primary_key else "")
+        + "),"
+        for index in indexes
+    )
+    lines.append("        ]")
+    return lines
+
+
+def _render_storage_property(item: _CompiledStorageProperty) -> str:
+    property_args = [f"name={_double_quoted_literal(item.name)}"]
+    if item.average_field_size is not None:
+        property_args.append(
+            f"average_field_size={_double_quoted_literal(item.average_field_size)}"
+        )
+    if item.selectivity is not None:
+        property_args.append(f"selectivity={_double_quoted_literal(item.selectivity)}")
+    if item.outlier_selectivity is not None:
+        property_args.append(
+            "outlier_selectivity="
+            f"{_double_quoted_literal(item.outlier_selectivity)}"
+        )
+    if item.histogram is not None:
+        property_args.append(f"histogram={_double_quoted_literal(item.histogram)}")
+    if item.child_block_count is not None:
+        property_args.append(
+            f"child_block_count={_double_quoted_literal(item.child_block_count)}"
+        )
+    if item.child_extent_size is not None:
+        property_args.append(
+            f"child_extent_size={_double_quoted_literal(item.child_extent_size)}"
+        )
+    if item.bias_queries_as_outlier is not None:
+        property_args.append(
+            'bias_queries_as_outlier='
+            f'{"True" if item.bias_queries_as_outlier else "False"}'
+        )
+    if item.stream_location is not None:
+        property_args.append(
+            f"stream_location={_double_quoted_literal(item.stream_location)}"
+        )
+    return f"StorageProperty({', '.join(property_args)})"
+
+
+def _render_storage_lines(
+    storage: _CompiledStorage,
+    storage_data: list[_CompiledStorageData],
+    storage_indices: list[_CompiledStorageIndex],
+    storage_properties: list[_CompiledStorageProperty],
+    storage_sql_maps: list[_CompiledStorageSQLMap],
+) -> list[str]:
+    lines = ["        storage = StorageDefinition("]
+    storage_attrs = (
+        ("data_location", storage.data_location),
+        ("default_data", storage.default_data),
+        ("extent_location", storage.extent_location),
+        ("extent_size", storage.extent_size),
+        ("counter_location", storage.counter_location),
+        ("version_location", storage.version_location),
+        ("id_location", storage.id_location),
+        ("id_expression", storage.id_expression),
+        ("id_function", storage.id_function),
+        ("index_location", storage.index_location),
+        ("state", storage.state),
+        ("stream_location", storage.stream_location),
+        ("sql_child_sub", storage.sql_child_sub),
+        ("sql_id_expression", storage.sql_id_expression),
+        ("sql_row_id_name", storage.sql_row_id_name),
+        ("sql_row_id_property", storage.sql_row_id_property),
+        ("sql_table_number", storage.sql_table_number),
+        ("sequence_number", storage.sequence_number),
+        ("type", storage.storage_type),
+    )
+    for attr_name, value in storage_attrs:
+        if value is not None:
+            lines.append(f"            {attr_name}={_double_quoted_literal(value)},")
+
+    if storage_data:
+        lines.append("            data=(")
+        for item in storage_data:
+            lines.append("                StorageData(")
+            lines.append(f'                    name="{item.name}",')
+            if item.structure:
+                lines.append(f'                    structure="{item.structure}",')
+            if item.attribute is not None:
+                lines.append(f"                    attribute={item.attribute!r},")
+            if item.subscript is not None:
+                lines.append(f"                    subscript={item.subscript!r},")
+            lines.append(f"                    values={item.values!r},")
+            lines.append("                ),")
+        lines.append("            ),")
+    if storage_indices:
+        lines.append("            indices=(")
+        for item in storage_indices:
+            lines.append(f"                {_render_storage_index(item)},")
+        lines.append("            ),")
+    if storage_properties:
+        lines.append("            properties=(")
+        for item in storage_properties:
+            lines.append(f"                {_render_storage_property(item)},")
+        lines.append("            ),")
+    if storage_sql_maps:
+        lines.append("            sql_maps=(")
+        for item in storage_sql_maps:
+            rendered_map = _render_storage_sql_map(item)
+            lines.append(f"                {rendered_map[0]}")
+            for map_line in rendered_map[1:-1]:
+                lines.append(f"                {map_line}")
+            lines.append(f"                {rendered_map[-1]},")
+        lines.append("            ),")
+    lines.append("        )")
+    return lines
+
+
+def _render_meta_lines(
+    class_info: _CompiledClass,
+    mode: str,
+    emit_meta_superclasses: bool,
+    parameters: list[_CompiledParameter],
+    indexes: list[_CompiledIndex],
+    storage: _CompiledStorage | None,
+    storage_data: list[_CompiledStorageData],
+    storage_indices: list[_CompiledStorageIndex],
+    storage_properties: list[_CompiledStorageProperty],
+    storage_sql_maps: list[_CompiledStorageSQLMap],
+) -> list[str]:
+    lines = [
+        "",
+        "    class Meta:",
+        f'        classname = "{class_info.name}"',
+        f'        mode = "{mode}"',
+    ]
+    if emit_meta_superclasses:
+        lines.append(f'        superclasses = "{class_info.superclasses}"')
+    if _has_class_metadata(class_info):
+        lines.extend(_render_class_metadata_lines(class_info))
+    if parameters:
+        lines.extend(_render_parameter_lines(parameters))
+    if indexes:
+        lines.extend(_render_index_lines(indexes))
+    if storage:
+        lines.extend(
+            _render_storage_lines(
+                storage,
+                storage_data,
+                storage_indices,
+                storage_properties,
+                storage_sql_maps,
+            )
+        )
+    return lines
+
+
+def _render_model(
+    class_info: _CompiledClass,
+    properties: list[_CompiledProperty],
+    mode: str,
+    parameters: list[_CompiledParameter],
+    indexes: list[_CompiledIndex],
+    storage: _CompiledStorage | None,
+    storage_data: list[_CompiledStorageData],
+    storage_indices: list[_CompiledStorageIndex],
+    storage_properties: list[_CompiledStorageProperty],
+    storage_sql_maps: list[_CompiledStorageSQLMap],
+    python_class_names: dict[str, str],
+    module_names: dict[str, str],
+) -> str:
+    custom_imports, typing_imports, needs_datetime, iris_imports = _collect_model_imports(
+        class_info,
+        properties,
+        indexes,
+        storage,
+        storage_data,
+        storage_indices,
+        storage_properties,
+        storage_sql_maps,
+        python_class_names,
+        module_names,
+    )
+
     model_declaration, emit_meta_superclasses = _render_model_declaration(
         class_info,
         python_class_names[class_info.name],
@@ -1418,256 +1685,30 @@ def _render_model(
         lines.extend(["", f"from typing import {', '.join(sorted(typing_imports))}"])
     lines.extend(["", f"from iris_orm import {', '.join(sorted(iris_imports))}"])
     if custom_imports:
-        lines.extend(["", *sorted(set(custom_imports))])
+        lines.extend(["", *custom_imports])
     lines.extend(["", model_declaration])
 
     if not properties:
         lines.append("    pass")
     else:
-        for prop in properties:
-            type_name = _render_property_type(prop, python_class_names)
-            field_args = [f'iris_type="{prop.iris_type}"']
-            if prop.required:
-                field_args.append("required=True")
-            if prop.maxlen:
-                field_args.append(f"max_length={prop.maxlen}")
-            if prop.readonly:
-                field_args.append("readonly=True")
-            if prop.collection:
-                field_args.append(f"collection={prop.collection!r}")
-            if prop.sql_field_name and prop.sql_field_name != prop.name:
-                field_args.append(f"sql_field_name={prop.sql_field_name!r}")
-            if prop.identity:
-                field_args.append("identity=True")
-            if prop.relationship:
-                field_args.append(f"relationship={prop.relationship!r}")
-            if prop.on_delete:
-                field_args.append(f"on_delete={prop.on_delete!r}")
-            if prop.inverse:
-                field_args.append(f"inverse={prop.inverse!r}")
-            if prop.transient:
-                field_args.append("transient=True")
-            if not prop.storable:
-                field_args.append("storable=False")
-            if prop.multi_dimensional:
-                field_args.append("multi_dimensional=True")
-            if prop.sql_list_delimiter:
-                field_args.append(f"sql_list_delimiter={prop.sql_list_delimiter!r}")
-            if prop.sql_list_type:
-                field_args.append(f"sql_list_type={prop.sql_list_type!r}")
-            if prop.sql_compute_code:
-                field_args.append(f"sql_compute_code={prop.sql_compute_code!r}")
-            if prop.sql_compute_on_change:
-                field_args.append(f"sql_compute_on_change={prop.sql_compute_on_change!r}")
-            if prop.sql_computed:
-                field_args.append("sql_computed=True")
-            default_arg, default_value = _python_default_literal(prop)
-            if default_arg:
-                field_args.append(default_arg)
-            elif prop.default is not None:
-                field_args.append(f"initial_expression={prop.default!r}")
-            if not prop.required and default_arg is None:
-                field_args.append("default=None")
-
-            field_str = ", ".join(field_args)
-            annotation = type_name if prop.required else f"{type_name} | None"
-            lines.append(f"    {prop.name}: {annotation} = Field({field_str})")
+        lines.extend(
+            _render_property_field(prop, python_class_names) for prop in properties
+        )
 
     lines.extend(
-        [
-            "",
-            "    class Meta:",
-            f'        classname = "{class_info.name}"',
-            f'        mode = "{mode}"',
-        ]
-    )
-    if emit_meta_superclasses:
-        lines.append(f'        superclasses = "{class_info.superclasses}"')
-    if _has_class_metadata(class_info):
-        lines.append("        metadata = ClassMetadata(")
-        if class_info.description is not None:
-            lines.append(
-                f"            description={_double_quoted_literal(class_info.description)},"
-            )
-        if class_info.deprecated:
-            lines.append("            deprecated=True,")
-        if class_info.final:
-            lines.append("            final=True,")
-        if class_info.sql_table_name is not None:
-            lines.append(
-                f"            sql_table_name={_double_quoted_literal(class_info.sql_table_name)},"
-            )
-        if class_info.procedure_block:
-            lines.append("            procedure_block=True,")
-        lines.append("        )")
-    if parameters:
-        lines.append("        parameters = {")
-        lines.extend(f'            "{param.name}": "{param.default}",' for param in parameters)
-        lines.append("        }")
-    if indexes:
-        lines.append("        indexes = [")
-        lines.extend(
-            "            "
-            + f'Index("{index.name}", properties="{index.properties}", '
-            + f'unique={"True" if index.unique else "False"}'
-            + (f', type="{index.index_type}"' if index.index_type else "")
-            + (", primary_key=True" if index.primary_key else "")
-            + "),"
-            for index in indexes
+        _render_meta_lines(
+            class_info,
+            mode,
+            emit_meta_superclasses,
+            parameters,
+            indexes,
+            storage,
+            storage_data,
+            storage_indices,
+            storage_properties,
+            storage_sql_maps,
         )
-        lines.append("        ]")
-    if storage:
-        lines.append("        storage = StorageDefinition(")
-        if storage.data_location is not None:
-            lines.append(
-                f"            data_location={_double_quoted_literal(storage.data_location)},"
-            )
-        if storage.default_data is not None:
-            lines.append(
-                f"            default_data={_double_quoted_literal(storage.default_data)},"
-            )
-        if storage.extent_location is not None:
-            lines.append(
-                f"            extent_location={_double_quoted_literal(storage.extent_location)},"
-            )
-        if storage.extent_size is not None:
-            lines.append(
-                f"            extent_size={_double_quoted_literal(storage.extent_size)},"
-            )
-        if storage.counter_location is not None:
-            lines.append(
-                f"            counter_location={_double_quoted_literal(storage.counter_location)},"
-            )
-        if storage.version_location is not None:
-            lines.append(
-                f"            version_location={_double_quoted_literal(storage.version_location)},"
-            )
-        if storage.id_location is not None:
-            lines.append(
-                f"            id_location={_double_quoted_literal(storage.id_location)},"
-            )
-        if storage.id_expression is not None:
-            lines.append(
-                f"            id_expression={_double_quoted_literal(storage.id_expression)},"
-            )
-        if storage.id_function is not None:
-            lines.append(
-                f"            id_function={_double_quoted_literal(storage.id_function)},"
-            )
-        if storage.index_location is not None:
-            lines.append(
-                f"            index_location={_double_quoted_literal(storage.index_location)},"
-            )
-        if storage.state is not None:
-            lines.append(f"            state={_double_quoted_literal(storage.state)},")
-        if storage.stream_location is not None:
-            lines.append(
-                f"            stream_location={_double_quoted_literal(storage.stream_location)},"
-            )
-        if storage.sql_child_sub is not None:
-            lines.append(
-                f"            sql_child_sub={_double_quoted_literal(storage.sql_child_sub)},"
-            )
-        if storage.sql_id_expression is not None:
-            lines.append(
-                "            "
-                f"sql_id_expression={_double_quoted_literal(storage.sql_id_expression)},"
-            )
-        if storage.sql_row_id_name is not None:
-            lines.append(
-                f"            sql_row_id_name={_double_quoted_literal(storage.sql_row_id_name)},"
-            )
-        if storage.sql_row_id_property is not None:
-            lines.append(
-                "            "
-                f"sql_row_id_property={_double_quoted_literal(storage.sql_row_id_property)},"
-            )
-        if storage.sql_table_number is not None:
-            lines.append(
-                f"            sql_table_number={_double_quoted_literal(storage.sql_table_number)},"
-            )
-        if storage.sequence_number is not None:
-            lines.append(
-                f"            sequence_number={_double_quoted_literal(storage.sequence_number)},"
-            )
-        if storage.storage_type is not None:
-            lines.append(f"            type={_double_quoted_literal(storage.storage_type)},")
-        if storage_data:
-            lines.append("            data=(")
-            for item in storage_data:
-                lines.append("                StorageData(")
-                lines.append(f'                    name="{item.name}",')
-                if item.structure:
-                    lines.append(f'                    structure="{item.structure}",')
-                if item.attribute is not None:
-                    lines.append(f"                    attribute={item.attribute!r},")
-                if item.subscript is not None:
-                    lines.append(f"                    subscript={item.subscript!r},")
-                lines.append(f"                    values={item.values!r},")
-                lines.append("                ),")
-            lines.append("            ),")
-        if storage_indices:
-            lines.append("            indices=(")
-            for item in storage_indices:
-                lines.append(f"                {_render_storage_index(item)},")
-            lines.append("            ),")
-        if storage_properties:
-            lines.append("            properties=(")
-            for item in storage_properties:
-                property_args = [f"name={_double_quoted_literal(item.name)}"]
-                if item.average_field_size is not None:
-                    property_args.append(
-                        "average_field_size="
-                        f"{_double_quoted_literal(item.average_field_size)}"
-                    )
-                if item.selectivity is not None:
-                    property_args.append(
-                        f"selectivity={_double_quoted_literal(item.selectivity)}"
-                    )
-                if item.outlier_selectivity is not None:
-                    property_args.append(
-                        "outlier_selectivity="
-                        f"{_double_quoted_literal(item.outlier_selectivity)}"
-                    )
-                if item.histogram is not None:
-                    property_args.append(
-                        f"histogram={_double_quoted_literal(item.histogram)}"
-                    )
-                if item.child_block_count is not None:
-                    property_args.append(
-                        "child_block_count="
-                        f"{_double_quoted_literal(item.child_block_count)}"
-                    )
-                if item.child_extent_size is not None:
-                    property_args.append(
-                        "child_extent_size="
-                        f"{_double_quoted_literal(item.child_extent_size)}"
-                    )
-                if item.bias_queries_as_outlier is not None:
-                    property_args.append(
-                        "bias_queries_as_outlier="
-                        f'{"True" if item.bias_queries_as_outlier else "False"}'
-                    )
-                if item.stream_location is not None:
-                    property_args.append(
-                        "stream_location="
-                        f"{_double_quoted_literal(item.stream_location)}"
-                    )
-                lines.append(
-                    "                "
-                    f"StorageProperty({', '.join(property_args)}),"
-                )
-            lines.append("            ),")
-        if storage_sql_maps:
-            lines.append("            sql_maps=(")
-            for item in storage_sql_maps:
-                rendered_map = _render_storage_sql_map(item)
-                lines.append(f"                {rendered_map[0]}")
-                for map_line in rendered_map[1:-1]:
-                    lines.append(f"                {map_line}")
-                lines.append(f"                {rendered_map[-1]},")
-            lines.append("            ),")
-        lines.append("        )")
+    )
 
     return "\n".join(lines) + "\n"
 

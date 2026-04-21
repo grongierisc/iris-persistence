@@ -529,6 +529,657 @@ def diff_schema(model_cls: Type[Any]) -> SchemaDiff:
     )
 
 
+def _set_runtime_property(runtime: Any, obj: Any, prop_name: str, value: Any) -> None:
+    runtime.set_property(obj, prop_name, value)
+
+
+def _set_runtime_property_if_not_none(
+    runtime: Any,
+    obj: Any,
+    prop_name: str,
+    value: Any,
+) -> None:
+    if value is not None:
+        runtime.set_property(obj, prop_name, value)
+
+
+def _set_runtime_flag_if_true(runtime: Any, obj: Any, prop_name: str, enabled: Any) -> None:
+    if enabled:
+        runtime.set_property(obj, prop_name, 1)
+
+
+def _ensure_class_definition(
+    runtime: Any,
+    classname: str,
+    mode: str,
+) -> tuple[Any, bool]:
+    exists = runtime.call_classmethod("%Dictionary.ClassDefinition", "_ExistsId", classname)
+    if mode == "replace" and exists:
+        runtime.call_classmethod("%SYSTEM.OBJ", "Delete", classname, "-d")
+        exists = False
+
+    if exists:
+        return (runtime.get_object("%Dictionary.ClassDefinition", classname), True)
+
+    class_definition = runtime.create_object("%Dictionary.ClassDefinition")
+    runtime.set_property(class_definition, "Name", classname)
+    return (class_definition, False)
+
+
+def _apply_class_definition(
+    runtime: Any,
+    class_definition: Any,
+    classname: str,
+    superclasses: str,
+    class_metadata: Any,
+) -> None:
+    runtime.set_property(class_definition, "Super", superclasses)
+    if class_metadata is None:
+        return
+    _set_runtime_property_if_not_none(
+        runtime,
+        class_definition,
+        "Description",
+        getattr(class_metadata, "description", None),
+    )
+    _set_runtime_flag_if_true(
+        runtime,
+        class_definition,
+        "Deprecated",
+        getattr(class_metadata, "deprecated", False),
+    )
+    _set_runtime_flag_if_true(
+        runtime,
+        class_definition,
+        "Final",
+        getattr(class_metadata, "final", False),
+    )
+    _set_runtime_property_if_not_none(
+        runtime,
+        class_definition,
+        "SqlTableName",
+        getattr(class_metadata, "sql_table_name", None),
+    )
+    _set_runtime_flag_if_true(
+        runtime,
+        class_definition,
+        "ProcedureBlock",
+        getattr(class_metadata, "procedure_block", False),
+    )
+
+
+def _sync_parameters(
+    runtime: Any,
+    class_definition: Any,
+    classname: str,
+    parameters: dict[str, Any],
+    mode: str,
+) -> None:
+    if mode not in {"extend", "replace"} or not isinstance(parameters, dict):
+        return
+
+    parameter_list = runtime.get_property(class_definition, "Parameters")
+    existing_parameters: set[str] = set()
+    if mode == "extend" and parameter_list is not None:
+        for parameter in _iter_runtime_list(runtime, parameter_list):
+            existing_parameters.add(runtime.get_property(parameter, "Name"))
+
+    if parameter_list is None:
+        return
+
+    for param_name, param_default in parameters.items():
+        if mode == "extend" and param_name in existing_parameters:
+            continue
+        param_def = runtime.create_object("%Dictionary.ParameterDefinition")
+        runtime.set_property(param_def, "Name", param_name)
+        runtime.set_property(param_def, "parent", classname)
+        runtime.set_property(param_def, "Default", str(param_default))
+        runtime.invoke_method(parameter_list, "Insert", param_def)
+
+
+def _sync_related_models(
+    model_cls: Type[Any],
+    model_fields: dict[str, Any],
+    seen: set[str],
+) -> None:
+    for model_field in model_fields.values():
+        resolved = _resolve_model_type(model_field.declared_type)
+        if (
+            isinstance(resolved, type)
+            and issubclass(resolved, iris_orm.models.Model)
+            and resolved is not model_cls
+        ):
+            sync_schema(resolved, seen)
+
+
+def _property_initial_expression(field_meta: FieldInfo) -> str | None:
+    if getattr(field_meta, "initial_expression", None) is not None:
+        return field_meta.initial_expression
+
+    default = getattr(field_meta, "default", UNSET)
+    if default is UNSET or default is None:
+        return None
+    if isinstance(default, str):
+        return f'"{default}"'
+    if isinstance(default, bool):
+        return "1" if default else "0"
+    return str(default)
+
+
+def _build_property_definition(
+    runtime: Any,
+    classname: str,
+    field_name: str,
+    model_field: Any,
+) -> Any:
+    field_meta = model_field.field_info
+    prop = runtime.create_object("%Dictionary.PropertyDefinition")
+    runtime.set_property(prop, "Name", field_name)
+    runtime.set_property(prop, "parent", classname)
+    runtime.set_property(
+        prop,
+        "Type",
+        _map_python_type_to_iris(
+            _resolve_model_type(model_field.declared_type),
+            field_meta,
+        ),
+    )
+    _set_runtime_flag_if_true(runtime, prop, "Required", getattr(field_meta, "required", False))
+    _set_runtime_flag_if_true(runtime, prop, "ReadOnly", getattr(field_meta, "readonly", False))
+    _set_runtime_property_if_not_none(
+        runtime, prop, "Collection", getattr(field_meta, "collection", None)
+    )
+    _set_runtime_property_if_not_none(
+        runtime, prop, "SqlFieldName", getattr(field_meta, "sql_field_name", None)
+    )
+    _set_runtime_flag_if_true(runtime, prop, "Identity", getattr(field_meta, "identity", False))
+    _set_runtime_property_if_not_none(
+        runtime, prop, "Relationship", getattr(field_meta, "relationship", None)
+    )
+    _set_runtime_property_if_not_none(
+        runtime, prop, "OnDelete", getattr(field_meta, "on_delete", None)
+    )
+    _set_runtime_property_if_not_none(
+        runtime, prop, "Inverse", getattr(field_meta, "inverse", None)
+    )
+    _set_runtime_flag_if_true(runtime, prop, "Transient", getattr(field_meta, "transient", False))
+    if getattr(field_meta, "storable", True) is False:
+        runtime.set_property(prop, "Storable", 0)
+    _set_runtime_flag_if_true(
+        runtime,
+        prop,
+        "MultiDimensional",
+        getattr(field_meta, "multi_dimensional", False),
+    )
+    _set_runtime_property_if_not_none(
+        runtime,
+        prop,
+        "SqlListDelimiter",
+        getattr(field_meta, "sql_list_delimiter", None),
+    )
+    _set_runtime_property_if_not_none(
+        runtime,
+        prop,
+        "SqlListType",
+        getattr(field_meta, "sql_list_type", None),
+    )
+    _set_runtime_property_if_not_none(
+        runtime,
+        prop,
+        "SqlComputeCode",
+        getattr(field_meta, "sql_compute_code", None),
+    )
+    _set_runtime_property_if_not_none(
+        runtime,
+        prop,
+        "SqlComputeOnChange",
+        getattr(field_meta, "sql_compute_on_change", None),
+    )
+    _set_runtime_flag_if_true(
+        runtime,
+        prop,
+        "SqlComputed",
+        getattr(field_meta, "sql_computed", False),
+    )
+    _set_runtime_property_if_not_none(
+        runtime,
+        prop,
+        "InitialExpression",
+        _property_initial_expression(field_meta),
+    )
+
+    max_length = getattr(field_meta, "max_length", None)
+    if max_length is not None:
+        params = runtime.get_property(prop, "Parameters")
+        if params is not None:
+            runtime.invoke_method(params, "SetAt", str(max_length), "MAXLEN")
+    return prop
+
+
+def _sync_properties(
+    runtime: Any,
+    class_definition: Any,
+    classname: str,
+    model_fields: dict[str, Any],
+    mode: str,
+) -> None:
+    props_oref_list = runtime.get_property(class_definition, "Properties")
+    existing_props = {
+        runtime.get_property(prop, "Name"): prop
+        for prop in _iter_runtime_list(runtime, props_oref_list)
+    }
+
+    for field_name, model_field in model_fields.items():
+        if mode == "extend" and field_name in existing_props:
+            continue
+        prop = _build_property_definition(runtime, classname, field_name, model_field)
+        runtime.invoke_method(props_oref_list, "Insert", prop)
+
+
+def _sync_indexes(
+    runtime: Any,
+    class_definition: Any,
+    classname: str,
+    indexes: list[Any],
+    mode: str,
+) -> None:
+    if mode not in {"extend", "replace"} or not isinstance(indexes, list):
+        return
+
+    index_list = runtime.get_property(class_definition, "Indices")
+    existing_indexes: set[str] = set()
+    if mode == "extend" and index_list is not None:
+        for index in _iter_runtime_list(runtime, index_list):
+            existing_indexes.add(runtime.get_property(index, "Name"))
+
+    if index_list is None:
+        return
+
+    for index_meta in indexes:
+        if mode == "extend" and index_meta.name in existing_indexes:
+            continue
+        idx_def = runtime.create_object("%Dictionary.IndexDefinition")
+        runtime.set_property(idx_def, "Name", index_meta.name)
+        runtime.set_property(idx_def, "parent", classname)
+        runtime.set_property(idx_def, "Properties", index_meta.properties)
+        _set_runtime_flag_if_true(runtime, idx_def, "Unique", getattr(index_meta, "unique", False))
+        _set_runtime_property_if_not_none(runtime, idx_def, "Type", getattr(index_meta, "type", None))
+        _set_runtime_flag_if_true(
+            runtime,
+            idx_def,
+            "PrimaryKey",
+            getattr(index_meta, "primary_key", False),
+        )
+        runtime.invoke_method(index_list, "Insert", idx_def)
+
+
+def _apply_storage_attributes(runtime: Any, storage_definition: Any, storage_meta: Any) -> None:
+    storage_attr_map = (
+        ("Type", "type"),
+        ("DataLocation", "data_location"),
+        ("DefaultData", "default_data"),
+        ("ExtentLocation", "extent_location"),
+        ("ExtentSize", "extent_size"),
+        ("CounterLocation", "counter_location"),
+        ("VersionLocation", "version_location"),
+        ("IdLocation", "id_location"),
+        ("IdExpression", "id_expression"),
+        ("IdFunction", "id_function"),
+        ("IndexLocation", "index_location"),
+        ("State", "state"),
+        ("StreamLocation", "stream_location"),
+        ("SqlChildSub", "sql_child_sub"),
+        ("SqlIdExpression", "sql_id_expression"),
+        ("SqlRowIdName", "sql_row_id_name"),
+        ("SqlRowIdProperty", "sql_row_id_property"),
+        ("SqlTableNumber", "sql_table_number"),
+        ("SequenceNumber", "sequence_number"),
+    )
+    for property_name, attr_name in storage_attr_map:
+        _set_runtime_property_if_not_none(
+            runtime,
+            storage_definition,
+            property_name,
+            getattr(storage_meta, attr_name, None),
+        )
+
+
+def _insert_storage_data(
+    runtime: Any,
+    storage_definition: Any,
+    classname: str,
+    storage_name: str,
+    storage_meta: Any,
+) -> None:
+    data_list = runtime.get_property(storage_definition, "Data")
+    for data_meta in getattr(storage_meta, "data", []):
+        data_definition = runtime.create_object("%Dictionary.StorageDataDefinition")
+        runtime.set_property(data_definition, "Name", data_meta.name)
+        runtime.set_property(data_definition, "parent", f"{classname}||{storage_name}")
+        _set_runtime_property_if_not_none(
+            runtime, data_definition, "Structure", getattr(data_meta, "structure", None)
+        )
+        _set_runtime_property_if_not_none(
+            runtime, data_definition, "Attribute", getattr(data_meta, "attribute", None)
+        )
+        _set_runtime_property_if_not_none(
+            runtime, data_definition, "Subscript", getattr(data_meta, "subscript", None)
+        )
+
+        value_list = runtime.get_property(data_definition, "Values")
+        for key, value in (getattr(data_meta, "values", None) or {}).items():
+            value_definition = runtime.create_object("%Dictionary.StorageDataValueDefinition")
+            runtime.set_property(value_definition, "Name", str(key))
+            runtime.set_property(
+                value_definition,
+                "parent",
+                f"{classname}||{storage_name}||{data_meta.name}",
+            )
+            runtime.set_property(value_definition, "Value", str(value))
+            runtime.invoke_method(value_list, "Insert", value_definition)
+
+        runtime.invoke_method(data_list, "Insert", data_definition)
+
+
+def _insert_storage_indices(
+    runtime: Any,
+    storage_definition: Any,
+    classname: str,
+    storage_name: str,
+    storage_meta: Any,
+) -> None:
+    indices_list = runtime.get_property(storage_definition, "Indices")
+    for index_meta in getattr(storage_meta, "indices", ()) or ():
+        storage_index = runtime.create_object("%Dictionary.StorageIndexDefinition")
+        runtime.set_property(storage_index, "Name", index_meta.name)
+        runtime.set_property(storage_index, "parent", f"{classname}||{storage_name}")
+        _set_runtime_property_if_not_none(
+            runtime, storage_index, "Location", getattr(index_meta, "location", None)
+        )
+        _set_runtime_property_if_not_none(
+            runtime,
+            storage_index,
+            "SmallChunkSize",
+            getattr(index_meta, "small_chunk_size", None),
+        )
+        runtime.invoke_method(indices_list, "Insert", storage_index)
+
+
+def _insert_storage_properties(
+    runtime: Any,
+    storage_definition: Any,
+    classname: str,
+    storage_name: str,
+    storage_meta: Any,
+) -> None:
+    properties_list = runtime.get_property(storage_definition, "Properties")
+    for property_meta in getattr(storage_meta, "properties", []):
+        storage_property = runtime.create_object("%Dictionary.StoragePropertyDefinition")
+        runtime.set_property(storage_property, "Name", property_meta.name)
+        runtime.set_property(storage_property, "parent", f"{classname}||{storage_name}")
+        _set_runtime_property_if_not_none(
+            runtime,
+            storage_property,
+            "AverageFieldSize",
+            getattr(property_meta, "average_field_size", None),
+        )
+        _set_runtime_property_if_not_none(
+            runtime,
+            storage_property,
+            "Selectivity",
+            getattr(property_meta, "selectivity", None),
+        )
+        _set_runtime_property_if_not_none(
+            runtime,
+            storage_property,
+            "OutlierSelectivity",
+            getattr(property_meta, "outlier_selectivity", None),
+        )
+        _set_runtime_property_if_not_none(
+            runtime, storage_property, "Histogram", getattr(property_meta, "histogram", None)
+        )
+        _set_runtime_property_if_not_none(
+            runtime,
+            storage_property,
+            "ChildBlockCount",
+            getattr(property_meta, "child_block_count", None),
+        )
+        _set_runtime_property_if_not_none(
+            runtime,
+            storage_property,
+            "ChildExtentSize",
+            getattr(property_meta, "child_extent_size", None),
+        )
+        if getattr(property_meta, "bias_queries_as_outlier", None) is not None:
+            runtime.set_property(
+                storage_property,
+                "BiasQueriesAsOutlier",
+                1 if property_meta.bias_queries_as_outlier else 0,
+            )
+        _set_runtime_property_if_not_none(
+            runtime,
+            storage_property,
+            "StreamLocation",
+            getattr(property_meta, "stream_location", None),
+        )
+        runtime.invoke_method(properties_list, "Insert", storage_property)
+
+
+def _insert_storage_sql_maps(
+    runtime: Any,
+    storage_definition: Any,
+    classname: str,
+    storage_name: str,
+    storage_meta: Any,
+) -> None:
+    sql_maps_list = runtime.get_property(storage_definition, "SQLMaps")
+    for sql_map_meta in getattr(storage_meta, "sql_maps", []):
+        sql_map = runtime.create_object("%Dictionary.StorageSQLMapDefinition")
+        runtime.set_property(sql_map, "Name", sql_map_meta.name)
+        runtime.set_property(sql_map, "parent", f"{classname}||{storage_name}")
+        _set_runtime_property_if_not_none(
+            runtime, sql_map, "BlockCount", getattr(sql_map_meta, "block_count", None)
+        )
+        _set_runtime_property_if_not_none(
+            runtime, sql_map, "Condition", getattr(sql_map_meta, "condition", None)
+        )
+        _set_runtime_property_if_not_none(
+            runtime,
+            sql_map,
+            "ConditionFields",
+            getattr(sql_map_meta, "condition_fields", None),
+        )
+        if getattr(sql_map_meta, "conditional_with_host_vars", None) is not None:
+            runtime.set_property(
+                sql_map,
+                "ConditionalWithHostVars",
+                1 if sql_map_meta.conditional_with_host_vars else 0,
+            )
+        _set_runtime_property_if_not_none(
+            runtime, sql_map, "Global", getattr(sql_map_meta, "global_name", None)
+        )
+        _set_runtime_property_if_not_none(
+            runtime,
+            sql_map,
+            "PopulationPct",
+            getattr(sql_map_meta, "population_pct", None),
+        )
+        _set_runtime_property_if_not_none(
+            runtime,
+            sql_map,
+            "PopulationType",
+            getattr(sql_map_meta, "population_type", None),
+        )
+        _set_runtime_property_if_not_none(
+            runtime,
+            sql_map,
+            "RowReference",
+            getattr(sql_map_meta, "row_reference", None),
+        )
+        _set_runtime_property_if_not_none(
+            runtime, sql_map, "Structure", getattr(sql_map_meta, "structure", None)
+        )
+        _set_runtime_property_if_not_none(
+            runtime, sql_map, "Type", getattr(sql_map_meta, "type", None)
+        )
+
+        sql_map_data_list = runtime.get_property(sql_map, "Data")
+        for data_meta in getattr(sql_map_meta, "data", ()) or ():
+            sql_map_data = runtime.create_object("%Dictionary.StorageSQLMapDataDefinition")
+            runtime.set_property(sql_map_data, "Name", data_meta.name)
+            runtime.set_property(
+                sql_map_data,
+                "parent",
+                f"{classname}||{storage_name}||{sql_map_meta.name}",
+            )
+            _set_runtime_property_if_not_none(runtime, sql_map_data, "Node", getattr(data_meta, "node", None))
+            _set_runtime_property_if_not_none(runtime, sql_map_data, "Piece", getattr(data_meta, "piece", None))
+            _set_runtime_property_if_not_none(
+                runtime, sql_map_data, "Delimiter", getattr(data_meta, "delimiter", None)
+            )
+            _set_runtime_property_if_not_none(
+                runtime,
+                sql_map_data,
+                "RetrievalCode",
+                getattr(data_meta, "retrieval_code", None),
+            )
+            runtime.invoke_method(sql_map_data_list, "Insert", sql_map_data)
+
+        row_id_spec_list = runtime.get_property(sql_map, "RowIdSpecs")
+        for row_id_spec_meta in getattr(sql_map_meta, "row_id_specs", ()) or ():
+            row_id_spec = runtime.create_object("%Dictionary.StorageSQLMapRowIdSpecDefinition")
+            runtime.set_property(row_id_spec, "Name", row_id_spec_meta.name)
+            runtime.set_property(
+                row_id_spec,
+                "parent",
+                f"{classname}||{storage_name}||{sql_map_meta.name}",
+            )
+            _set_runtime_property_if_not_none(
+                runtime, row_id_spec, "Field", getattr(row_id_spec_meta, "field", None)
+            )
+            _set_runtime_property_if_not_none(
+                runtime,
+                row_id_spec,
+                "Expression",
+                getattr(row_id_spec_meta, "expression", None),
+            )
+            runtime.invoke_method(row_id_spec_list, "Insert", row_id_spec)
+
+        subscript_list = runtime.get_property(sql_map, "Subscripts")
+        for sub_meta in getattr(sql_map_meta, "subscripts", ()) or ():
+            subscript = runtime.create_object("%Dictionary.StorageSQLMapSubDefinition")
+            runtime.set_property(subscript, "Name", sub_meta.name)
+            runtime.set_property(
+                subscript,
+                "parent",
+                f"{classname}||{storage_name}||{sql_map_meta.name}",
+            )
+            _set_runtime_property_if_not_none(
+                runtime, subscript, "AccessType", getattr(sub_meta, "access_type", None)
+            )
+            _set_runtime_property_if_not_none(
+                runtime, subscript, "DataAccess", getattr(sub_meta, "data_access", None)
+            )
+            _set_runtime_property_if_not_none(
+                runtime, subscript, "Delimiter", getattr(sub_meta, "delimiter", None)
+            )
+            _set_runtime_property_if_not_none(
+                runtime, subscript, "Expression", getattr(sub_meta, "expression", None)
+            )
+            _set_runtime_property_if_not_none(
+                runtime,
+                subscript,
+                "LoopInitValue",
+                getattr(sub_meta, "loop_init_value", None),
+            )
+            _set_runtime_property_if_not_none(
+                runtime, subscript, "NextCode", getattr(sub_meta, "next_code", None)
+            )
+            _set_runtime_property_if_not_none(
+                runtime, subscript, "NullMarker", getattr(sub_meta, "null_marker", None)
+            )
+            _set_runtime_property_if_not_none(
+                runtime, subscript, "StartValue", getattr(sub_meta, "start_value", None)
+            )
+            _set_runtime_property_if_not_none(
+                runtime,
+                subscript,
+                "StopExpression",
+                getattr(sub_meta, "stop_expression", None),
+            )
+            _set_runtime_property_if_not_none(
+                runtime, subscript, "StopValue", getattr(sub_meta, "stop_value", None)
+            )
+
+            access_var_list = runtime.get_property(subscript, "Accessvars")
+            for access_var_meta in getattr(sub_meta, "access_vars", ()) or ():
+                access_var = runtime.create_object(
+                    "%Dictionary.StorageSQLMapSubAccessvarDefinition"
+                )
+                runtime.set_property(access_var, "Name", access_var_meta.name)
+                runtime.set_property(
+                    access_var,
+                    "parent",
+                    f"{classname}||{storage_name}||{sql_map_meta.name}||{sub_meta.name}",
+                )
+                _set_runtime_property_if_not_none(
+                    runtime, access_var, "Variable", getattr(access_var_meta, "variable", None)
+                )
+                _set_runtime_property_if_not_none(
+                    runtime, access_var, "Code", getattr(access_var_meta, "code", None)
+                )
+                runtime.invoke_method(access_var_list, "Insert", access_var)
+
+            invalid_condition_list = runtime.get_property(subscript, "Invalidconditions")
+            for invalid_condition_meta in getattr(sub_meta, "invalid_conditions", ()) or ():
+                invalid_condition = runtime.create_object(
+                    "%Dictionary.StorageSQLMapSubInvalidconditionDefinition"
+                )
+                runtime.set_property(invalid_condition, "Name", invalid_condition_meta.name)
+                runtime.set_property(
+                    invalid_condition,
+                    "parent",
+                    f"{classname}||{storage_name}||{sql_map_meta.name}||{sub_meta.name}",
+                )
+                _set_runtime_property_if_not_none(
+                    runtime,
+                    invalid_condition,
+                    "Expression",
+                    getattr(invalid_condition_meta, "expression", None),
+                )
+                runtime.invoke_method(invalid_condition_list, "Insert", invalid_condition)
+
+            runtime.invoke_method(subscript_list, "Insert", subscript)
+
+        runtime.invoke_method(sql_maps_list, "Insert", sql_map)
+
+
+def _sync_storage(
+    runtime: Any,
+    class_definition: Any,
+    classname: str,
+    storage_meta: Any,
+    mode: str,
+) -> None:
+    if not storage_meta or mode != "replace":
+        return
+
+    storage_list = runtime.get_property(class_definition, "Storages")
+    storage_definition = runtime.create_object("%Dictionary.StorageDefinition")
+    storage_name = "CustomStorage"
+    runtime.set_property(storage_definition, "Name", storage_name)
+    runtime.set_property(storage_definition, "parent", classname)
+    runtime.set_property(class_definition, "StorageStrategy", storage_name)
+
+    _apply_storage_attributes(runtime, storage_definition, storage_meta)
+    _insert_storage_data(runtime, storage_definition, classname, storage_name, storage_meta)
+    _insert_storage_indices(runtime, storage_definition, classname, storage_name, storage_meta)
+    _insert_storage_properties(runtime, storage_definition, classname, storage_name, storage_meta)
+    _insert_storage_sql_maps(runtime, storage_definition, classname, storage_name, storage_meta)
+
+    runtime.invoke_method(storage_list, "Insert", storage_definition)
+
+
 def sync_schema(model_cls: Type[Any], _seen: set[str] | None = None) -> None:
     mode = getattr(model_cls, "_sync_mode", "extend")
     if mode == "observe":
@@ -544,422 +1195,22 @@ def sync_schema(model_cls: Type[Any], _seen: set[str] | None = None) -> None:
         return
     _seen.add(classname)
 
-    exists = runtime.call_classmethod("%Dictionary.ClassDefinition", "_ExistsId", classname)
-    cd = None
-
-    if mode == "replace" and exists:
-        runtime.call_classmethod("%SYSTEM.OBJ", "Delete", classname, "-d")
-        exists = False
-
-    if exists:
-        cd = runtime.get_object("%Dictionary.ClassDefinition", classname)
-    else:
-        cd = runtime.create_object("%Dictionary.ClassDefinition")
-        runtime.set_property(cd, "Name", classname)
-
-    runtime.set_property(cd, "Super", superclasses)
+    cd, _exists = _ensure_class_definition(runtime, classname, mode)
     class_metadata = getattr(model_cls, "_class_metadata", None)
-    if class_metadata is not None:
-        if getattr(class_metadata, "description", None) is not None:
-            runtime.set_property(cd, "Description", class_metadata.description)
-        if getattr(class_metadata, "deprecated", False):
-            runtime.set_property(cd, "Deprecated", 1)
-        if getattr(class_metadata, "final", False):
-            runtime.set_property(cd, "Final", 1)
-        if getattr(class_metadata, "sql_table_name", None) is not None:
-            runtime.set_property(cd, "SqlTableName", class_metadata.sql_table_name)
-        if getattr(class_metadata, "procedure_block", False):
-            runtime.set_property(cd, "ProcedureBlock", 1)
+    _apply_class_definition(runtime, cd, classname, superclasses, class_metadata)
 
     parameters = getattr(model_cls, "_parameters", {}) or {}
-    if isinstance(parameters, dict) and mode in {"extend", "replace"}:
-        param_list = runtime.get_property(cd, "Parameters")
-        existing_parameters = set()
-        if mode == "extend" and param_list is not None:
-            count = runtime.invoke_method(param_list, "Count")
-            for i in range(1, count + 1):
-                param = runtime.invoke_method(param_list, "GetAt", i)
-                existing_parameters.add(runtime.get_property(param, "Name"))
-        if param_list is not None:
-            for param_name, param_default in parameters.items():
-                if mode == "extend" and param_name in existing_parameters:
-                    continue
-                param_def = runtime.create_object("%Dictionary.ParameterDefinition")
-                runtime.set_property(param_def, "Name", param_name)
-                runtime.set_property(param_def, "parent", classname)
-                runtime.set_property(param_def, "Default", str(param_default))
-                runtime.invoke_method(param_list, "Insert", param_def)
-
-    props_oref_list = runtime.get_property(cd, "Properties")
-    existing_props = {}
-
-    count = runtime.invoke_method(props_oref_list, "Count")
-    for i in range(1, count + 1):
-        prop = runtime.invoke_method(props_oref_list, "GetAt", i)
-        prop_name = runtime.get_property(prop, "Name")
-        existing_props[prop_name] = prop
+    _sync_parameters(runtime, cd, classname, parameters, mode)
 
     model_fields = getattr(model_cls, "__model_fields__", {})
-
-    for model_field in model_fields.values():
-        resolved = _resolve_model_type(model_field.declared_type)
-        if (
-            isinstance(resolved, type)
-            and issubclass(resolved, iris_orm.models.Model)
-            and resolved is not model_cls
-        ):
-            sync_schema(resolved, _seen)
-
-    for field_name, model_field in model_fields.items():
-        field_meta = model_field.field_info
-        iris_type = _map_python_type_to_iris(
-            _resolve_model_type(model_field.declared_type),
-            field_meta,
-        )
-
-        if field_name in existing_props and mode == "extend":
-            continue
-
-        prop = runtime.create_object("%Dictionary.PropertyDefinition")
-        runtime.set_property(prop, "Name", field_name)
-        runtime.set_property(prop, "parent", classname)
-
-        runtime.set_property(prop, "Type", iris_type)
-        if getattr(field_meta, "required", False):
-            runtime.set_property(prop, "Required", 1)
-        if getattr(field_meta, "readonly", False):
-            runtime.set_property(prop, "ReadOnly", 1)
-        if getattr(field_meta, "collection", None):
-            runtime.set_property(prop, "Collection", field_meta.collection)
-        if getattr(field_meta, "sql_field_name", None):
-            runtime.set_property(prop, "SqlFieldName", field_meta.sql_field_name)
-        if getattr(field_meta, "identity", False):
-            runtime.set_property(prop, "Identity", 1)
-        if getattr(field_meta, "relationship", None) is not None:
-            runtime.set_property(prop, "Relationship", field_meta.relationship)
-        if getattr(field_meta, "on_delete", None) is not None:
-            runtime.set_property(prop, "OnDelete", field_meta.on_delete)
-        if getattr(field_meta, "inverse", None) is not None:
-            runtime.set_property(prop, "Inverse", field_meta.inverse)
-        if getattr(field_meta, "transient", False):
-            runtime.set_property(prop, "Transient", 1)
-        if getattr(field_meta, "storable", True) is False:
-            runtime.set_property(prop, "Storable", 0)
-        if getattr(field_meta, "multi_dimensional", False):
-            runtime.set_property(prop, "MultiDimensional", 1)
-        if getattr(field_meta, "sql_list_delimiter", None) is not None:
-            runtime.set_property(prop, "SqlListDelimiter", field_meta.sql_list_delimiter)
-        if getattr(field_meta, "sql_list_type", None) is not None:
-            runtime.set_property(prop, "SqlListType", field_meta.sql_list_type)
-        if getattr(field_meta, "sql_compute_code", None) is not None:
-            runtime.set_property(prop, "SqlComputeCode", field_meta.sql_compute_code)
-        if getattr(field_meta, "sql_compute_on_change", None) is not None:
-            runtime.set_property(prop, "SqlComputeOnChange", field_meta.sql_compute_on_change)
-        if getattr(field_meta, "sql_computed", False):
-            runtime.set_property(prop, "SqlComputed", 1)
-
-        if getattr(field_meta, "initial_expression", None) is not None:
-            runtime.set_property(prop, "InitialExpression", field_meta.initial_expression)
-        elif getattr(field_meta, "default", UNSET) is not UNSET and field_meta.default is not None:
-            val = field_meta.default
-            if isinstance(val, str):
-                runtime.set_property(prop, "InitialExpression", f'"{val}"')
-            elif isinstance(val, bool):
-                runtime.set_property(prop, "InitialExpression", "1" if val else "0")
-            else:
-                runtime.set_property(prop, "InitialExpression", str(val))
-
-        if getattr(field_meta, "max_length", None) is not None:
-            params = runtime.get_property(prop, "Parameters")
-            if params is not None:
-                runtime.invoke_method(params, "SetAt", str(field_meta.max_length), "MAXLEN")
-
-        runtime.invoke_method(props_oref_list, "Insert", prop)
+    _sync_related_models(model_cls, model_fields, _seen)
+    _sync_properties(runtime, cd, classname, model_fields, mode)
 
     indexes = getattr(model_cls, "_indexes", [])
-    if isinstance(indexes, list) and mode in {"extend", "replace"}:
-        idx_list = runtime.get_property(cd, "Indices")
-        existing_indexes = set()
-
-        if mode == "extend":
-            count = runtime.invoke_method(idx_list, "Count")
-            for i in range(1, count + 1):
-                idx = runtime.invoke_method(idx_list, "GetAt", i)
-                existing_indexes.add(runtime.get_property(idx, "Name"))
-
-        for index_meta in indexes:
-            if mode == "extend" and index_meta.name in existing_indexes:
-                continue
-
-            idx_def = runtime.create_object("%Dictionary.IndexDefinition")
-            runtime.set_property(idx_def, "Name", index_meta.name)
-            runtime.set_property(idx_def, "parent", classname)
-            runtime.set_property(idx_def, "Properties", index_meta.properties)
-            if getattr(index_meta, "unique", False):
-                runtime.set_property(idx_def, "Unique", 1)
-            if getattr(index_meta, "type", None):
-                runtime.set_property(idx_def, "Type", index_meta.type)
-            if getattr(index_meta, "primary_key", False):
-                runtime.set_property(idx_def, "PrimaryKey", 1)
-            runtime.invoke_method(idx_list, "Insert", idx_def)
+    _sync_indexes(runtime, cd, classname, indexes, mode)
 
     storage_meta = getattr(model_cls, "_storage", None)
-    if storage_meta and mode == "replace":
-        stor_list = runtime.get_property(cd, "Storages")
-        stor_def = runtime.create_object("%Dictionary.StorageDefinition")
-        stor_def_name = "CustomStorage"
-        runtime.set_property(stor_def, "Name", stor_def_name)
-        runtime.set_property(stor_def, "parent", classname)
-        runtime.set_property(cd, "StorageStrategy", stor_def_name)
-
-        if getattr(storage_meta, "type", None) is not None:
-            runtime.set_property(stor_def, "Type", storage_meta.type)
-        if getattr(storage_meta, "data_location", None) is not None:
-            runtime.set_property(stor_def, "DataLocation", storage_meta.data_location)
-        if getattr(storage_meta, "default_data", None) is not None:
-            runtime.set_property(stor_def, "DefaultData", storage_meta.default_data)
-        if getattr(storage_meta, "extent_location", None) is not None:
-            runtime.set_property(stor_def, "ExtentLocation", storage_meta.extent_location)
-        if getattr(storage_meta, "extent_size", None) is not None:
-            runtime.set_property(stor_def, "ExtentSize", storage_meta.extent_size)
-        if getattr(storage_meta, "counter_location", None) is not None:
-            runtime.set_property(stor_def, "CounterLocation", storage_meta.counter_location)
-        if getattr(storage_meta, "version_location", None) is not None:
-            runtime.set_property(stor_def, "VersionLocation", storage_meta.version_location)
-        if getattr(storage_meta, "id_location", None) is not None:
-            runtime.set_property(stor_def, "IdLocation", storage_meta.id_location)
-        if getattr(storage_meta, "id_expression", None) is not None:
-            runtime.set_property(stor_def, "IdExpression", storage_meta.id_expression)
-        if getattr(storage_meta, "id_function", None) is not None:
-            runtime.set_property(stor_def, "IdFunction", storage_meta.id_function)
-        if getattr(storage_meta, "index_location", None) is not None:
-            runtime.set_property(stor_def, "IndexLocation", storage_meta.index_location)
-        if getattr(storage_meta, "state", None) is not None:
-            runtime.set_property(stor_def, "State", storage_meta.state)
-        if getattr(storage_meta, "stream_location", None) is not None:
-            runtime.set_property(stor_def, "StreamLocation", storage_meta.stream_location)
-        if getattr(storage_meta, "sql_child_sub", None) is not None:
-            runtime.set_property(stor_def, "SqlChildSub", storage_meta.sql_child_sub)
-        if getattr(storage_meta, "sql_id_expression", None) is not None:
-            runtime.set_property(stor_def, "SqlIdExpression", storage_meta.sql_id_expression)
-        if getattr(storage_meta, "sql_row_id_name", None) is not None:
-            runtime.set_property(stor_def, "SqlRowIdName", storage_meta.sql_row_id_name)
-        if getattr(storage_meta, "sql_row_id_property", None) is not None:
-            runtime.set_property(stor_def, "SqlRowIdProperty", storage_meta.sql_row_id_property)
-        if getattr(storage_meta, "sql_table_number", None) is not None:
-            runtime.set_property(stor_def, "SqlTableNumber", storage_meta.sql_table_number)
-        if getattr(storage_meta, "sequence_number", None) is not None:
-            runtime.set_property(stor_def, "SequenceNumber", storage_meta.sequence_number)
-
-        # Add StorageData items
-        data_list = runtime.get_property(stor_def, "Data")
-        for sd_meta in getattr(storage_meta, "data", []):
-            sd = runtime.create_object("%Dictionary.StorageDataDefinition")
-            runtime.set_property(sd, "Name", sd_meta.name)
-            runtime.set_property(sd, "parent", f"{classname}||{stor_def_name}")
-            if getattr(sd_meta, "structure", None):
-                runtime.set_property(sd, "Structure", sd_meta.structure)
-            if getattr(sd_meta, "attribute", None) is not None:
-                runtime.set_property(sd, "Attribute", sd_meta.attribute)
-            if getattr(sd_meta, "subscript", None) is not None:
-                runtime.set_property(sd, "Subscript", sd_meta.subscript)
-
-            val_list = runtime.get_property(sd, "Values")
-            if getattr(sd_meta, "values", None):
-                for k, v in sd_meta.values.items():
-                    sdv = runtime.create_object("%Dictionary.StorageDataValueDefinition")
-                    runtime.set_property(sdv, "Name", str(k))
-                    runtime.set_property(
-                        sdv, "parent", f"{classname}||{stor_def_name}||{sd_meta.name}"
-                    )
-                    runtime.set_property(sdv, "Value", str(v))
-                    runtime.invoke_method(val_list, "Insert", sdv)
-
-            runtime.invoke_method(data_list, "Insert", sd)
-
-        indices_list = runtime.get_property(stor_def, "Indices")
-        for index_meta in getattr(storage_meta, "indices", ()) or ():
-            storage_index = runtime.create_object("%Dictionary.StorageIndexDefinition")
-            runtime.set_property(storage_index, "Name", index_meta.name)
-            runtime.set_property(storage_index, "parent", f"{classname}||{stor_def_name}")
-            if getattr(index_meta, "location", None) is not None:
-                runtime.set_property(storage_index, "Location", index_meta.location)
-            if getattr(index_meta, "small_chunk_size", None) is not None:
-                runtime.set_property(
-                    storage_index, "SmallChunkSize", index_meta.small_chunk_size
-                )
-            runtime.invoke_method(indices_list, "Insert", storage_index)
-
-        properties_list = runtime.get_property(stor_def, "Properties")
-        for property_meta in getattr(storage_meta, "properties", []):
-            storage_property = runtime.create_object("%Dictionary.StoragePropertyDefinition")
-            runtime.set_property(storage_property, "Name", property_meta.name)
-            runtime.set_property(storage_property, "parent", f"{classname}||{stor_def_name}")
-            if getattr(property_meta, "average_field_size", None) is not None:
-                runtime.set_property(
-                    storage_property, "AverageFieldSize", property_meta.average_field_size
-                )
-            if getattr(property_meta, "selectivity", None) is not None:
-                runtime.set_property(storage_property, "Selectivity", property_meta.selectivity)
-            if getattr(property_meta, "outlier_selectivity", None) is not None:
-                runtime.set_property(
-                    storage_property,
-                    "OutlierSelectivity",
-                    property_meta.outlier_selectivity,
-                )
-            if getattr(property_meta, "histogram", None) is not None:
-                runtime.set_property(storage_property, "Histogram", property_meta.histogram)
-            if getattr(property_meta, "child_block_count", None) is not None:
-                runtime.set_property(
-                    storage_property, "ChildBlockCount", property_meta.child_block_count
-                )
-            if getattr(property_meta, "child_extent_size", None) is not None:
-                runtime.set_property(
-                    storage_property, "ChildExtentSize", property_meta.child_extent_size
-                )
-            if getattr(property_meta, "bias_queries_as_outlier", None) is not None:
-                runtime.set_property(
-                    storage_property,
-                    "BiasQueriesAsOutlier",
-                    1 if property_meta.bias_queries_as_outlier else 0,
-                )
-            if getattr(property_meta, "stream_location", None) is not None:
-                runtime.set_property(
-                    storage_property, "StreamLocation", property_meta.stream_location
-                )
-            runtime.invoke_method(properties_list, "Insert", storage_property)
-
-        sql_maps_list = runtime.get_property(stor_def, "SQLMaps")
-        for sql_map_meta in getattr(storage_meta, "sql_maps", []):
-            sql_map = runtime.create_object("%Dictionary.StorageSQLMapDefinition")
-            runtime.set_property(sql_map, "Name", sql_map_meta.name)
-            runtime.set_property(sql_map, "parent", f"{classname}||{stor_def_name}")
-            if getattr(sql_map_meta, "block_count", None) is not None:
-                runtime.set_property(sql_map, "BlockCount", sql_map_meta.block_count)
-            if getattr(sql_map_meta, "condition", None) is not None:
-                runtime.set_property(sql_map, "Condition", sql_map_meta.condition)
-            if getattr(sql_map_meta, "condition_fields", None) is not None:
-                runtime.set_property(sql_map, "ConditionFields", sql_map_meta.condition_fields)
-            if getattr(sql_map_meta, "conditional_with_host_vars", None) is not None:
-                runtime.set_property(
-                    sql_map,
-                    "ConditionalWithHostVars",
-                    1 if sql_map_meta.conditional_with_host_vars else 0,
-                )
-            if getattr(sql_map_meta, "global_name", None) is not None:
-                runtime.set_property(sql_map, "Global", sql_map_meta.global_name)
-            if getattr(sql_map_meta, "population_pct", None) is not None:
-                runtime.set_property(sql_map, "PopulationPct", sql_map_meta.population_pct)
-            if getattr(sql_map_meta, "population_type", None) is not None:
-                runtime.set_property(sql_map, "PopulationType", sql_map_meta.population_type)
-            if getattr(sql_map_meta, "row_reference", None) is not None:
-                runtime.set_property(sql_map, "RowReference", sql_map_meta.row_reference)
-            if getattr(sql_map_meta, "structure", None) is not None:
-                runtime.set_property(sql_map, "Structure", sql_map_meta.structure)
-            if getattr(sql_map_meta, "type", None) is not None:
-                runtime.set_property(sql_map, "Type", sql_map_meta.type)
-
-            sql_map_data_list = runtime.get_property(sql_map, "Data")
-            for data_meta in getattr(sql_map_meta, "data", ()) or ():
-                sql_map_data = runtime.create_object("%Dictionary.StorageSQLMapDataDefinition")
-                runtime.set_property(sql_map_data, "Name", data_meta.name)
-                runtime.set_property(
-                    sql_map_data, "parent", f"{classname}||{stor_def_name}||{sql_map_meta.name}"
-                )
-                if getattr(data_meta, "node", None) is not None:
-                    runtime.set_property(sql_map_data, "Node", data_meta.node)
-                if getattr(data_meta, "piece", None) is not None:
-                    runtime.set_property(sql_map_data, "Piece", data_meta.piece)
-                if getattr(data_meta, "delimiter", None) is not None:
-                    runtime.set_property(sql_map_data, "Delimiter", data_meta.delimiter)
-                if getattr(data_meta, "retrieval_code", None) is not None:
-                    runtime.set_property(
-                        sql_map_data, "RetrievalCode", data_meta.retrieval_code
-                    )
-                runtime.invoke_method(sql_map_data_list, "Insert", sql_map_data)
-
-            row_id_spec_list = runtime.get_property(sql_map, "RowIdSpecs")
-            for row_id_spec_meta in getattr(sql_map_meta, "row_id_specs", ()) or ():
-                row_id_spec = runtime.create_object("%Dictionary.StorageSQLMapRowIdSpecDefinition")
-                runtime.set_property(row_id_spec, "Name", row_id_spec_meta.name)
-                runtime.set_property(
-                    row_id_spec, "parent", f"{classname}||{stor_def_name}||{sql_map_meta.name}"
-                )
-                if getattr(row_id_spec_meta, "field", None) is not None:
-                    runtime.set_property(row_id_spec, "Field", row_id_spec_meta.field)
-                if getattr(row_id_spec_meta, "expression", None) is not None:
-                    runtime.set_property(row_id_spec, "Expression", row_id_spec_meta.expression)
-                runtime.invoke_method(row_id_spec_list, "Insert", row_id_spec)
-
-            subscript_list = runtime.get_property(sql_map, "Subscripts")
-            for sub_meta in getattr(sql_map_meta, "subscripts", ()) or ():
-                subscript = runtime.create_object("%Dictionary.StorageSQLMapSubDefinition")
-                runtime.set_property(subscript, "Name", sub_meta.name)
-                runtime.set_property(
-                    subscript, "parent", f"{classname}||{stor_def_name}||{sql_map_meta.name}"
-                )
-                if getattr(sub_meta, "access_type", None) is not None:
-                    runtime.set_property(subscript, "AccessType", sub_meta.access_type)
-                if getattr(sub_meta, "data_access", None) is not None:
-                    runtime.set_property(subscript, "DataAccess", sub_meta.data_access)
-                if getattr(sub_meta, "delimiter", None) is not None:
-                    runtime.set_property(subscript, "Delimiter", sub_meta.delimiter)
-                if getattr(sub_meta, "expression", None) is not None:
-                    runtime.set_property(subscript, "Expression", sub_meta.expression)
-                if getattr(sub_meta, "loop_init_value", None) is not None:
-                    runtime.set_property(subscript, "LoopInitValue", sub_meta.loop_init_value)
-                if getattr(sub_meta, "next_code", None) is not None:
-                    runtime.set_property(subscript, "NextCode", sub_meta.next_code)
-                if getattr(sub_meta, "null_marker", None) is not None:
-                    runtime.set_property(subscript, "NullMarker", sub_meta.null_marker)
-                if getattr(sub_meta, "start_value", None) is not None:
-                    runtime.set_property(subscript, "StartValue", sub_meta.start_value)
-                if getattr(sub_meta, "stop_expression", None) is not None:
-                    runtime.set_property(subscript, "StopExpression", sub_meta.stop_expression)
-                if getattr(sub_meta, "stop_value", None) is not None:
-                    runtime.set_property(subscript, "StopValue", sub_meta.stop_value)
-
-                access_var_list = runtime.get_property(subscript, "Accessvars")
-                for access_var_meta in getattr(sub_meta, "access_vars", ()) or ():
-                    access_var = runtime.create_object(
-                        "%Dictionary.StorageSQLMapSubAccessvarDefinition"
-                    )
-                    runtime.set_property(access_var, "Name", access_var_meta.name)
-                    runtime.set_property(
-                        access_var,
-                        "parent",
-                        f"{classname}||{stor_def_name}||{sql_map_meta.name}||{sub_meta.name}",
-                    )
-                    if getattr(access_var_meta, "variable", None) is not None:
-                        runtime.set_property(access_var, "Variable", access_var_meta.variable)
-                    if getattr(access_var_meta, "code", None) is not None:
-                        runtime.set_property(access_var, "Code", access_var_meta.code)
-                    runtime.invoke_method(access_var_list, "Insert", access_var)
-
-                invalid_condition_list = runtime.get_property(subscript, "Invalidconditions")
-                for invalid_condition_meta in getattr(sub_meta, "invalid_conditions", ()) or ():
-                    invalid_condition = runtime.create_object(
-                        "%Dictionary.StorageSQLMapSubInvalidconditionDefinition"
-                    )
-                    runtime.set_property(invalid_condition, "Name", invalid_condition_meta.name)
-                    runtime.set_property(
-                        invalid_condition,
-                        "parent",
-                        f"{classname}||{stor_def_name}||{sql_map_meta.name}||{sub_meta.name}",
-                    )
-                    if getattr(invalid_condition_meta, "expression", None) is not None:
-                        runtime.set_property(
-                            invalid_condition, "Expression", invalid_condition_meta.expression
-                        )
-                    runtime.invoke_method(
-                        invalid_condition_list, "Insert", invalid_condition
-                    )
-
-                runtime.invoke_method(subscript_list, "Insert", subscript)
-
-            runtime.invoke_method(sql_maps_list, "Insert", sql_map)
-
-        runtime.invoke_method(stor_list, "Insert", stor_def)
+    _sync_storage(runtime, cd, classname, storage_meta, mode)
 
     st = runtime.save_object(cd)
     print("SAVE STATUS:", st)

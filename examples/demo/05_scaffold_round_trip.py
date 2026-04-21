@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from iris_orm import Field, IRISModel, scaffold_from_iris
+from iris_orm import Field, Model, scaffold_from_iris
 
 from examples.demo.support import (
     configure_demo_runtime,
@@ -20,29 +20,28 @@ from examples.demo.support import (
 )
 
 
-class ExampleScaffoldCustomer(IRISModel):
-    Name: Annotated[str, Field(required=True, maxlen=120)]
+class ExampleScaffoldCustomer(Model, persistent=True):
+    Name: str = Field(required=True, max_length=120)
 
     class Meta:
         classname = "Demo.ExampleScaffoldCustomer"
         mode = "replace"
 
 
-class ExampleScaffoldAddress(IRISModel):
-    Street: Annotated[str, Field(required=True, maxlen=120)]
-    City: Annotated[str, Field(required=True, maxlen=80)]
+class ExampleScaffoldAddress(Model, serial=True):
+    Street: str = Field(required=True, max_length=120)
+    City: str = Field(required=True, max_length=80)
 
     class Meta:
         classname = "Demo.ExampleScaffoldAddress"
-        superclasses = "%Library.SerialObject"
         mode = "replace"
 
 
-class ExampleScaffoldOrder(IRISModel):
-    OrderNumber: Annotated[str, Field(required=True, maxlen=40)]
-    Customer: Annotated[ExampleScaffoldCustomer | None, Field(required=False)] = None
-    ShipTo: Annotated[ExampleScaffoldAddress | None, Field(required=False)] = None
-    Tags: Annotated[list[str] | None, Field(iris_type="%List")] = None
+class ExampleScaffoldOrder(Model, persistent=True):
+    OrderNumber: str = Field(required=True, max_length=40)
+    Customer: ExampleScaffoldCustomer | None = None
+    ShipTo: ExampleScaffoldAddress | None = None
+    Tags: list[str] = Field(default_factory=list, iris_type="%List")
 
     class Meta:
         classname = "Demo.ExampleScaffoldOrder"

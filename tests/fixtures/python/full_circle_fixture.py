@@ -1,30 +1,26 @@
 from __future__ import annotations
 
 import datetime
-from typing import Annotated
 
-from iris_orm import Field, Index, IRISModel, StorageData, StorageDefinition
+from iris_orm import Field, Model, StorageData, StorageDefinition
 
 
-class FullCircleFixture(IRISModel):
-    Title: Annotated[str, Field(required=True, maxlen=350)]
-    Description: Annotated[str | None, Field(required=False, default="No desc", maxlen=500)] = (
-        "No desc"
-    )
-    Price: Annotated[float | None, Field(required=False, default=15.5)] = 15.5
-    IsActive: Annotated[bool | None, Field(required=False, default=True)] = True
-    Count: Annotated[int | None, Field(required=False, default=42)] = 42
-    BlobData: Annotated[bytes | None, Field(required=False)] = None
-    Data: Annotated[dict | None, Field(required=False)] = None
-    Tags: Annotated[list | None, Field(required=False)] = None
-    EventDate: Annotated[datetime.date | None, Field(required=False)] = None
-    EventTime: Annotated[datetime.time | None, Field(required=False)] = None
-    CreatedAt: Annotated[datetime.datetime | None, Field(required=False)] = None
+class FullCircleFixture(Model, persistent=True):
+    Title: str = Field(required=True, max_length=350, index=True)
+    Description: str | None = Field(default="No desc", max_length=500)
+    Price: float | None = 15.5
+    IsActive: bool | None = True
+    Count: int | None = 42
+    BlobData: bytes | None = None
+    Data: dict | None = None
+    Tags: list | None = None
+    EventDate: datetime.date | None = None
+    EventTime: datetime.time | None = None
+    CreatedAt: datetime.datetime | None = None
 
     class Meta:
         classname = "Demo.FullCircleFixture"
         mode = "replace"
-        indexes = [Index("TitleIdx", properties="Title")]
         storage = StorageDefinition(
             data_location="^Demo.FullCircleFixtureD",
             default_data="FullCircleFixtureDefaultData",

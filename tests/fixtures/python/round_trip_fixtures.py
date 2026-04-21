@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from typing import Annotated
-
-from iris_orm import ClassMetadata, Field, IRISModel
+from iris_orm import ClassMetadata, Field, Model
 
 
-class ClassMetadataRoundTripFixture(IRISModel):
-    Title: str
+class ClassMetadataRoundTripFixture(Model, persistent=True):
+    Title: str = Field(required=True)
 
     class Meta:
         classname = "Demo.ClassMetadataRoundTripFixture"
@@ -20,24 +18,20 @@ class ClassMetadataRoundTripFixture(IRISModel):
         )
 
 
-class SQLProjectionRoundTripFixture(IRISModel):
-    Title: str
-    Tags: Annotated[
-        list[str] | None,
-        Field(
-            iris_type="%List",
-            sql_list_delimiter="|",
-            sql_list_type="DELIMITED",
-        ),
-    ] = None
-    TitleUpper: Annotated[
-        str | None,
-        Field(
-            sql_compute_code="Set {*} = {Title}",
-            sql_compute_on_change="Title",
-            sql_computed=True,
-        ),
-    ] = None
+class SQLProjectionRoundTripFixture(Model, persistent=True):
+    Title: str = Field(required=True)
+    Tags: list[str] | None = Field(
+        default=None,
+        iris_type="%List",
+        sql_list_delimiter="|",
+        sql_list_type="DELIMITED",
+    )
+    TitleUpper: str | None = Field(
+        default=None,
+        sql_compute_code="Set {*} = {Title}",
+        sql_compute_on_change="Title",
+        sql_computed=True,
+    )
 
     class Meta:
         classname = "Demo.SQLProjectionRoundTripFixture"

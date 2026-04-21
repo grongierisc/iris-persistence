@@ -1,23 +1,20 @@
 from __future__ import annotations
 
-from typing import Annotated
 from uuid import uuid4
 
-from iris_orm import Field, IRISModel, Index
+from iris_orm import Field, Model
 
 
-class DemoFixture(IRISModel):
-    Titi: Annotated[int, Field(required=False)]
-    Toto: Annotated[str, Field(required=True)]
-    bytes: Annotated[bytes, Field(required=False)]
-    dickt: Annotated[dict, Field(required=False)]
-    snake_case: Annotated[str, Field(required=False)]
+class DemoFixture(Model, persistent=True):
+    Titi: int | None = None
+    Toto: str = Field(required=True, unique=True)
+    bytes: bytes | None = None
+    dickt: dict | None = None
+    snake_case: str | None = None
 
     class Meta:
         classname = "Demo.Demo"
         mode = "extend"
-        superclasses = "%Library.Persistent"
-        indexes = [Index("TotoIdx", properties="Toto", unique=True)]
         parameters = {"TITI": "TOTO"}
 
 

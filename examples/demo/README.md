@@ -1,6 +1,6 @@
 # Demo Walkthrough
 
-This folder contains a progressive set of `iris_orm` demos, starting with a single-field model and ending with a live IRIS scaffold round-trip.
+This folder contains a progressive set of `iris_orm` demos, starting with a single-field `Model` and ending with a live IRIS scaffold round-trip.
 
 ## Run Order
 
@@ -12,8 +12,8 @@ This folder contains a progressive set of `iris_orm` demos, starting with a sing
 
 ## What Each Demo Covers
 
-- `01_minimal_save.py`: the smallest possible `IRISModel`, plus `save()`, `get()`, and `all()`
-- `02_python_first_crud.py`: annotated fields, indexes, parameters, `%List`, and query chaining with `where(...).order_by(...)`
+- `01_minimal_save.py`: the smallest possible `Model`, plus `save()`, `get()`, and `all()`
+- `02_python_first_crud.py`: field defaults, generated indexes, parameters, `%List`, and query chaining with `where(...).order_by(...)`
 - `03_related_objects.py`: `%Persistent` and `%SerialObject` references, plus list and array collections of nested models
 - `04_advanced_schema.py`: `replace` mode, typed `StorageDefinition(...)`, `ClassMetadata(...)`, indexes, parameters, and richer scalar types
 - `05_scaffold_round_trip.py`: create a live IRIS class from Python, scaffold an observe model back out, then read through the generated model

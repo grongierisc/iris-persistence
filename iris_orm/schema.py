@@ -4,7 +4,7 @@ from typing import Any, Type, get_args, get_origin, get_type_hints
 
 import iris_orm.models
 from iris_orm.runtime import get_runtime
-from iris_orm.types import Field
+from iris_orm.types import FieldInfo, UNSET
 
 
 def _resolve_model_type(py_type: Any) -> Any:
@@ -16,7 +16,7 @@ def _resolve_model_type(py_type: Any) -> Any:
     return py_type
 
 
-def _map_python_type_to_iris(py_type: Any, field_meta: Field) -> str:
+def _map_python_type_to_iris(py_type: Any, field_meta: FieldInfo) -> str:
     if getattr(field_meta, "iris_type", None):
         return field_meta.iris_type
 
@@ -49,7 +49,7 @@ def _map_python_type_to_iris(py_type: Any, field_meta: Field) -> str:
         return "%Library.Date"
     if str(py_type) == "<class 'datetime.time'>":
         return "%Library.Time"
-    if isinstance(py_type, type) and issubclass(py_type, iris_orm.models.IRISModel):
+    if isinstance(py_type, type) and issubclass(py_type, iris_orm.models.Model):
         return py_type._classname
 
     return "%Library.String"
@@ -125,26 +125,23 @@ def sync_schema(model_cls: Type[Any], _seen: set[str] | None = None) -> None:
         prop_name = runtime.get_property(prop, "Name")
         existing_props[prop_name] = prop
 
-    fields = getattr(model_cls, "_fields", {})
-    hints = get_type_hints(model_cls, include_extras=True)
+    model_fields = getattr(model_cls, "__model_fields__", {})
 
-    for field_name, hint in hints.items():
-        if field_name.startswith("_"):
-            continue
-        resolved = _resolve_model_type(hint)
+    for model_field in model_fields.values():
+        resolved = _resolve_model_type(model_field.declared_type)
         if (
             isinstance(resolved, type)
-            and issubclass(resolved, iris_orm.models.IRISModel)
+            and issubclass(resolved, iris_orm.models.Model)
             and resolved is not model_cls
         ):
             sync_schema(resolved, _seen)
 
-    for field_name, hint in hints.items():
-        if field_name.startswith("_"):
-            continue
-
-        field_meta = fields.get(field_name, Field())
-        iris_type = _map_python_type_to_iris(_resolve_model_type(hint), field_meta)
+    for field_name, model_field in model_fields.items():
+        field_meta = model_field.field_info
+        iris_type = _map_python_type_to_iris(
+            _resolve_model_type(model_field.declared_type),
+            field_meta,
+        )
 
         if field_name in existing_props and mode == "extend":
             continue
@@ -189,7 +186,7 @@ def sync_schema(model_cls: Type[Any], _seen: set[str] | None = None) -> None:
 
         if getattr(field_meta, "initial_expression", None) is not None:
             runtime.set_property(prop, "InitialExpression", field_meta.initial_expression)
-        elif getattr(field_meta, "default", None) is not None:
+        elif getattr(field_meta, "default", UNSET) is not UNSET and field_meta.default is not None:
             val = field_meta.default
             if isinstance(val, str):
                 runtime.set_property(prop, "InitialExpression", f'"{val}"')
@@ -198,10 +195,10 @@ def sync_schema(model_cls: Type[Any], _seen: set[str] | None = None) -> None:
             else:
                 runtime.set_property(prop, "InitialExpression", str(val))
 
-        if getattr(field_meta, "maxlen", None) is not None:
+        if getattr(field_meta, "max_length", None) is not None:
             params = runtime.get_property(prop, "Parameters")
             if params is not None:
-                runtime.invoke_method(params, "SetAt", str(field_meta.maxlen), "MAXLEN")
+                runtime.invoke_method(params, "SetAt", str(field_meta.max_length), "MAXLEN")
 
         runtime.invoke_method(props_oref_list, "Insert", prop)
 

@@ -5,7 +5,7 @@ SQL projection, and physical storage metadata.
 
 `iris_orm` works across three layers:
 
-- Python model definition: `IRISModel`, `Field(...)`, `Index(...)`, `StorageDefinition(...)`
+- Python model definition: `Model`, `Field(...)`, `Index(...)`, `StorageDefinition(...)`
 - IRIS class metadata: `%Dictionary.*Definition` and `%Dictionary.Compiled*`
 - SQL/storage projection: projected SQL table/column/index shape plus global storage layout
 
@@ -78,7 +78,7 @@ Recommended user experience:
 Example:
 
 ```python
-class Demo(IRISModel):
+class Demo(Model, persistent=True):
     Name: Annotated[str, Field(required=True)]
 
     class Meta:
@@ -117,17 +117,19 @@ Write path:
 Read path:
 
 - `scaffold_from_iris(..., extract_meta=True)` first tries `%Dictionary.CompiledParameter`
-- if that returns nothing, scaffold falls back to `%Dictionary.ClassDefinition.Parameters`
+  and keeps only rows owned by the current class
+- if that returns nothing, scaffold tries `%Dictionary.ParameterDefinition`
+- if that also returns nothing, scaffold may fall back to `%Dictionary.ClassDefinition.Parameters`
+  but only keeps parameters owned by the current class
 
 This fallback matters in some namespaces where custom class parameters are visible on the live
-class definition object but do not appear through the SQL dictionary views. For example,
-`Demo.Demo` may expose `TITI = TOTO` through `ClassDefinition.Parameters` even when both
-`%Dictionary.CompiledParameter` and `%Dictionary.ParameterDefinition` return no SQL rows.
+class definition object but do not appear through the SQL dictionary views.
 
 Notes:
 
 - parameter values are scaffolded as strings
 - internal parameters such as `%...` and `GUID` are skipped
+- inherited parameters are not scaffolded onto the subclass by default
 
 ## Field Mapping
 
@@ -139,7 +141,7 @@ Field metadata is written to `%Dictionary.PropertyDefinition` and then projected
 | `iris_type` | `Type` | Forces the IRIS property type directly |
 | `required=True` | `Required=1` | IRIS projects required/non-nullable semantics for the property |
 | `default=...` | `InitialExpression` | Object/property default; this is not the same as issuing raw SQL `DEFAULT` DDL yourself |
-| `maxlen=...` | property parameter `MAXLEN` | Affects string length projection and validation |
+| `max_length=...` / `maxlen=...` | property parameter `MAXLEN` | Affects string length projection and validation |
 | `readonly=True` | `ReadOnly=1` | Marks the IRIS property as read-only |
 | `collection="list"` / `"array"` | `Collection` | Changes collection semantics and SQL/storage projection behavior |
 | `sql_field_name="..."` | `SqlFieldName` | Overrides the projected SQL column name |
@@ -182,7 +184,7 @@ Default Python-to-IRIS mapping:
 | `datetime.date` | `%Library.Date` |
 | `datetime.time` | `%Library.Time` |
 | `datetime.datetime` | `%Library.TimeStamp` |
-| `IRISModel` subclass | target class `Meta.classname` |
+| `Model` subclass | target class `Meta.classname` |
 
 ## Index Mapping
 

@@ -4,9 +4,11 @@
 
 ## What This Version Supports
 
-- `IRISModel`
-- `Annotated[..., Field(...)]` field declarations
+- `Model` as the primary base class
+- both `name: str = Field(...)` and `Annotated[..., Field(...)]` declarations
 - `class Meta` for model configuration
+- `persistent=True` and `serial=True` class flags
+- field-level index synthesis via `Field(index=True|unique=True|primary_key=True)`
 - `extend`, `replace`, and `observe` schema sync modes
 - scaffold from live IRIS
 - recursive references between `%Persistent` and `%SerialObject` models
@@ -22,7 +24,7 @@ from __future__ import annotations
 from typing import Annotated
 
 import iris_orm
-from iris_orm import Field, IRISModel, Index
+from iris_orm import Field, Model
 
 # Embedded Python (running inside IRIS) — no argument needed.
 iris_orm.configure()
@@ -33,36 +35,35 @@ iris_orm.configure()
 # iris_orm.configure(conn)
 
 
-class Product(IRISModel):
-    Name: Annotated[str, Field(required=True, maxlen=200)]
-    Price: Annotated[float, Field(default=0.0)]
-    InStock: Annotated[bool, Field(default=True)]
+class Product(Model, persistent=True):
+    name: str = Field(required=True, max_length=200, unique=True)
+    price: Annotated[float, Field(default=0.0)]
+    in_stock: bool = True
 
     class Meta:
         classname = "Demo.Product"
         mode = "replace"
-        indexes = [Index("NameIdx", properties="Name", unique=True)]
 
 
-product = Product(Name="Widget", Price=12.5, InStock=True)
+product = Product(name="Widget", price=12.5, in_stock=True)
 Product.sync_schema()
 product.save()
 same = Product.get(product.pk)
-rows = Product.where(Name="Widget").order_by("Name").all()
+rows = Product.where(name="Widget").order_by("name").all()
 ```
 
 ## Model Definition
 
-Fields are declared with `typing.Annotated` and `Field(...)` metadata:
+Fields can be declared either SQLModel-style or with `Annotated` metadata:
 
 ```python
 from typing import Annotated
-from iris_orm import Field, IRISModel
+from iris_orm import Field, Model
 
 
-class Article(IRISModel):
-    Title: Annotated[str, Field(required=True, maxlen=500)]
-    Views: Annotated[int, Field(default=0)]
+class Article(Model, persistent=True):
+    title: str = Field(required=True, max_length=500)
+    views: Annotated[int, Field(default=0)]
 
     class Meta:
         classname = "Demo.Article"
@@ -72,9 +73,9 @@ If you need to force the underlying IRIS property type instead of using the Pyth
 set `Field(iris_type="...")`:
 
 ```python
-class Event(IRISModel):
-    Payload: Annotated[bytes, Field(iris_type="%Stream.GlobalBinary")]
-    CreatedAt: Annotated[str, Field(iris_type="%Library.TimeStamp")]
+class Event(Model, persistent=True):
+    payload: bytes = Field(iris_type="%Stream.GlobalBinary")
+    created_at: str = Field(iris_type="%Library.TimeStamp")
 ```
 
 Model configuration lives in an optional inner `Meta` class:
@@ -83,11 +84,12 @@ Model configuration lives in an optional inner `Meta` class:
 class Meta:
     classname = "Demo.Article"
     mode = "extend"             # "extend" | "replace" | "observe" (default: "extend")
-    superclasses = "%Persistent"
     storage = StorageDefinition(data_location="^Demo.ArticleD")
     indexes = [Index("TitleIdx", properties="Title", unique=True)]
     parameters = {"DEFAULTGLOBAL": "^Demo.ArticleD"}
 ```
+
+`IRISModel` still exists as a compatibility alias, but new code should prefer `Model`.
 
 `Meta.parameters` is written into IRIS class parameters during `sync_schema()`.
 When scaffolding with `extract_meta=True`, `iris_orm` reads parameters from
@@ -101,8 +103,8 @@ When scaffolding with `extract_meta=True`, `iris_orm` reads parameters from
 Python and IRIS share ownership. Safe starting point for brownfield classes.
 
 ```python
-class Product(IRISModel):
-    Name: Annotated[str, Field(required=True)]
+class Product(Model, persistent=True):
+    name: str = Field(required=True)
 
     class Meta:
         classname = "Demo.Product"
@@ -130,14 +132,14 @@ Behavior:
 
 - IRIS class is rebuilt from the Python model when `Model.sync_schema()` is called
 - properties, indexes, parameters, and storage not declared in Python are removed from IRIS
-- referenced `IRISModel` types are synced first so related classes exist before parent compilation
+- referenced `Model` types are synced first so related classes exist before parent compilation
 
 ### observe
 
 IRIS is authoritative. Use to bind to existing classes without touching their schema.
 
 ```python
-class Article(IRISModel):
+class Article(Model):
     class Meta:
         classname = "Demo.Article"
         mode = "observe"
@@ -157,8 +159,8 @@ Storage uses typed dataclasses instead of raw nested dicts.
 from iris_orm import StorageData, StorageDefinition, StorageProperty, StorageSQLMap
 
 
-class Product(IRISModel):
-    Name: Annotated[str, Field(required=True)]
+class Product(Model, persistent=True):
+    name: str = Field(required=True)
 
     class Meta:
         classname = "Demo.Product"
@@ -196,30 +198,29 @@ Plain dicts are still accepted for backward compatibility, but `StorageDefinitio
 
 ```python
 from typing import Annotated
-from iris_orm import Field, IRISModel
+from iris_orm import Field, Model
 
 
-class Address(IRISModel):
-    Street: Annotated[str, Field(required=True, maxlen=120)]
+class Address(Model, serial=True):
+    street: str = Field(required=True, max_length=120)
 
     class Meta:
         classname = "Demo.Address"
-        superclasses = "%SerialObject"
         mode = "replace"
 
 
-class Customer(IRISModel):
-    Name: Annotated[str, Field(required=True, maxlen=120)]
+class Customer(Model, persistent=True):
+    name: str = Field(required=True, max_length=120)
 
     class Meta:
         classname = "Demo.Customer"
         mode = "replace"
 
 
-class Order(IRISModel):
-    Number: Annotated[str, Field(required=True, maxlen=32)]
-    Customer: Annotated[Customer | None, Field(required=False)] = None
-    ShipTo: Annotated[Address | None, Field(required=False)] = None
+class Order(Model, persistent=True):
+    number: str = Field(required=True, max_length=32)
+    customer: Customer | None = None
+    ship_to: Address | None = None
 
     class Meta:
         classname = "Demo.Order"
@@ -337,6 +338,7 @@ Runnable examples:
 
 ## Public API
 
+- `Model`
 - `IRISModel`
 - `Field`
 - `Index`

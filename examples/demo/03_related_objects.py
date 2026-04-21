@@ -3,58 +3,58 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from iris_orm import Field, IRISModel
+from iris_orm import Field, Model
 
 from examples.demo.support import configure_demo_runtime, maybe_sync_schema, unique_suffix
 
 
-class DemoCustomer(IRISModel):
-    Name: Annotated[str, Field(required=True, maxlen=120)]
-    Tier: Annotated[str | None, Field(required=False, maxlen=20)] = None
+class DemoCustomer(Model, persistent=True):
+    Name: str = Field(required=True, max_length=120)
+    Tier: str | None = Field(default=None, max_length=20)
 
     class Meta:
         classname = "Demo.ExampleDemoCustomer"
         mode = "replace"
 
 
-class DemoAddress(IRISModel):
-    Street: Annotated[str, Field(required=True, maxlen=120)]
-    City: Annotated[str, Field(required=True, maxlen=80)]
+class DemoAddress(Model, serial=True):
+    Street: str = Field(required=True, max_length=120)
+    City: str = Field(required=True, max_length=80)
 
     class Meta:
         classname = "Demo.ExampleDemoAddress"
-        superclasses = "%Library.SerialObject"
         mode = "replace"
 
 
-class DemoOrderLine(IRISModel):
-    SKU: Annotated[str, Field(required=True, maxlen=40)]
-    Qty: Annotated[int, Field(default=1)]
+class DemoOrderLine(Model, serial=True):
+    SKU: str = Field(required=True, max_length=40)
+    Qty: int = 1
 
     class Meta:
         classname = "Demo.ExampleDemoOrderLine"
-        superclasses = "%Library.SerialObject"
         mode = "replace"
 
 
-class DemoOrder(IRISModel):
-    OrderNumber: Annotated[str, Field(required=True, maxlen=40)]
-    Customer: Annotated[DemoCustomer | None, Field(required=False)] = None
-    ShipTo: Annotated[DemoAddress | None, Field(required=False)] = None
-    Lines: Annotated[
-        list[DemoOrderLine] | None,
-        Field(iris_type="Demo.ExampleDemoOrderLine", collection="list"),
-    ] = None
-    LineLookup: Annotated[
-        dict[str, DemoOrderLine] | None,
-        Field(iris_type="Demo.ExampleDemoOrderLine", collection="array"),
-    ] = None
+class DemoOrder(Model, persistent=True):
+    OrderNumber: str = Field(required=True, max_length=40, unique=True)
+    Customer: DemoCustomer | None = None
+    ShipTo: DemoAddress | None = None
+    Lines: list[DemoOrderLine] = Field(
+        default_factory=list,
+        iris_type="Demo.ExampleDemoOrderLine",
+        collection="list",
+    )
+    LineLookup: dict[str, DemoOrderLine] = Field(
+        default_factory=dict,
+        iris_type="Demo.ExampleDemoOrderLine",
+        collection="array",
+    )
 
     class Meta:
         classname = "Demo.ExampleDemoOrder"

@@ -1,18 +1,15 @@
 from __future__ import annotations
 
-from typing import Annotated
-
-from iris_orm import Field, IRISModel
+from iris_orm import Field, Model
 
 
-class SourceRecursiveAddress(IRISModel):
-    Street: Annotated[str, Field(required=True, maxlen=120)]
-    ZipCode: Annotated[str | None, Field(required=False, maxlen=12)] = None
-    Country: Annotated[str | None, Field(required=False, default="FR", maxlen=2)] = "FR"
+class SourceRecursiveAddress(Model, serial=True):
+    Street: str = Field(required=True, max_length=120)
+    ZipCode: str | None = Field(default=None, max_length=12)
+    Country: str | None = Field(default="FR", max_length=2)
 
     class Meta:
         classname = "Demo.SourceRecursiveAddress"
-        superclasses = "%Library.SerialObject"
         mode = "replace"
 
 

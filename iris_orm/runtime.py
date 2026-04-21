@@ -328,7 +328,13 @@ class BaseIRISAdapter:
         val: Any,
         field_meta: Any | None = None,
     ) -> None:
-        if isinstance(val, (bytes, bytearray)):
+        if val is None:
+            current_prop = self.get_property(obj, field_name)
+            if hasattr(current_prop, "Clear"):
+                current_prop.Clear()
+                return
+            self.set_property(obj, field_name, val)
+        elif isinstance(val, (bytes, bytearray)):
             current_prop = self.get_property(obj, field_name)
             if hasattr(current_prop, "Write"):
                 current_prop.Clear()
@@ -413,7 +419,21 @@ class NativeProxyAdapter(BaseIRISAdapter):
 
         use_core_methods = hasattr(oref, "invoke")
 
-        if isinstance(val, (bytes, bytearray)):
+        if val is None:
+            try:
+                stream_oref = oref.get(field_name) if use_core_methods else db.get(oref, field_name)
+                clear = getattr(stream_oref, "invoke", None)
+                if use_core_methods and callable(clear):
+                    stream_oref.invoke("Clear")
+                    return
+                if callable(getattr(db, "invoke", None)):
+                    db.invoke(stream_oref, "Clear")
+                    return
+            except Exception:
+                self.set_property(obj, field_name, val)
+                return
+            self.set_property(obj, field_name, val)
+        elif isinstance(val, (bytes, bytearray)):
             try:
                 stream_oref = oref.get(field_name) if use_core_methods else db.get(oref, field_name)
                 if use_core_methods:

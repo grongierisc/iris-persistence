@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Generic, List, Optional, Type, TypeVar, get_args, get_origin, get_type_hints
+from typing import Any, Dict, Generic, List, Optional, Type, TypeVar, get_args, get_origin
 
 import iris_orm.models
 from iris_orm.codecs import coerce_value_for_load, coerce_value_for_save, resolve_declared_type
 from iris_orm.runtime import get_runtime
 
-TModel = TypeVar("TModel", bound="iris_orm.models.IRISModel")
+TModel = TypeVar("TModel", bound="iris_orm.models.Model")
 
 
 def _is_model_type(value: Any) -> bool:
-    return isinstance(value, type) and issubclass(value, iris_orm.models.IRISModel)
+    return isinstance(value, type) and issubclass(value, iris_orm.models.Model)
 
 
-def _is_serial_type(model_cls: Type[iris_orm.models.IRISModel]) -> bool:
+def _is_serial_type(model_cls: Type[iris_orm.models.Model]) -> bool:
     superclasses = getattr(model_cls, "_superclasses", "") or ""
     return "SerialObject" in superclasses
 
@@ -74,17 +74,18 @@ def _build_model_from_iris_obj(
 
     runtime = get_runtime()
     params = {}
-    hints = get_type_hints(model_cls, include_extras=True)
-    for field_name in model_cls._fields:
-        field_meta = model_cls._fields[field_name]
+    for field_name, model_field in model_cls.__model_fields__.items():
+        field_meta = model_field.field_info
+        declared_type = model_field.declared_type
         raw_val = runtime.get_property(iris_obj, field_name)
         if _is_percent_list_field(field_meta):
             python_val = runtime.decode_percent_list(raw_val)
         else:
             python_val = runtime.extract_python_value(raw_val)
-            if python_val is None and _is_scalar_string_field(field_meta):
+            if python_val in (None, 0) and (
+                _is_scalar_string_field(field_meta) or declared_type is str
+            ):
                 python_val = ""
-        declared_type = resolve_declared_type(hints.get(field_name))
         collection_kind, element_type = _collection_value_type(declared_type)
         if collection_kind is not None:
             params[field_name] = _coerce_collection_for_load(
@@ -97,7 +98,7 @@ def _build_model_from_iris_obj(
         else:
             params[field_name] = coerce_value_for_load(declared_type, python_val)
 
-    instance = model_cls(**params)
+    instance = model_cls._from_loaded_values(params)
     instance._iris_obj = iris_obj
     if not _is_serial_type(model_cls):
         obj_id = runtime.get_object_id(iris_obj)
@@ -136,11 +137,10 @@ def _materialize_related_value(runtime: Any, declared_type: Any, value: Any) -> 
         iris_obj = value._iris_obj
         if iris_obj is None:
             iris_obj = runtime.create_object(declared_type._classname)
-        hints = get_type_hints(declared_type, include_extras=True)
-        for field_name in declared_type._fields:
+        for field_name, nested_model_field in declared_type.__model_fields__.items():
             if field_name in value.__dict__:
                 nested_value = getattr(value, field_name)
-                nested_type = resolve_declared_type(hints.get(field_name))
+                nested_type = nested_model_field.declared_type
                 runtime.inject_iris_value(
                     iris_obj,
                     field_name,
@@ -239,9 +239,9 @@ class QuerySet(Generic[TModel]):
 def save_model(instance: TModel) -> None:
     runtime = get_runtime()
     classname = instance._classname
-    hints = get_type_hints(instance.__class__, include_extras=True)
 
     _maybe_auto_sync_schema(instance.__class__)
+    instance._validate_for_save()
 
     if instance._pk:
         iris_obj = runtime.get_object(classname, instance._pk)
@@ -249,13 +249,15 @@ def save_model(instance: TModel) -> None:
         iris_obj = runtime.create_object(classname)
     instance._iris_obj = iris_obj
 
-    for field_name in instance._fields:
+    for field_name, model_field in instance.__class__.__model_fields__.items():
         if field_name in instance.__dict__:
-            field_meta = instance._fields[field_name]
+            field_meta = model_field.field_info
             if getattr(field_meta, "readonly", False) and instance._pk:
                 continue
             val = getattr(instance, field_name)
-            declared_type = resolve_declared_type(hints.get(field_name))
+            if val is None:
+                continue
+            declared_type = model_field.declared_type
             runtime.inject_iris_value(
                 iris_obj,
                 field_name,

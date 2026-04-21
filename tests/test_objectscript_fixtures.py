@@ -19,8 +19,6 @@ from tests.fixture_support import (
     load_module_from_path,
 )
 from tests.fixtures.objectscript.python.persistent_fixture import SourcePersistentFixture
-from tests.fixtures.python.demo_fixture import DemoFixture
-from tests.fixtures.python.objectscript_probe_fixtures import DemoProductProbe
 
 
 def _has_iris_runtime() -> bool:
@@ -55,6 +53,21 @@ def loaded_objectscript_fixtures():
             delete_iris_classes(fixture.classnames)
 
 
+@pytest.fixture()
+def loaded_demo_namespace_fixtures():
+    loaded = load_objectscript_fixtures(
+        [
+            "demo_demo_fixture",
+            "product_fixture",
+        ]
+    )
+    try:
+        yield loaded
+    finally:
+        for fixture in reversed(loaded):
+            delete_iris_classes(fixture.classnames)
+
+
 def test_objectscript_fixture_sources_are_present():
     expected = [
         OBJECTSCRIPT_FIXTURES / "__init__.py",
@@ -69,9 +82,11 @@ def test_objectscript_fixture_sources_are_present():
         OBJECTSCRIPT_CLS_FIXTURES / "request_fixture.cls",
         OBJECTSCRIPT_CLS_FIXTURES / "serial_fixture.cls",
         OBJECTSCRIPT_PYTHON_FIXTURES / "__init__.py",
+        OBJECTSCRIPT_PYTHON_FIXTURES / "demo_demo_fixture.py",
         OBJECTSCRIPT_PYTHON_FIXTURES / "list_fixture.py",
         OBJECTSCRIPT_PYTHON_FIXTURES / "meta_fixture.py",
         OBJECTSCRIPT_PYTHON_FIXTURES / "persistent_fixture.py",
+        OBJECTSCRIPT_PYTHON_FIXTURES / "product_fixture.py",
         OBJECTSCRIPT_PYTHON_FIXTURES / "recursive_child_fixture.py",
         OBJECTSCRIPT_PYTHON_FIXTURES / "recursive_address_fixture.py",
         OBJECTSCRIPT_PYTHON_FIXTURES / "recursive_parent_fixture.py",
@@ -214,13 +229,10 @@ def test_meta_fixture_reverse_engineers_query_level_metadata(
     assert ("Titles", "1", "1", "SourceMetaFixtureTitlesView") in query_rows
 
 
-def test_demo_demo_scaffold_reads_class_parameters_via_definition_fallback(tmp_path: Path):
-    from iris_orm.runtime import get_runtime
-
-    exists = get_runtime().call_classmethod("%Dictionary.ClassDefinition", "_ExistsId", "Demo.Demo")
-    if not exists:
-        pytest.skip("requires Demo.Demo to exist in the current IRIS namespace")
-
+def test_demo_demo_scaffold_reads_only_current_class_parameters(
+    loaded_demo_namespace_fixtures,
+    tmp_path: Path,
+):
     result = scaffold_from_iris(
         "Demo.Demo",
         str(tmp_path),
@@ -229,7 +241,7 @@ def test_demo_demo_scaffold_reads_class_parameters_via_definition_fallback(tmp_p
     )
     assert result.warnings == []
     module = load_module_from_path(Path(result.files[0]))
-    assert module.Demo._parameters.get("TITI") == "TOTO"
+    assert module.Demo._parameters == {"TITI": "TOTO"}
 
 
 def test_recursive_object_reference_scaffold_e2e(loaded_objectscript_fixtures, tmp_path: Path):
@@ -426,22 +438,19 @@ def test_objectscript_storage_property_selectivity_scaffold(
             assert properties[name].selectivity == selectivity
 
 
-def test_scaffold_selectivity_option_for_demo_demo(tmp_path: Path):
+def test_scaffold_selectivity_option_for_demo_demo(
+    loaded_demo_namespace_fixtures,
+    tmp_path: Path,
+):
     from iris_orm.runtime import get_runtime
 
     runtime = get_runtime()
-    exists = runtime.call_classmethod("%Dictionary.ClassDefinition", "_ExistsId", "Demo.Demo")
-    if not exists:
-        pytest.skip("requires Demo.Demo to exist in the current IRIS namespace")
-
-    list(DemoFixture.all())
-
     conn = runtime.get_dbapi_connection()
     cur = conn.cursor()
     cur.execute(
         "SELECT Name, Selectivity "
         "FROM %Dictionary.StoragePropertyDefinition WHERE parent = ?",
-        ("Demo.Demo||Default",),
+        ("Demo.Demo||CustomStorage",),
     )
     expected_rows = {
         name: str(selectivity)
@@ -450,20 +459,10 @@ def test_scaffold_selectivity_option_for_demo_demo(tmp_path: Path):
     }
     cur.close()
     conn.close()
-    if not expected_rows:
-        pytest.skip("Demo.Demo storage property selectivity is not exposed in this IRIS namespace")
-
-    default_result = scaffold_from_iris(
-        "Demo.Demo",
-        str(tmp_path),
-        extract_meta=True,
-        return_result=True,
-    )
-    assert default_result.warnings == []
-    default_module = load_module_from_path(Path(default_result.files[0]))
-    DefaultDemo = default_module.Demo
-    assert DefaultDemo._storage is not None
-    assert DefaultDemo._storage.properties == ()
+    assert expected_rows == {
+        "Titi": "50.0000%",
+        "Toto": "25.0000%",
+    }
 
     result = scaffold_from_iris(
         "Demo.Demo",
@@ -485,42 +484,40 @@ def test_scaffold_selectivity_option_for_demo_demo(tmp_path: Path):
         assert properties[name].selectivity == selectivity
 
 
-def test_scaffold_storage_statistics_for_demo_product(tmp_path: Path):
+def test_scaffold_storage_statistics_for_demo_product(
+    loaded_demo_namespace_fixtures,
+    tmp_path: Path,
+):
     from iris_orm.runtime import get_runtime
 
     runtime = get_runtime()
-    exists = runtime.call_classmethod("%Dictionary.ClassDefinition", "_ExistsId", "Demo.Product")
-    if not exists:
-        pytest.skip("requires Demo.Product to exist in the current IRIS namespace")
-
-    list(DemoProductProbe.all())
-
-    try:
-        conn = runtime.get_dbapi_connection()
-    except Exception as exc:
-        pytest.skip(f"requires a usable IRIS DB-API connection: {exc}")
+    conn = runtime.get_dbapi_connection()
     cur = conn.cursor()
     cur.execute(
         "SELECT Name, OutlierSelectivity "
         "FROM %Dictionary.StoragePropertyDefinition WHERE parent = ?",
-        ("Demo.Product||Default",),
+        ("Demo.Product||CustomStorage",),
     )
-    rows = cur.fetchall()
+    rows = {
+        name: outlier_selectivity
+        for name, outlier_selectivity in cur.fetchall()
+        if not str(name).startswith("%%") and outlier_selectivity not in (None, "")
+    }
     cur.close()
     conn.close()
-    if not rows:
-        pytest.skip("Demo.Product storage property definitions are not exposed in this IRIS namespace")
+    assert rows == {
+        "InStock": ".999999:1",
+        "Name": '.999999:"Widget"',
+        "Price": ".999999:12.5",
+    }
 
-    try:
-        result = scaffold_from_iris(
-            "Demo.Product",
-            str(tmp_path),
-            extract_meta=True,
-            scaffold_selectivity=True,
-            return_result=True,
-        )
-    except Exception as exc:
-        pytest.skip(f"requires live IRIS scaffold access: {exc}")
+    result = scaffold_from_iris(
+        "Demo.Product",
+        str(tmp_path),
+        extract_meta=True,
+        scaffold_selectivity=True,
+        return_result=True,
+    )
     assert result.warnings == []
 
     module = load_module_from_path(Path(result.files[0]))
@@ -561,8 +558,8 @@ def test_healthshare_request_scaffold_handles_initial_expression_and_related_req
         in default_text
     )
     assert (
-        "Request: Annotated[Any | None, "
-        'Field(iris_type="HS.FHIRServer.API.Data.Request")]'
+        "Request: Any | None = "
+        'Field(iris_type="HS.FHIRServer.API.Data.Request", default=None)'
         in default_text
     )
     assert ' = ##class(%ZHSLIB.HealthShareMgr).GetComponentVersion("HSLIB")' not in default_text
@@ -586,7 +583,7 @@ def test_healthshare_request_scaffold_handles_initial_expression_and_related_req
     related_text = (tmp_path / "related" / "request.py").read_text(encoding="utf-8")
     assert "from data_request import DataRequest" in related_text
     assert (
-        "Request: Annotated[DataRequest | None, "
-        'Field(iris_type="HS.FHIRServer.API.Data.Request")]'
+        "Request: DataRequest | None = "
+        'Field(iris_type="HS.FHIRServer.API.Data.Request", default=None)'
         in related_text
     )

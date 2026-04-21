@@ -341,6 +341,48 @@ class _CompiledDictionaryReader:
         self._cursor.execute(sql, params)
         return self._cursor.fetchone()
 
+    def _normalize_parameters(
+        self,
+        rows: list[tuple[Any, ...]],
+        *,
+        parent: str | None = None,
+        origin_index: int | None = None,
+    ) -> list[_CompiledParameter]:
+        params = []
+        for row in rows:
+            name = row[0]
+            default = row[1]
+            if str(name).startswith("%") or name == "GUID":
+                continue
+            if parent is not None and origin_index is not None:
+                origin = row[origin_index]
+                if origin not in (None, "", parent):
+                    continue
+            params.append(_CompiledParameter(name=str(name), default=str(default)))
+        return params
+
+    def _parameter_belongs_to_class(self, runtime: Any, param: Any, classname: str) -> bool:
+        inherited_value = None
+        try:
+            inherited_value = runtime.get_property(param, "Inherited")
+        except Exception:
+            inherited_value = None
+        if inherited_value is not None:
+            return not _as_bool(inherited_value)
+
+        for attr_name in ("Origin", "Parent", "parent", "Class"):
+            try:
+                owner = runtime.get_property(param, attr_name)
+            except Exception:
+                continue
+            if owner in (None, ""):
+                continue
+            return str(owner) == classname
+
+        # If ownership metadata is unavailable, skip the object fallback entry
+        # rather than risk scaffolding inherited parameters onto the subclass.
+        return False
+
     def list_classes(self, pattern: str) -> list[_CompiledClass]:
         rows = self._fetchall(
             "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name LIKE ?",
@@ -512,34 +554,47 @@ class _CompiledDictionaryReader:
         return sorted(properties, key=lambda item: item.name)
 
     def list_parameters(self, classname: str) -> list[_CompiledParameter]:
-        rows = self._fetchall(
-            "SELECT Name, _Default FROM %Dictionary.CompiledParameter WHERE parent = ?",
-            (classname,),
+        params = self._normalize_parameters(
+            self._fetchall(
+                "SELECT Name, _Default, Origin FROM %Dictionary.CompiledParameter WHERE parent = ?",
+                (classname,),
+            ),
+            parent=classname,
+            origin_index=2,
         )
-        params = []
-        for name, default in rows:
-            if str(name).startswith("%") or name == "GUID":
-                continue
-            params.append(_CompiledParameter(name=name, default=str(default)))
-        if not params:
-            try:
-                runtime = get_runtime()
-                class_def = runtime.get_object("%Dictionary.ClassDefinition", classname)
-                if class_def is not None:
-                    param_list = runtime.get_property(class_def, "Parameters")
-                    if param_list is not None:
-                        count = runtime.invoke_method(param_list, "Count")
-                        for index in range(1, count + 1):
-                            param = runtime.invoke_method(param_list, "GetAt", index)
-                            name = runtime.get_property(param, "Name")
-                            default = runtime.get_property(param, "Default")
-                            if str(name).startswith("%") or name == "GUID":
-                                continue
-                            params.append(
-                                _CompiledParameter(name=str(name), default=str(default))
-                            )
-            except Exception:
-                pass
+        if params:
+            return sorted(params, key=lambda item: item.name)
+
+        try:
+            params = self._normalize_parameters(
+                self._fetchall(
+                    "SELECT Name, Default FROM %Dictionary.ParameterDefinition WHERE parent = ?",
+                    (classname,),
+                )
+            )
+        except Exception:
+            params = []
+        if params:
+            return sorted(params, key=lambda item: item.name)
+
+        try:
+            runtime = get_runtime()
+            class_def = runtime.get_object("%Dictionary.ClassDefinition", classname)
+            if class_def is not None:
+                param_list = runtime.get_property(class_def, "Parameters")
+                if param_list is not None:
+                    count = runtime.invoke_method(param_list, "Count")
+                    for index in range(1, count + 1):
+                        param = runtime.invoke_method(param_list, "GetAt", index)
+                        if not self._parameter_belongs_to_class(runtime, param, classname):
+                            continue
+                        name = runtime.get_property(param, "Name")
+                        default = runtime.get_property(param, "Default")
+                        if str(name).startswith("%") or name == "GUID":
+                            continue
+                        params.append(_CompiledParameter(name=str(name), default=str(default)))
+        except Exception:
+            pass
         return sorted(params, key=lambda item: item.name)
 
     def list_indexes(self, classname: str) -> list[_CompiledIndex]:
@@ -1287,6 +1342,17 @@ def _has_class_metadata(class_info: _CompiledClass) -> bool:
     )
 
 
+def _render_model_declaration(
+    class_info: _CompiledClass,
+    class_name: str,
+) -> tuple[str, bool]:
+    if class_info.superclasses == "%Persistent":
+        return (f"class {class_name}(Model, persistent=True):", False)
+    if class_info.superclasses == "%SerialObject":
+        return (f"class {class_name}(Model, serial=True):", False)
+    return (f"class {class_name}(Model):", class_info.superclasses is not None)
+
+
 def _render_model(
     class_info: _CompiledClass,
     properties: list[_CompiledProperty],
@@ -1302,28 +1368,58 @@ def _render_model(
     module_names: dict[str, str],
 ) -> str:
     custom_imports = []
+    typing_imports: set[str] = set()
+    needs_datetime = False
     for prop in properties:
         if prop.iris_type in python_class_names and prop.iris_type != class_info.name:
             module_name = module_names[prop.iris_type]
             class_name = python_class_names[prop.iris_type]
             custom_imports.append(f"from {module_name} import {class_name}")
+        rendered_type = _render_property_type(prop, python_class_names)
+        if "Any" in rendered_type:
+            typing_imports.add("Any")
+        if "datetime." in rendered_type:
+            needs_datetime = True
 
-    lines = [
-        "from __future__ import annotations",
-        "",
-        "import datetime",
-        "from typing import Annotated, Any",
-        "",
-        (
-            "from iris_orm import ClassMetadata, Field, IRISModel, Index, StorageDefinition, "
-            "StorageData, StorageIndex, StorageProperty, StorageSQLMap, StorageSQLMapData, "
-            "StorageSQLMapRowIdSpec, StorageSQLMapSub, StorageSQLMapSubAccessVar, "
-            "StorageSQLMapSubInvalidCondition"
-        ),
-    ]
+    iris_imports = {"Field", "Model"}
+    if _has_class_metadata(class_info):
+        iris_imports.add("ClassMetadata")
+    if indexes:
+        iris_imports.add("Index")
+    if storage is not None:
+        iris_imports.add("StorageDefinition")
+    if storage_data:
+        iris_imports.add("StorageData")
+    if storage_indices:
+        iris_imports.add("StorageIndex")
+    if storage_properties:
+        iris_imports.add("StorageProperty")
+    if storage_sql_maps:
+        iris_imports.update(
+            {
+                "StorageSQLMap",
+                "StorageSQLMapData",
+                "StorageSQLMapRowIdSpec",
+                "StorageSQLMapSub",
+                "StorageSQLMapSubAccessVar",
+                "StorageSQLMapSubInvalidCondition",
+            }
+        )
+
+    model_declaration, emit_meta_superclasses = _render_model_declaration(
+        class_info,
+        python_class_names[class_info.name],
+    )
+
+    lines = ["from __future__ import annotations"]
+    if needs_datetime:
+        lines.extend(["", "import datetime"])
+    if typing_imports:
+        lines.extend(["", f"from typing import {', '.join(sorted(typing_imports))}"])
+    lines.extend(["", f"from iris_orm import {', '.join(sorted(iris_imports))}"])
     if custom_imports:
         lines.extend(["", *sorted(set(custom_imports))])
-    lines.extend(["", f"class {python_class_names[class_info.name]}(IRISModel):"])
+    lines.extend(["", model_declaration])
 
     if not properties:
         lines.append("    pass")
@@ -1334,12 +1430,12 @@ def _render_model(
             if prop.required:
                 field_args.append("required=True")
             if prop.maxlen:
-                field_args.append(f"maxlen={prop.maxlen}")
+                field_args.append(f"max_length={prop.maxlen}")
             if prop.readonly:
                 field_args.append("readonly=True")
             if prop.collection:
                 field_args.append(f"collection={prop.collection!r}")
-            if prop.sql_field_name:
+            if prop.sql_field_name and prop.sql_field_name != prop.name:
                 field_args.append(f"sql_field_name={prop.sql_field_name!r}")
             if prop.identity:
                 field_args.append("identity=True")
@@ -1370,16 +1466,12 @@ def _render_model(
                 field_args.append(default_arg)
             elif prop.default is not None:
                 field_args.append(f"initial_expression={prop.default!r}")
+            if not prop.required and default_arg is None:
+                field_args.append("default=None")
+
             field_str = ", ".join(field_args)
-            if prop.required:
-                suffix = f" = {default_value}" if default_value is not None else ""
-                lines.append(f"    {prop.name}: Annotated[{type_name}, Field({field_str})]{suffix}")
-            else:
-                suffix = f" = {default_value}" if default_value is not None else " = None"
-                lines.append(
-                    f"    {prop.name}: "
-                    f"Annotated[{type_name} | None, Field({field_str})]{suffix}"
-                )
+            annotation = type_name if prop.required else f"{type_name} | None"
+            lines.append(f"    {prop.name}: {annotation} = Field({field_str})")
 
     lines.extend(
         [
@@ -1389,7 +1481,7 @@ def _render_model(
             f'        mode = "{mode}"',
         ]
     )
-    if class_info.superclasses:
+    if emit_meta_superclasses:
         lines.append(f'        superclasses = "{class_info.superclasses}"')
     if _has_class_metadata(class_info):
         lines.append("        metadata = ClassMetadata(")

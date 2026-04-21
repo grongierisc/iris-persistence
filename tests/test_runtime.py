@@ -232,61 +232,6 @@ class TestNativeProxyAdapter(unittest.TestCase):
             [("Clear",), ("SetAt", "a", "A"), ("SetAt", "b", 1)],
         )
 
-    def test_extract_array_collection_value(self):
-        class _FakeArrayCollection:
-            def __init__(self):
-                self._keys = ["a", "b"]
-                self._values = {"a": "A", "b": "B"}
-
-            def GetNext(self, key):
-                if key == "":
-                    return self._keys[0]
-                try:
-                    index = self._keys.index(key) + 1
-                except ValueError:
-                    return ""
-                return self._keys[index] if index < len(self._keys) else ""
-
-            def GetAt(self, key):
-                return self._values[key]
-
-        value = self.adapter.extract_python_value(_FakeArrayCollection())
-
-        self.assertEqual(value, {"a": "A", "b": "B"})
-
-    def test_extract_array_collection_value_with_byref_keys(self):
-        class _FakeRef:
-            def __init__(self, value):
-                self.value = value
-
-        class _FakeArrayCollection:
-            def __init__(self):
-                self._keys = ["a", "b"]
-                self._values = {"a": "A", "b": "B"}
-
-            def GetNext(self, key_ref):
-                current = key_ref.value
-                if current in ("", 0):
-                    next_key = self._keys[0]
-                else:
-                    try:
-                        index = self._keys.index(current) + 1
-                    except ValueError:
-                        key_ref.value = ""
-                        return ""
-                    if index >= len(self._keys):
-                        key_ref.value = ""
-                        return ""
-                    next_key = self._keys[index]
-                key_ref.value = next_key
-                return self._values[next_key]
-
-        fake_iris = SimpleNamespace(ref=_FakeRef)
-        with patch.dict("sys.modules", {"iris": fake_iris}):
-            value = self.adapter.extract_python_value(_FakeArrayCollection())
-
-        self.assertEqual(value, {"a": "A", "b": "B"})
-
     def test_extract_list_collection_value(self):
         class _FakeListCollection:
             def Count(self):
@@ -319,45 +264,6 @@ class TestNativeProxyAdapter(unittest.TestCase):
                 return object.__getattribute__(self, name)
 
         value = self.adapter.extract_python_value(_TypeSensitiveListCollection())
-
-        self.assertEqual(value, ["A", "B", "C"])
-
-    def test_extract_list_collection_refreshes_getnext_per_iteration(self):
-        class _FakeRef:
-            def __init__(self, value):
-                self.value = value
-
-        class _TypeSensitiveListCollection:
-            def __init__(self):
-                self._items = ["A", "B", "C"]
-
-            def __getattribute__(self, name):
-                if name == "GetNext":
-                    used = False
-                    items = object.__getattribute__(self, "_items")
-
-                    def _get_next(key_ref):
-                        nonlocal used
-                        if used:
-                            raise RuntimeError("stale getnext binding")
-                        used = True
-                        current = key_ref.value
-                        if current in ("", 0):
-                            index = 1
-                        elif current >= len(items):
-                            key_ref.value = ""
-                            return ""
-                        else:
-                            index = current + 1
-                        key_ref.value = index
-                        return items[index - 1]
-
-                    return _get_next
-                return object.__getattribute__(self, name)
-
-        fake_iris = SimpleNamespace(ref=_FakeRef)
-        with patch.dict("sys.modules", {"iris": fake_iris}):
-            value = self.adapter.extract_python_value(_TypeSensitiveListCollection())
 
         self.assertEqual(value, ["A", "B", "C"])
 

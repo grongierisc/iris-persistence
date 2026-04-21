@@ -266,36 +266,6 @@ class BaseIRISAdapter:
             except Exception:
                 pass
 
-        if callable(getattr(val, "GetNext", None)):
-            try:
-                import iris
-
-                key_ref = iris.ref("")
-                first_value = getattr(val, "GetNext")(key_ref)
-                first_key = key_ref.value
-                if first_key not in ("", None):
-                    if isinstance(first_key, int):
-                        items = [self.extract_python_value(first_value)]
-                        # TODO : revisit this loop with last version of IRIS to see if we can get key and value at the same time to avoid double call to GetNext
-                        for _ in range(9999):
-                            next_value = getattr(val, "GetNext")(key_ref)
-                            next_key = key_ref.value
-                            if next_key in ("", None):
-                                return items
-                            items.append(self.extract_python_value(next_value))
-                        return items
-                    items = {str(first_key): self.extract_python_value(first_value)}
-                    # TODO : revisit this loop with last version of IRIS to see if we can get key and value at the same time to avoid double call to GetNext
-                    for _ in range(9999):
-                        next_value = getattr(val, "GetNext")(key_ref)
-                        next_key = key_ref.value
-                        if next_key in ("", None):
-                            return items
-                        items[str(next_key)] = self.extract_python_value(next_value)
-                    return items
-            except Exception:
-                pass
-
         if callable(getattr(val, "Count", None)) and callable(getattr(val, "GetAt", None)):
             try:
                 total = getattr(val, "Count")()
@@ -306,23 +276,7 @@ class BaseIRISAdapter:
                     ]
             except Exception:
                 pass
-
-        if callable(getattr(val, "GetNext", None)) and callable(getattr(val, "GetAt", None)):
-            items: dict[str, Any] = {}
-            key: Any = ""
-            try:
-                # TODO : revisit this loop with last version of IRIS to see if we can get key and value at the same time to avoid double call to GetNext
-                for _ in range(10000):
-                    next_key = getattr(val, "GetNext")(key)
-                    if next_key in ("", None):
-                        return items
-                    if not isinstance(next_key, (str, int)):
-                        break
-                    items[str(next_key)] = self.extract_python_value(getattr(val, "GetAt")(next_key))
-                    key = next_key
-            except Exception:
-                pass
-
+            
         return None
 
     def extract_python_value(self, val: Any) -> Any:

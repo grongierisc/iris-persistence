@@ -335,3 +335,32 @@ def test_sync_schema_extend_adds_missing_indexes_without_duplication(monkeypatch
     new_index = indices[1]
     assert new_index.Properties == "Payload"
     assert new_index.Unique == 1
+
+
+def test_diff_schema_reports_planned_changes_without_writing(monkeypatch):
+    runtime = _RecordingRuntime()
+    monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
+
+    diff = ParameterFixture.sync_schema(dry_run=True)
+
+    assert isinstance(diff, schema_module.SchemaDiff)
+    assert diff.has_changes is True
+    assert runtime.saved == []
+    assert runtime.class_definition is None
+    rendered = diff.to_unified_diff()
+    assert "class Demo.ParameterFixture" in rendered
+    assert "+super %Persistent" in rendered
+    assert "+parameter TITI='TOTO'" in rendered
+    assert "+property Payload type='%Library.String'" in rendered
+
+
+def test_diff_schema_includes_storage_property_metadata(monkeypatch):
+    runtime = _RecordingRuntime()
+    monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
+
+    diff = SchemaMetadataFixture.diff_schema()
+
+    rendered = diff.to_unified_diff()
+    assert "+storage data_location='^Demo.SchemaMetadataFixtureD'" in rendered
+    assert "+storage_property Payload average_field_size='10'" in rendered
+    assert "selectivity='0.001%'" in rendered

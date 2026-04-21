@@ -6,6 +6,7 @@ __version__ = "0.1.0"
 
 from iris_orm.models import IRISModel, Model
 from iris_orm.runtime import configure
+from iris_orm.schema import SchemaDiff, diff_schema
 from iris_orm.scaffold import ScaffoldResult, ScaffoldWarning, scaffold_from_cls, scaffold_from_iris
 from iris_orm.types import (
     ClassMetadata,
@@ -40,8 +41,10 @@ __all__ = [
     "StorageSQLMapSubInvalidCondition",
     "Model",
     "IRISModel",
+    "SchemaDiff",
     "UNSET",
     "configure",
+    "diff_schema",
     "ScaffoldResult",
     "ScaffoldWarning",
     "scaffold_from_iris",

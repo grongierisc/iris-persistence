@@ -164,6 +164,61 @@ def _resolve_sql_field_name(model_cls: Type[TModel], field_name: str) -> str:
     return field_name
 
 
+def _resolve_sql_table_name(model_cls: Type[TModel]) -> str:
+    cached = getattr(model_cls, "_sql_table_name", None)
+    if cached:
+        return cached
+
+    runtime = get_runtime()
+    row = None
+    try:
+        conn = runtime.get_dbapi_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                (
+                    "SELECT SqlTableName, SqlSchemaName "
+                    "FROM %Dictionary.CompiledClass WHERE Name = ?"
+                ),
+                (model_cls._classname,),
+            )
+            if hasattr(cursor, "fetchone"):
+                row = cursor.fetchone()
+            elif hasattr(cursor, "fetchall"):
+                rows = cursor.fetchall()
+                row = rows[0] if rows else None
+        finally:
+            close = getattr(cursor, "close", None)
+            if callable(close):
+                close()
+            close = getattr(conn, "close", None)
+            if callable(close):
+                close()
+    except Exception:
+        row = None
+
+    if row is not None:
+        sql_table_name, sql_schema_name = row
+        if sql_table_name:
+            resolved = (
+                f"{sql_schema_name}.{sql_table_name}"
+                if sql_schema_name
+                else str(sql_table_name)
+            )
+            setattr(model_cls, "_sql_table_name", resolved)
+            return resolved
+
+    class_metadata = getattr(model_cls, "_class_metadata", None)
+    if class_metadata is not None and getattr(class_metadata, "sql_table_name", None):
+        resolved = class_metadata.sql_table_name
+        setattr(model_cls, "_sql_table_name", resolved)
+        return resolved
+
+    resolved = model_cls._classname
+    setattr(model_cls, "_sql_table_name", resolved)
+    return resolved
+
+
 def _maybe_auto_sync_schema(model_cls: Type[TModel]) -> None:
     if not getattr(model_cls, "_auto_sync", False):
         return
@@ -207,7 +262,7 @@ class QuerySet(Generic[TModel]):
     def all(self) -> List[TModel]:
         runtime = get_runtime()
 
-        table_name = self.model_cls._classname  # Schema.Table
+        table_name = _resolve_sql_table_name(self.model_cls)
         sql = f"SELECT ID FROM {table_name}"
         params = []
         if self.filter_kwargs:

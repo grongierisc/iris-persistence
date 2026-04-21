@@ -463,10 +463,20 @@ class Model(metaclass=ModelMeta):
         save_model(self)
 
     @classmethod
-    def sync_schema(cls) -> None:
+    def sync_schema(cls, *, dry_run: bool = False):
+        from iris_orm.schema import diff_schema as schema_diff
         from iris_orm.schema import sync_schema as schema_sync
 
+        if dry_run:
+            return schema_diff(cls)
         schema_sync(cls)
+        return None
+
+    @classmethod
+    def diff_schema(cls):
+        from iris_orm.schema import diff_schema as schema_diff
+
+        return schema_diff(cls)
 
     @classmethod
     def get(cls: Type[T], pk: str) -> Optional[T]:

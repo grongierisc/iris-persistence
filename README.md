@@ -333,6 +333,7 @@ Runnable examples:
 - [examples/python_first.py](examples/python_first.py)
 - [examples/proxy.py](examples/proxy.py)
 - [examples/scaffold.py](examples/scaffold.py)
+- [examples/demo/README.md](examples/demo/README.md)
 
 ## Public API
 

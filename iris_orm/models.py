@@ -21,6 +21,9 @@ from iris_orm.types import ClassMetadata
 from iris_orm.types import Field
 from iris_orm.types import FieldInfo, Index, ModelField, UNSET
 
+# Types that need no coercion before being passed to set_property.
+_PRIMITIVE_TYPES: frozenset[type] = frozenset({str, int, float, bool})
+
 if TYPE_CHECKING:
     from iris_orm.query import QuerySet
 
@@ -132,6 +135,17 @@ def _build_model_field(
             or not field_info.required
         )
 
+    from iris_orm.query import (
+        _is_model_type,
+        _is_percent_list_field,
+        _is_scalar_string_field,
+        _collection_value_type,
+    )
+    is_percent_list = _is_percent_list_field(field_info)
+    is_scalar_string = _is_scalar_string_field(field_info)
+    collection_kind, element_type = _collection_value_type(resolved_type)
+    is_model_field = _is_model_type(resolved_type)
+
     return ModelField(
         name=field_name,
         declared_type=resolved_type,
@@ -139,6 +153,11 @@ def _build_model_field(
         required=field_info.required,
         nullable=bool(nullable),
         sql_field_name=field_info.sql_field_name,
+        _is_percent_list=is_percent_list,
+        _is_scalar_string=is_scalar_string,
+        _collection_kind=collection_kind,
+        _element_type=element_type,
+        _is_model_field=is_model_field,
     )
 
 
@@ -181,6 +200,51 @@ def _build_generated_init(model_fields: Dict[str, ModelField]) -> Any | None:
 
     source = "def __init__(" + ", ".join(params) + "):\n" + "\n".join(body)
     namespace = {"UNSET": UNSET}
+    exec(source, namespace)
+    return namespace["__init__"]
+
+
+def _build_fast_init(model_fields: Dict[str, ModelField]) -> Any | None:
+    """Generate an optimised __init__ for models with validate_on_init=False.
+
+    Bypasses _initialize_model_state entirely: just sets _pk/_iris_obj to None
+    and assigns each field directly into self.__dict__, eliminating the field
+    loop, the intermediate provided_values dict, and all setattr dispatch.
+    """
+    if any(not name.isidentifier() or keyword.iskeyword(name) for name in model_fields):
+        return None
+
+    params = ["self"]
+    if model_fields:
+        params.append("*")
+
+    body = [
+        "    self._pk = None",
+        "    self._iris_obj = None",
+    ]
+    if model_fields:
+        body.append("    d = self.__dict__")
+
+    namespace: dict[str, Any] = {"UNSET": UNSET}
+    for i, (name, mf) in enumerate(model_fields.items()):
+        if mf.required:
+            params.append(name)
+            body.append(f"    d[{name!r}] = {name}")
+        elif mf.field_info.default_factory is not UNSET:
+            factory_var = f"_dfact_{i}"
+            namespace[factory_var] = mf.field_info.default_factory
+            params.append(f"{name}=UNSET")
+            body.append(f"    d[{name!r}] = {name} if {name} is not UNSET else {factory_var}()")
+        elif mf.field_info.default is not UNSET:
+            default_var = f"_dval_{i}"
+            namespace[default_var] = mf.field_info.default
+            params.append(f"{name}=UNSET")
+            body.append(f"    d[{name!r}] = {name} if {name} is not UNSET else {default_var}")
+        else:
+            params.append(f"{name}=UNSET")
+            body.append(f"    if {name} is not UNSET: d[{name!r}] = {name}")
+
+    source = "def __init__(" + ", ".join(params) + "):\n" + "\n".join(body)
     exec(source, namespace)
     return namespace["__init__"]
 
@@ -386,12 +450,39 @@ class ModelMeta(type):
         setattr(cls, "_classname", getattr(meta_inner, "classname", name))
         setattr(cls, "_sync_mode", getattr(meta_inner, "mode", "extend"))
         setattr(cls, "_auto_sync", getattr(meta_inner, "auto_sync", False))
+        setattr(cls, "_validate_on_init", getattr(meta_inner, "validate_on_init", True))
+        if not cls._validate_on_init:
+            fast_init = _build_fast_init(model_fields)
+            if fast_init is not None:
+                fast_init.__qualname__ = f"{cls.__qualname__}.__init__"
+                setattr(cls, "__init__", fast_init)
         setattr(cls, "_superclasses", _normalize_superclasses(superclasses))
         setattr(cls, "_class_metadata", _parse_class_metadata(meta_inner))
         setattr(cls, "_storage", getattr(meta_inner, "storage", None))
         declared_indexes = list(getattr(meta_inner, "indexes", []))
         setattr(cls, "_indexes", _synthesize_indexes(cls.__name__, model_fields, declared_indexes))
         setattr(cls, "_parameters", getattr(meta_inner, "parameters", {}))
+
+        # Pre-compute three save field lists used by save_model for faster writes.
+        # _scalar_fast_fields  : primitive (str/int/float/bool) fields — direct set_property, no coerce
+        # _scalar_coerce_fields: other scalar non-model fields (e.g. datetime) — coerce then inject
+        # _complex_save_fields : collections, related models, readonly fields — full path
+        _scalar_fast: list[str] = []
+        _scalar_coerce: list[tuple[str, Any]] = []
+        _complex_save: list[tuple[str, ModelField]] = []
+        for _fname, _mf in model_fields.items():
+            if getattr(_mf.field_info, "readonly", False):
+                _complex_save.append((_fname, _mf))
+            elif _mf._collection_kind is None and not _mf._is_model_field:
+                if _mf.declared_type in _PRIMITIVE_TYPES:
+                    _scalar_fast.append(_fname)
+                else:
+                    _scalar_coerce.append((_fname, _mf.declared_type))
+            else:
+                _complex_save.append((_fname, _mf))
+        setattr(cls, "_scalar_fast_fields", _scalar_fast)
+        setattr(cls, "_scalar_coerce_fields", _scalar_coerce)
+        setattr(cls, "_complex_save_fields", _complex_save)
 
 
 class Model(metaclass=ModelMeta):
@@ -400,7 +491,11 @@ class Model(metaclass=ModelMeta):
     _classname: str
     _sync_mode: str
     _auto_sync: bool
+    _validate_on_init: bool
     _class_metadata: ClassMetadata | None
+    _scalar_fast_fields: list[str]
+    _scalar_coerce_fields: list[tuple[str, Any]]
+    _complex_save_fields: list[tuple[str, ModelField]]
 
     @classmethod
     def __init_subclass__(
@@ -432,7 +527,10 @@ class Model(metaclass=ModelMeta):
                             f"Missing required field '{name}' for model {self.__class__.__name__}"
                         )
                     continue
-            setattr(self, name, _validate_field_value(model_field, value))
+            if self.__class__._validate_on_init:
+                setattr(self, name, _validate_field_value(model_field, value))
+            else:
+                setattr(self, name, value)
 
     def __init__(self, **kwargs):
         self._initialize_model_state(kwargs)

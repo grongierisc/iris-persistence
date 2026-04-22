@@ -34,6 +34,7 @@ class RuntimeAdapter(Protocol):
 
 _active_runtime: RuntimeAdapter | None = None
 
+_SCALAR_PRIMITIVES = (int, str, float, bool, bytes, bytearray)
 
 _IRIS_COLLECTION_CLASSES = {
     "%List",
@@ -140,6 +141,9 @@ def configure(native_connection=None) -> None:
 
 
 class BaseIRISAdapter:
+    def __init__(self):
+        self._cls_cache: dict[str, Any] = {}
+
     def _encode_percent_list(self, values: list[Any]) -> Any:
         row = io.StringIO()
         csv.writer(row, lineterminator="").writerow(values)
@@ -157,13 +161,17 @@ class BaseIRISAdapter:
 
     def _cls(self, class_name: str):
         import iris
-
+        cached = self._cls_cache.get(class_name)
+        if cached is not None:
+            return cached
         try:
-            return iris.cls(class_name)
+            ref = iris.cls(class_name)
         except RuntimeError as exc:
             if _is_missing_class_error(exc):
                 raise RuntimeError(_format_missing_class_error(class_name)) from exc
             raise
+        self._cls_cache[class_name] = ref
+        return ref
 
     def call_classmethod(self, class_name: str, method_name: str, *args: Any) -> Any:
         cls_ref = self._cls(class_name)
@@ -347,6 +355,8 @@ class BaseIRISAdapter:
         return None
 
     def extract_python_value(self, val: Any) -> Any:
+        if type(val) in _SCALAR_PRIMITIVES:   # fast path: no collection check needed
+            return val
         extracted_collection = self._extract_collection_value(val)
         if extracted_collection is not None:
             return extracted_collection
@@ -413,6 +423,7 @@ class BaseIRISAdapter:
 
 class NativeProxyAdapter(BaseIRISAdapter):
     def __init__(self, native_connection: Any | None = None):
+        super().__init__()
         self._native_connection = native_connection
 
     def get_dbapi_connection(self) -> Any:

@@ -188,6 +188,11 @@ class ModelField:
     nullable: bool = False
     init: bool = True
     sql_field_name: Optional[str] = None
+    _is_percent_list: bool = False
+    _is_scalar_string: bool = False
+    _collection_kind: Optional[str] = None
+    _element_type: Any = None
+    _is_model_field: bool = False
 
     @property
     def default(self) -> Any:

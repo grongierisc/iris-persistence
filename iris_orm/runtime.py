@@ -569,6 +569,10 @@ class EmbeddedAdapter(BaseIRISAdapter):
         return None
 
     def is_ok(self, status: Any) -> bool:
+        # Fast path: embedded _Save()/_DeleteId() return int (1=ok, 0=error).
+        # type() is faster than isinstance() because it skips subclass checks.
+        if type(status) is int:
+            return status != 0
         if isinstance(status, int):
             return status != 0
         if isinstance(status, str):

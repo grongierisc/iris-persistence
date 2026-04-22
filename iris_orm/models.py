@@ -249,6 +249,101 @@ def _build_fast_init(model_fields: Dict[str, ModelField]) -> Any | None:
     return namespace["__init__"]
 
 
+def _build_fast_load(model_cls: Any, model_fields: Dict[str, ModelField], is_serial: bool) -> Any:
+    """Generate a per-class _fast_load using direct attribute access (LOAD_ATTR bytecode).
+
+    IRIS objects have a 2-3× penalty when property access goes through Python's getattr()
+    built-in vs a compiled `obj.Name` LOAD_ATTR instruction.  Code-gen lets us produce:
+
+        d['Name'] = iris_obj.Name          # fast  (LOAD_ATTR)
+
+    instead of what the generic loop does:
+
+        getattr(iris_obj, 'Name', None)    # slow (getattr builtin)
+
+    Returns None for models with complex fields (collections, related models) or non-standard
+    scalar types (datetime, bytes, …) so those fall back to the generic path.
+    """
+    # Field names must be valid Python identifiers (no special chars like %)
+    if any(not name.isidentifier() or keyword.iskeyword(name) for name in model_fields):
+        return None
+
+    lines = [
+        "def _fast_load(iris_obj, known_pk=None):",
+        "    if iris_obj is None: return None",
+        "    instance = _model_cls.__new__(_model_cls)",
+        "    d = instance.__dict__",
+        "    d['_iris_obj'] = iris_obj",
+    ]
+
+    if is_serial:
+        lines.append("    d['_pk'] = None")
+    else:
+        # known_pk is provided on the hot path (get(pk)).
+        # For related model loading (known_pk=None), fall back to get_object_id.
+        lines.append("    if known_pk is not None:")
+        lines.append("        d['_pk'] = known_pk")
+        lines.append("    else:")
+        lines.append("        _oid = _get_runtime().get_object_id(iris_obj)")
+        lines.append("        d['_pk'] = str(_oid) if _oid else None")
+
+    for name, mf in model_fields.items():
+        if mf._is_percent_list or mf._collection_kind is not None or mf._is_model_field:
+            return None  # complex field — cannot use this fast path
+        if mf.declared_type is str:
+            lines.append(f"    _v = iris_obj.{name}; d[{name!r}] = _v if _v else ''")
+        elif mf.declared_type is bool:
+            lines.append(f"    d[{name!r}] = bool(iris_obj.{name} or 0)")
+        elif mf.declared_type in (int, float):
+            lines.append(f"    d[{name!r}] = iris_obj.{name}")
+        else:
+            return None  # datetime, bytes, or other type needing coercion
+
+    lines.append("    return instance")
+    source = "\n".join(lines)
+    from iris_orm.runtime import get_runtime as _get_runtime_fn
+    namespace: dict[str, Any] = {"_model_cls": model_cls, "_get_runtime": _get_runtime_fn}
+    exec(source, namespace)
+    fn = namespace["_fast_load"]
+    fn.__qualname__ = f"{model_cls.__qualname__}._fast_load"
+    return fn
+
+
+def _build_fast_save(model_cls: Any, model_fields: Dict[str, ModelField], scalar_fast_fields: list) -> Any:
+    """Generate a per-class _fast_save using direct attribute assignment (STORE_ATTR bytecode).
+
+    Like _build_fast_load, this avoids the overhead of calling set_property() per field
+    (a Python function call + isinstance(val, bool) check each time) by emitting direct
+    `iris_obj.Field = val` assignments via code-gen.
+
+    Only generated for models where all writable fields are primitive scalars with no
+    coercion or complex fields (collections, related models).  Falls back to the generic
+    loop in save_model for all other models.
+    """
+    if not scalar_fast_fields:
+        return None
+    # Field names must be valid Python identifiers
+    if any(not name.isidentifier() or keyword.iskeyword(name) for name in scalar_fast_fields):
+        return None
+
+    lines = ["def _fast_save(iris_obj, inst_dict):"]
+    for name in scalar_fast_fields:
+        mf = model_fields[name]
+        if mf.declared_type is bool:
+            lines.append(f"    _v = inst_dict.get({name!r})")
+            lines.append(f"    if _v is not None: iris_obj.{name} = 1 if _v else 0")
+        else:
+            lines.append(f"    _v = inst_dict.get({name!r})")
+            lines.append(f"    if _v is not None: iris_obj.{name} = _v")
+
+    source = "\n".join(lines)
+    namespace: dict[str, Any] = {}
+    exec(source, namespace)
+    fn = namespace["_fast_save"]
+    fn.__qualname__ = f"{model_cls.__qualname__}._fast_save"
+    return fn
+
+
 def _type_name(value: Any) -> str:
     return getattr(value, "__name__", repr(value))
 
@@ -484,6 +579,55 @@ class ModelMeta(type):
         setattr(cls, "_scalar_coerce_fields", _scalar_coerce)
         setattr(cls, "_complex_save_fields", _complex_save)
 
+        # Pre-compute four read field lists used by _build_model_from_iris_obj for faster reads.
+        # _read_str_fields      : str fields — getattr direct, normalise None/0 → ""
+        # _read_primitive_fields: int/float fields — getattr direct, no coercion
+        # _read_bool_fields     : bool fields — bool(int_val or 0) from IRIS 0/1
+        # _read_coerce_fields   : other scalar fields (e.g. datetime) — full coerce_value_for_load
+        # _read_complex_fields  : percent_list, collections, related models — full runtime path
+        _read_str: list[str] = []
+        _read_prim: list[str] = []
+        _read_bool: list[str] = []
+        _read_coerce: list[tuple[str, Any]] = []
+        _read_complex: list[tuple[str, ModelField]] = []
+        for _fname, _mf in model_fields.items():
+            if _mf._is_percent_list or _mf._collection_kind is not None or _mf._is_model_field:
+                _read_complex.append((_fname, _mf))
+            elif _mf.declared_type is bool:
+                _read_bool.append(_fname)
+            elif _mf.declared_type is str:
+                _read_str.append(_fname)
+            elif _mf.declared_type in (int, float):
+                _read_prim.append(_fname)
+            else:
+                _read_coerce.append((_fname, _mf.declared_type))
+        setattr(cls, "_read_str_fields", _read_str)
+        setattr(cls, "_read_primitive_fields", _read_prim)
+        setattr(cls, "_read_bool_fields", _read_bool)
+        setattr(cls, "_read_coerce_fields", _read_coerce)
+        setattr(cls, "_read_complex_fields", _read_complex)
+        # Pre-compute serial-class flag to avoid re-checking per _build_model_from_iris_obj call.
+        _superclasses_str = _normalize_superclasses(superclasses) or ""
+        _is_serial = "SerialObject" in _superclasses_str
+        setattr(cls, "_is_serial_class", _is_serial)
+
+        # Generate per-class _fast_load if possible (only str/int/float/bool scalar fields).
+        # None means fall back to the generic _build_model_from_iris_obj loop.
+        _fast_load_fn = None
+        if not _read_coerce and not _read_complex:
+            _fast_load_fn = _build_fast_load(cls, model_fields, _is_serial)
+        setattr(cls, "_fast_load", _fast_load_fn)
+
+        # Generate per-class _fast_save if possible (only primitive scalar fields, no coerce/complex).
+        # None means fall back to the generic set_property loop in save_model.
+        _fast_save_fn = None
+        if not _scalar_coerce and not _complex_save:
+            _fast_save_fn = _build_fast_save(cls, model_fields, _scalar_fast)
+        setattr(cls, "_fast_save", _fast_save_fn)
+
+        # Placeholder for the lazily-cached _New bound method (set on first save).
+        setattr(cls, "_fast_new", None)
+
 
 class Model(metaclass=ModelMeta):
     __model_fields__: dict[str, ModelField]
@@ -496,6 +640,15 @@ class Model(metaclass=ModelMeta):
     _scalar_fast_fields: list[str]
     _scalar_coerce_fields: list[tuple[str, Any]]
     _complex_save_fields: list[tuple[str, ModelField]]
+    _read_str_fields: list[str]
+    _read_primitive_fields: list[str]
+    _read_bool_fields: list[str]
+    _read_coerce_fields: list[tuple[str, Any]]
+    _read_complex_fields: list[tuple[str, ModelField]]
+    _is_serial_class: bool
+    _fast_load: Any  # per-class code-gen loader, or None for generic path
+    _fast_save: Any  # per-class code-gen field setter, or None for generic path
+    _fast_new: Any  # cached _New bound method, lazily set on first save
 
     @classmethod
     def __init_subclass__(

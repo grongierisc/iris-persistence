@@ -73,38 +73,69 @@ def _build_model_from_iris_obj(
     if iris_obj is None:
         return None
 
-    runtime = get_runtime()
-    params = {}
-    for field_name, model_field in model_cls.__model_fields__.items():
-        field_meta = model_field.field_info
-        declared_type = model_field.declared_type
-        raw_val = runtime.get_property(iris_obj, field_name)
-        if model_field._is_percent_list:           # ← pre-computed
-            python_val = runtime.decode_percent_list(raw_val)
-        else:
+    # Use the per-class code-gen loader when available (direct LOAD_ATTR, 2-3× faster
+    # than getattr() for IRIS C-extension objects).
+    fast_load = model_cls._fast_load
+    if fast_load is not None:
+        return fast_load(iris_obj, known_pk)
+
+    d: dict = {}
+
+    # str fields: direct getattr, normalise None/0 → "" (IRIS can return 0 for empty string props)
+    for field_name in model_cls._read_str_fields:
+        val = getattr(iris_obj, field_name, None)
+        d[field_name] = val if val else ""
+
+    # int/float fields: direct getattr, IRIS already returns correct Python type
+    for field_name in model_cls._read_primitive_fields:
+        d[field_name] = getattr(iris_obj, field_name, None)
+
+    # bool fields: IRIS stores as int 0/1, convert without calling coerce_value_for_load
+    for field_name in model_cls._read_bool_fields:
+        d[field_name] = bool(getattr(iris_obj, field_name, None) or 0)
+
+    # Scalar fields needing full coercion (e.g. datetime): still skip get_property dispatch
+    if model_cls._read_coerce_fields:
+        runtime = get_runtime()
+        for field_name, declared_type in model_cls._read_coerce_fields:
+            raw_val = getattr(iris_obj, field_name, None)
             python_val = runtime.extract_python_value(raw_val)
-            if python_val in (None, 0) and (
-                model_field._is_scalar_string or declared_type is str
-            ):
-                python_val = ""
-        collection_kind = model_field._collection_kind  # ← pre-computed
-        if collection_kind is not None:
-            params[field_name] = _coerce_collection_for_load(
-                collection_kind, model_field._element_type, python_val   # ← pre-computed
-            )
-        elif model_field._is_model_field:          # ← new pre-computed flag
-            params[field_name] = _build_model_from_iris_obj(declared_type, python_val)
-        else:
-            params[field_name] = coerce_value_for_load(declared_type, python_val)
-    instance = model_cls._from_loaded_values(params)
-    instance._iris_obj = iris_obj
-    if not _is_serial_type(model_cls):
+            d[field_name] = coerce_value_for_load(declared_type, python_val)
+
+    # Complex fields: percent_list, collections, related models — full runtime path
+    if model_cls._read_complex_fields:
+        runtime = get_runtime()
+        for field_name, model_field in model_cls._read_complex_fields:
+            raw_val = runtime.get_property(iris_obj, field_name)
+            if model_field._is_percent_list:
+                d[field_name] = runtime.decode_percent_list(raw_val)
+            else:
+                python_val = runtime.extract_python_value(raw_val)
+                if python_val in (None, 0) and (
+                    model_field._is_scalar_string or model_field.declared_type is str
+                ):
+                    python_val = ""
+                if model_field._collection_kind is not None:
+                    d[field_name] = _coerce_collection_for_load(
+                        model_field._collection_kind, model_field._element_type, python_val
+                    )
+                else:
+                    d[field_name] = _build_model_from_iris_obj(model_field.declared_type, python_val)
+
+    # Build instance directly — bypass _from_loaded_values + per-field setattr loop
+    instance = model_cls.__new__(model_cls)
+    instance_dict = instance.__dict__
+    instance_dict.update(d)
+    instance_dict["_iris_obj"] = iris_obj
+    if not model_cls._is_serial_class:
         if known_pk is not None:
-            instance._pk = known_pk
+            instance_dict["_pk"] = known_pk
         else:
+            runtime = get_runtime()
             obj_id = runtime.get_object_id(iris_obj)
-            if obj_id:
-                instance._pk = str(obj_id)
+            instance_dict["_pk"] = str(obj_id) if obj_id else None
+    else:
+        instance_dict["_pk"] = None
     return instance
 
 
@@ -310,35 +341,45 @@ def save_model(instance: TModel) -> None:
     if is_update:
         iris_obj = runtime.get_object(classname, instance._pk)
     else:
-        iris_obj = runtime.create_object(classname)
+        # Hot path: use cached _New bound method to skip call_classmethod → _cls chain.
+        _new_fn = cls._fast_new
+        if _new_fn is None:
+            _new_fn = runtime._cls(classname)._New
+            cls._fast_new = _new_fn
+        iris_obj = _new_fn()
     instance._iris_obj = iris_obj
 
     inst_dict = instance.__dict__
 
-    # Fast path: primitive scalar fields (str/int/float/bool) — no coercion needed,
-    # bypass inject_iris_value dispatch and call set_property directly.
-    for field_name in cls._scalar_fast_fields:
-        val = inst_dict.get(field_name)
-        if val is not None:
-            runtime.set_property(iris_obj, field_name, val)
-
-    # Scalar fields that require coercion (e.g. datetime types).
-    if cls._scalar_coerce_fields:
-        for field_name, declared_type in cls._scalar_coerce_fields:
+    # Hot path: code-gen field setter avoids set_property() overhead + isinstance checks.
+    # Only present for models where all fields are primitive scalars (no coerce/complex).
+    if cls._fast_save:
+        cls._fast_save(iris_obj, inst_dict)
+    else:
+        # Fast path: primitive scalar fields (str/int/float/bool) — no coercion needed,
+        # bypass inject_iris_value dispatch and call set_property directly.
+        for field_name in cls._scalar_fast_fields:
             val = inst_dict.get(field_name)
             if val is not None:
-                runtime.inject_iris_value(iris_obj, field_name, coerce_value_for_save(declared_type, val))
+                runtime.set_property(iris_obj, field_name, val)
 
-    # Complex fields: collections, related models, readonly.
-    if cls._complex_save_fields:
-        for field_name, model_field in cls._complex_save_fields:
-            if getattr(model_field.field_info, "readonly", False) and is_update:
-                continue
-            val = inst_dict.get(field_name)
-            if val is None:
-                continue
-            materialized = _materialize_related_value(runtime, model_field.declared_type, val)
-            runtime.inject_iris_value(iris_obj, field_name, materialized, field_meta=model_field.field_info)
+        # Scalar fields that require coercion (e.g. datetime types).
+        if cls._scalar_coerce_fields:
+            for field_name, declared_type in cls._scalar_coerce_fields:
+                val = inst_dict.get(field_name)
+                if val is not None:
+                    runtime.inject_iris_value(iris_obj, field_name, coerce_value_for_save(declared_type, val))
+
+        # Complex fields: collections, related models, readonly.
+        if cls._complex_save_fields:
+            for field_name, model_field in cls._complex_save_fields:
+                if getattr(model_field.field_info, "readonly", False) and is_update:
+                    continue
+                val = inst_dict.get(field_name)
+                if val is None:
+                    continue
+                materialized = _materialize_related_value(runtime, model_field.declared_type, val)
+                runtime.inject_iris_value(iris_obj, field_name, materialized, field_meta=model_field.field_info)
 
     st = runtime.save_object(iris_obj)
 

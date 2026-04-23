@@ -209,7 +209,7 @@ class BaseIRISAdapter:
     def get_dbapi_connection(self) -> Any:
         import iris
 
-        return iris.dbapi.connect(mode="auto")
+        return iris.dbapi.connect()
 
     def invoke_method(self, obj: Any, method_name: str, *args: Any) -> Any:
         if args:
@@ -444,8 +444,9 @@ class NativeProxyAdapter(BaseIRISAdapter):
                 username=username,
                 password=password,
             )
+        else:
+            raise RuntimeError("Native connection configuration is incomplete. Please provide hostname, port, namespace, username and password either via the `native_connection` argument or environment variables (IRISUSERNAME, IRISPASSWORD).")
 
-        return iris.dbapi.connect(mode="auto")
 
     def _native_handles(self, obj: Any) -> tuple[Any, Any, bool] | None:
         oref = obj._oref if hasattr(obj, "_oref") else obj

@@ -50,6 +50,17 @@ _IRIS_COLLECTION_CLASSES = {
 }
 
 
+class _NonClosingConnectionProxy:
+    def __init__(self, connection: Any):
+        self._connection = connection
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
+
+    def close(self) -> None:
+        return None
+
+
 def _is_missing_class_error(exc: BaseException) -> bool:
     message = str(exc)
     return "iris.cls: error finding class" in message
@@ -427,6 +438,11 @@ class NativeProxyAdapter(BaseIRISAdapter):
         self._native_connection = native_connection
 
     def get_dbapi_connection(self) -> Any:
+        if self._native_connection is not None and callable(
+            getattr(self._native_connection, "cursor", None)
+        ):
+            return _NonClosingConnectionProxy(self._native_connection)
+
         import iris
 
         connection = self._native_connection

@@ -324,6 +324,16 @@ class TestNativeProxyAdapter(unittest.TestCase):
         )
         self.assertEqual(result, "dbapi-conn")
 
+    def test_get_dbapi_connection_reuses_native_connection_cursor(self):
+        connection = SimpleNamespace(cursor=MagicMock(return_value="cursor"), close=MagicMock())
+        adapter = NativeProxyAdapter(connection)
+
+        result = adapter.get_dbapi_connection()
+
+        self.assertEqual(result.cursor(), "cursor")
+        result.close()
+        connection.close.assert_not_called()
+
     def test_missing_class_error_is_rewritten_with_context(self):
         fake_iris = SimpleNamespace(
             cls=MagicMock(side_effect=RuntimeError("iris.cls: error finding class"))

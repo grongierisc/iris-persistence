@@ -128,9 +128,28 @@ def get_runtime() -> RuntimeAdapter:
     return _active_runtime
 
 
+def _reset_model_runtime_caches() -> None:
+    try:
+        import iris_orm.models as models
+    except Exception:
+        return
+
+    def walk(model_cls: Any):
+        for subclass in model_cls.__subclasses__():
+            yield subclass
+            yield from walk(subclass)
+
+    for model_cls in walk(models.Model):
+        if hasattr(model_cls, "_fast_new"):
+            model_cls._fast_new = None
+        if "_sql_table_name" in getattr(model_cls, "__dict__", {}):
+            delattr(model_cls, "_sql_table_name")
+
+
 def configure_default_runtime(runtime: RuntimeAdapter) -> None:
     global _active_runtime
     _active_runtime = runtime
+    _reset_model_runtime_caches()
 
 
 def configure(native_connection=None) -> None:

@@ -291,7 +291,10 @@ def _build_fast_load(model_cls: Any, model_fields: Dict[str, ModelField], is_ser
         if mf._is_percent_list or mf._collection_kind is not None or mf._is_model_field:
             return None  # complex field — cannot use this fast path
         if mf.declared_type is str:
-            lines.append(f"    _v = iris_obj.{name}; d[{name!r}] = _v if _v else ''")
+            lines.append(
+                f"    _v = iris_obj.{name}; "
+                f"d[{name!r}] = None if _v == _NULL_STRING else (_v if _v else '')"
+            )
         elif mf.declared_type is bool:
             lines.append(f"    d[{name!r}] = bool(iris_obj.{name} or 0)")
         elif mf.declared_type in (int, float):
@@ -302,7 +305,11 @@ def _build_fast_load(model_cls: Any, model_fields: Dict[str, ModelField], is_ser
     lines.append("    return instance")
     source = "\n".join(lines)
     from iris_orm.runtime import get_runtime as _get_runtime_fn
-    namespace: dict[str, Any] = {"_model_cls": model_cls, "_get_runtime": _get_runtime_fn}
+    namespace: dict[str, Any] = {
+        "_model_cls": model_cls,
+        "_get_runtime": _get_runtime_fn,
+        "_NULL_STRING": chr(0),
+    }
     exec(source, namespace)
     fn = namespace["_fast_load"]
     fn.__qualname__ = f"{model_cls.__qualname__}._fast_load"
@@ -329,7 +336,11 @@ def _build_fast_save(model_cls: Any, model_fields: Dict[str, ModelField], scalar
     lines = ["def _fast_save(iris_obj, inst_dict):"]
     for name in scalar_fast_fields:
         mf = model_fields[name]
-        if mf.declared_type is bool:
+        if mf.declared_type is str:
+            lines.append(f"    if {name!r} in inst_dict:")
+            lines.append(f"        _v = inst_dict.get({name!r})")
+            lines.append(f"        iris_obj.{name} = _NULL_STRING if _v is None else _v")
+        elif mf.declared_type is bool:
             lines.append(f"    _v = inst_dict.get({name!r})")
             lines.append(f"    if _v is not None: iris_obj.{name} = 1 if _v else 0")
         else:
@@ -337,7 +348,7 @@ def _build_fast_save(model_cls: Any, model_fields: Dict[str, ModelField], scalar
             lines.append(f"    if _v is not None: iris_obj.{name} = _v")
 
     source = "\n".join(lines)
-    namespace: dict[str, Any] = {}
+    namespace: dict[str, Any] = {"_NULL_STRING": chr(0)}
     exec(source, namespace)
     fn = namespace["_fast_save"]
     fn.__qualname__ = f"{model_cls.__qualname__}._fast_save"

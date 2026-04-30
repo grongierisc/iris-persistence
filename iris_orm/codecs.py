@@ -54,6 +54,8 @@ def coerce_value_for_load(expected_type: Any, value: Any) -> Any:
     """Convert values loaded from IRIS back to the declared Python type."""
     if value is None:
         return None
+    if expected_type is str and value == "\x00":
+        return None
     if expected_type in (datetime.datetime, datetime.date, datetime.time) and value == "":
         return None
     if expected_type is bool:

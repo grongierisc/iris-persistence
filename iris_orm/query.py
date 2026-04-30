@@ -84,7 +84,7 @@ def _build_model_from_iris_obj(
     # str fields: direct getattr, normalise None/0 → "" (IRIS can return 0 for empty string props)
     for field_name in model_cls._read_str_fields:
         val = getattr(iris_obj, field_name, None)
-        d[field_name] = val if val else ""
+        d[field_name] = None if val == chr(0) else (val if val else "")
 
     # int/float fields: direct getattr, IRIS already returns correct Python type
     for field_name in model_cls._read_primitive_fields:
@@ -115,6 +115,10 @@ def _build_model_from_iris_obj(
                     model_field._is_scalar_string or model_field.declared_type is str
                 ):
                     python_val = ""
+                elif python_val == chr(0) and (
+                    model_field._is_scalar_string or model_field.declared_type is str
+                ):
+                    python_val = None
                 if model_field._collection_kind is not None:
                     d[field_name] = _coerce_collection_for_load(
                         model_field._collection_kind, model_field._element_type, python_val
@@ -359,8 +363,12 @@ def save_model(instance: TModel) -> None:
         # Fast path: primitive scalar fields (str/int/float/bool) — no coercion needed,
         # bypass inject_iris_value dispatch and call set_property directly.
         for field_name in cls._scalar_fast_fields:
+            if field_name not in inst_dict:
+                continue
             val = inst_dict.get(field_name)
-            if val is not None:
+            if val is None and cls.__model_fields__[field_name].declared_type is str:
+                runtime.set_property(iris_obj, field_name, chr(0))
+            elif val is not None:
                 runtime.set_property(iris_obj, field_name, val)
 
         # Scalar fields that require coercion (e.g. datetime types).

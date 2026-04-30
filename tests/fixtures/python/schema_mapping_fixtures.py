@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from typing import Annotated
-
 from iris_orm import (
     ClassMetadata,
     Field,
     Index,
-    IRISModel,
+    Model,
     StorageData,
     StorageDefinition,
     StorageIndex,
@@ -20,17 +18,14 @@ from iris_orm import (
 )
 
 
-class SchemaMetadataFixture(IRISModel):
-    Payload: Annotated[
-        str | None,
-        Field(
-            required=False,
-            maxlen=50,
-            readonly=True,
-            collection="list",
-            sql_field_name="payload_json",
-        ),
-    ] = None
+class SchemaMetadataFixture(Model, persistent=True):
+    Payload: str | None = Field(
+        default=None,
+        max_length=50,
+        readonly=True,
+        collection="list",
+        sql_field_name="payload_json",
+    )
 
     class Meta:
         classname = "Demo.SchemaMetadataFixture"
@@ -148,8 +143,8 @@ class SchemaMetadataFixture(IRISModel):
         )
 
 
-class ExtendIndexFixture(IRISModel):
-    Payload: Annotated[str | None, Field(required=False)] = None
+class ExtendIndexFixture(Model, persistent=True):
+    Payload: str | None = None
 
     class Meta:
         classname = "Demo.ExtendIndexFixture"
@@ -160,8 +155,8 @@ class ExtendIndexFixture(IRISModel):
         ]
 
 
-class ParameterFixture(IRISModel):
-    Payload: Annotated[str | None, Field()] = None
+class ParameterFixture(Model, persistent=True):
+    Payload: str | None = None
 
     class Meta:
         classname = "Demo.ParameterFixture"
@@ -169,51 +164,45 @@ class ParameterFixture(IRISModel):
         parameters = {"TITI": "TOTO"}
 
 
-class RelationshipMetadataFixture(IRISModel):
-    Owner: Annotated[
-        str | None,
-        Field(
-            iris_type="Demo.RelatedFixture",
-            identity=True,
-            relationship="parent",
-            on_delete="cascade",
-            inverse="Children",
-            transient=True,
-            storable=False,
-            multi_dimensional=True,
-        ),
-    ] = None
+class RelationshipMetadataFixture(Model, persistent=True):
+    Owner: str | None = Field(
+        default=None,
+        iris_type="Demo.RelatedFixture",
+        identity=True,
+        relationship="parent",
+        on_delete="cascade",
+        inverse="Children",
+        transient=True,
+        storable=False,
+        multi_dimensional=True,
+    )
 
     class Meta:
         classname = "Demo.RelationshipMetadataFixture"
         mode = "replace"
 
 
-class SQLProjectionMetadataFixture(IRISModel):
-    Tags: Annotated[
-        list[str] | None,
-        Field(
-            iris_type="%List",
-            sql_list_delimiter="|",
-            sql_list_type="DELIMITED",
-        ),
-    ] = None
-    TitleUpper: Annotated[
-        str | None,
-        Field(
-            sql_compute_code="Set {*} = {Title}",
-            sql_compute_on_change="Title",
-            sql_computed=True,
-        ),
-    ] = None
+class SQLProjectionMetadataFixture(Model, persistent=True):
+    Tags: list[str] | None = Field(
+        default=None,
+        iris_type="%List",
+        sql_list_delimiter="|",
+        sql_list_type="DELIMITED",
+    )
+    TitleUpper: str | None = Field(
+        default=None,
+        sql_compute_code="Set {*} = {Title}",
+        sql_compute_on_change="Title",
+        sql_computed=True,
+    )
 
     class Meta:
         classname = "Demo.SQLProjectionMetadataFixture"
         mode = "replace"
 
 
-class ClassMetadataFixture(IRISModel):
-    Payload: Annotated[str | None, Field()] = None
+class ClassMetadataFixture(Model, persistent=True):
+    Payload: str | None = None
 
     class Meta:
         classname = "Demo.ClassMetadataFixture"

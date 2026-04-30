@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-from typing import Annotated
-
-from iris_orm import Field, IRISModel
+from iris_orm import Field, Model
 
 
-class SourceRequestFixture(IRISModel):
-    CorrelationId: Annotated[str, Field(required=True, maxlen=64)]
-    RetryCount: Annotated[int | None, Field(required=False, default=0)] = 0
-    SourceSystem: Annotated[str | None, Field(required=False, default="ERP", maxlen=32)] = "ERP"
+class SourceRequestFixture(Model):
+    CorrelationId: str = Field(required=True, max_length=64)
+    RetryCount: int | None = 0
+    SourceSystem: str | None = Field(default="ERP", max_length=32)
 
     class Meta:
         classname = "Demo.SourceRequestFixture"

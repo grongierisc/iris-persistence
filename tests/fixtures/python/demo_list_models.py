@@ -1,33 +1,36 @@
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Any
 
-from iris_orm import Field, IRISModel
+from iris_orm import Field, Model
 
 
-class DemoListFixtureItem(IRISModel):
-    Value: Annotated[str | None, Field(maxlen=120)] = None
+class DemoListFixtureItem(Model, serial=True):
+    Value: str | None = Field(default=None, max_length=120)
 
     class Meta:
         classname = "Demo.DemoListFixtureItem"
-        superclasses = "%Library.SerialObject"
         mode = "replace"
 
 
-class DemoListFixture(IRISModel):
-    ListAttributes: Annotated[list[Any] | None, Field(iris_type="%List")] = None
-    ListDataType: Annotated[list[Any] | None, Field(iris_type="%ListOfDataTypes")] = None
-    ArrayDataType: Annotated[dict[str, Any] | None, Field(iris_type="%ArrayOfDataTypes")] = None
-    ListOfObjects: Annotated[
-        list[DemoListFixtureItem] | None,
-        Field(iris_type="Demo.DemoListFixtureItem", collection="list"),
-    ] = None
-    ArrayOfObjects: Annotated[
-        dict[str, DemoListFixtureItem] | None,
-        Field(iris_type="Demo.DemoListFixtureItem", collection="array"),
-    ] = None
+class DemoListFixture(Model, persistent=True):
+    ListAttributes: list[Any] = Field(default_factory=list, iris_type="%List")
+    ListDataType: list[Any] = Field(default_factory=list, iris_type="%ListOfDataTypes")
+    ArrayDataType: dict[str, Any] = Field(
+        default_factory=dict,
+        iris_type="%ArrayOfDataTypes",
+    )
+    ListOfObjects: list[DemoListFixtureItem] = Field(
+        default_factory=list,
+        iris_type="Demo.DemoListFixtureItem",
+        collection="list",
+    )
+    ArrayOfObjects: dict[str, DemoListFixtureItem] = Field(
+        default_factory=dict,
+        iris_type="Demo.DemoListFixtureItem",
+        collection="array",
+    )
 
     class Meta:
         classname = "Demo.DemoListFixture"
-        superclasses = "%Library.Persistent"
         mode = "replace"

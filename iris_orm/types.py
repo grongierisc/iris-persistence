@@ -4,9 +4,18 @@ Types and definitions for iris_orm schema layout.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple, overload
+
+
+class _UnsetType:
+    def __repr__(self) -> str:
+        return "UNSET"
+
+
+UNSET = _UnsetType()
 
 
 @dataclass(frozen=True)
@@ -19,11 +28,19 @@ class ClassMetadata:
 
 
 @dataclass
-class Field:
+class FieldInfo:
     """Metadata definition for a model field."""
 
     required: bool = False
-    default: Any = None
+    default: Any = UNSET
+    default_factory: Callable[[], Any] | Any = UNSET
+    nullable: Optional[bool] = None
+    primary_key: bool = False
+    index: bool = False
+    unique: bool = False
+    index_name: Optional[str] = None
+    index_type: Optional[str] = None
+    max_length: Optional[int] = None
     initial_expression: Optional[str] = None
     maxlen: Optional[int] = None
     readonly: bool = False
@@ -50,6 +67,150 @@ class Field:
             self.iris_type = self.sql_type
         elif self.iris_type is not None and self.sql_type is None:
             self.sql_type = self.iris_type
+        if self.max_length is None and self.maxlen is not None:
+            self.max_length = self.maxlen
+        elif self.max_length is not None and self.maxlen is None:
+            self.maxlen = self.max_length
+        elif self.max_length is not None and self.maxlen is not None:
+            self.maxlen = self.max_length
+        if self.default is not UNSET and self.default_factory is not UNSET:
+            raise TypeError("Field cannot define both default and default_factory")
+        if self.default_factory is not UNSET and not callable(self.default_factory):
+            raise TypeError("Field default_factory must be callable")
+
+
+@overload
+def Field(
+    *,
+    required: bool = ...,
+    default: Any = ...,
+    default_factory: Callable[[], Any] | Any = ...,
+    nullable: Optional[bool] = ...,
+    primary_key: bool = ...,
+    index: bool = ...,
+    unique: bool = ...,
+    index_name: Optional[str] = ...,
+    index_type: Optional[str] = ...,
+    max_length: Optional[int] = ...,
+    initial_expression: Optional[str] = ...,
+    maxlen: Optional[int] = ...,
+    readonly: bool = ...,
+    collection: Optional[str] = ...,
+    iris_type: Optional[str] = ...,
+    sql_type: Optional[str] = ...,
+    sql_field_name: Optional[str] = ...,
+    identity: bool = ...,
+    relationship: Optional[str] = ...,
+    on_delete: Optional[str] = ...,
+    inverse: Optional[str] = ...,
+    transient: bool = ...,
+    storable: bool = ...,
+    multi_dimensional: bool = ...,
+    sql_list_delimiter: Optional[str] = ...,
+    sql_list_type: Optional[str] = ...,
+    sql_compute_code: Optional[str] = ...,
+    sql_compute_on_change: Optional[str] = ...,
+    sql_computed: bool = ...,
+) -> Any: ...
+
+
+def Field(
+    *,
+    required: bool = False,
+    default: Any = UNSET,
+    default_factory: Callable[[], Any] | Any = UNSET,
+    nullable: Optional[bool] = None,
+    primary_key: bool = False,
+    index: bool = False,
+    unique: bool = False,
+    index_name: Optional[str] = None,
+    index_type: Optional[str] = None,
+    max_length: Optional[int] = None,
+    initial_expression: Optional[str] = None,
+    maxlen: Optional[int] = None,
+    readonly: bool = False,
+    collection: Optional[str] = None,
+    iris_type: Optional[str] = None,
+    sql_type: Optional[str] = None,
+    sql_field_name: Optional[str] = None,
+    identity: bool = False,
+    relationship: Optional[str] = None,
+    on_delete: Optional[str] = None,
+    inverse: Optional[str] = None,
+    transient: bool = False,
+    storable: bool = True,
+    multi_dimensional: bool = False,
+    sql_list_delimiter: Optional[str] = None,
+    sql_list_type: Optional[str] = None,
+    sql_compute_code: Optional[str] = None,
+    sql_compute_on_change: Optional[str] = None,
+    sql_computed: bool = False,
+) -> Any:
+    return FieldInfo(
+        required=required,
+        default=default,
+        default_factory=default_factory,
+        nullable=nullable,
+        primary_key=primary_key,
+        index=index,
+        unique=unique,
+        index_name=index_name,
+        index_type=index_type,
+        max_length=max_length,
+        initial_expression=initial_expression,
+        maxlen=maxlen,
+        readonly=readonly,
+        collection=collection,
+        iris_type=iris_type,
+        sql_type=sql_type,
+        sql_field_name=sql_field_name,
+        identity=identity,
+        relationship=relationship,
+        on_delete=on_delete,
+        inverse=inverse,
+        transient=transient,
+        storable=storable,
+        multi_dimensional=multi_dimensional,
+        sql_list_delimiter=sql_list_delimiter,
+        sql_list_type=sql_list_type,
+        sql_compute_code=sql_compute_code,
+        sql_compute_on_change=sql_compute_on_change,
+        sql_computed=sql_computed,
+    )
+
+
+@dataclass(frozen=True)
+class ModelField:
+    name: str
+    declared_type: Any
+    field_info: FieldInfo
+    required: bool = False
+    nullable: bool = False
+    init: bool = True
+    sql_field_name: Optional[str] = None
+    _is_percent_list: bool = False
+    _is_scalar_string: bool = False
+    _collection_kind: Optional[str] = None
+    _element_type: Any = None
+    _is_model_field: bool = False
+
+    @property
+    def default(self) -> Any:
+        return self.field_info.default
+
+    @property
+    def default_factory(self) -> Callable[[], Any] | Any:
+        return self.field_info.default_factory
+
+    def has_default(self) -> bool:
+        return self.default is not UNSET or self.default_factory is not UNSET
+
+    def get_default_value(self) -> Any:
+        if self.default_factory is not UNSET:
+            return self.default_factory()
+        if self.default is not UNSET:
+            return deepcopy(self.default)
+        return UNSET
 
 
 @dataclass

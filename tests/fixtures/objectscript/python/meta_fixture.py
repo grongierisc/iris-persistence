@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-from typing import Annotated
-
-from iris_orm import ClassMetadata, Field, IRISModel
+from iris_orm import ClassMetadata, Field, Model
 
 
-class SourceMetaFixture(IRISModel):
-    Title: Annotated[str, Field(required=True, maxlen=120)]
+class SourceMetaFixture(Model, persistent=True):
+    Title: str = Field(required=True, max_length=120)
 
     class Meta:
         classname = "Demo.SourceMetaFixture"
-        superclasses = "%Library.Persistent"
         mode = "replace"
         metadata = ClassMetadata(
             deprecated=True,

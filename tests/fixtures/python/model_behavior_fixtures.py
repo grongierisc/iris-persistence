@@ -1,42 +1,39 @@
 from __future__ import annotations
 
-from typing import Annotated
-
-from iris_orm import ClassMetadata, Field, Index, IRISModel
+from iris_orm import ClassMetadata, Field, Model
 
 
-class Product(IRISModel):
-    Name: Annotated[str, Field(required=True, maxlen=200)]
-    Price: Annotated[float, Field(default=0.0)]
-    InStock: Annotated[bool, Field(default=True)]
+class Product(Model, persistent=True):
+    Name: str = Field(required=True, max_length=200, unique=True)
+    Price: float = 0.0
+    InStock: bool = True
     Docs: dict[str, str]
     Thumbnail: bytes
 
     class Meta:
         classname = "Demo.Product"
         mode = "replace"
-        indexes = [Index("NameIdx", properties="Name", unique=True)]
 
 
-class QueryAliasModel(IRISModel):
-    Payload: Annotated[str | None, Field(sql_field_name="payload_json")] = None
+class QueryAliasModel(Model):
+    Payload: str | None = Field(default=None, sql_field_name="payload_json")
 
     class Meta:
         classname = "Demo.QueryAliasModel"
         mode = "observe"
 
 
-class ReadonlyModel(IRISModel):
-    Code: Annotated[str | None, Field(readonly=True)] = None
-    Name: Annotated[str | None, Field()] = None
+class ReadonlyModel(Model, persistent=True):
+    Code: str | None = Field(default=None, readonly=True)
+    Name: str | None = None
 
     class Meta:
         classname = "Demo.ReadonlyModel"
         mode = "replace"
 
 
-class AutoSyncModel(IRISModel):
-    Name: Annotated[str | None, Field()] = None
+class AutoSyncModel(Model, persistent=True):
+    Name: str | None = None
 
     class Meta:
         classname = "Demo.AutoSyncModel"
@@ -44,8 +41,8 @@ class AutoSyncModel(IRISModel):
         auto_sync = True
 
 
-class ObserveAutoSyncModel(IRISModel):
-    Name: Annotated[str | None, Field()] = None
+class ObserveAutoSyncModel(Model):
+    Name: str | None = None
 
     class Meta:
         classname = "Demo.ObserveAutoSyncModel"
@@ -53,8 +50,8 @@ class ObserveAutoSyncModel(IRISModel):
         auto_sync = True
 
 
-class ReplaceAutoSyncModel(IRISModel):
-    Name: Annotated[str | None, Field()] = None
+class ReplaceAutoSyncModel(Model, persistent=True):
+    Name: str | None = None
 
     class Meta:
         classname = "Demo.ReplaceAutoSyncModel"
@@ -62,16 +59,16 @@ class ReplaceAutoSyncModel(IRISModel):
         auto_sync = True
 
 
-class FailingSaveModel(IRISModel):
-    Name: Annotated[str | None, Field()] = None
+class FailingSaveModel(Model):
+    Name: str | None = None
 
     class Meta:
         classname = "Demo.FailingSaveModel"
         mode = "observe"
 
 
-class ClassMetadataModel(IRISModel):
-    Name: Annotated[str | None, Field()] = None
+class ClassMetadataModel(Model, persistent=True):
+    Name: str | None = None
 
     class Meta:
         classname = "Demo.ClassMetadataModel"

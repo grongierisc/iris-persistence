@@ -4,6 +4,8 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from iris_orm import Field
+from iris_orm import Model
+from iris_orm.runtime import configure_default_runtime
 from iris_orm.runtime import NativeProxyAdapter
 
 
@@ -61,6 +63,17 @@ class TestNativeProxyAdapter(unittest.TestCase):
 
         # Should set the newly created oref back
         self.mock_oref.set.assert_called_once_with("MyList", self.mock_dyn_obj)
+
+    def test_inject_list_without_native_db_uses_base_dispatch(self):
+        plain_obj = SimpleNamespace(MyList=None)
+        self.adapter.call_classmethod = MagicMock(return_value="dyn-array")
+
+        self.adapter.inject_iris_value(plain_obj, "MyList", [1, 2, 3])
+
+        self.adapter.call_classmethod.assert_called_once_with(
+            "%Library.DynamicArray", "_FromJSON", "[1, 2, 3]"
+        )
+        self.assertEqual(plain_obj.MyList, "dyn-array")
 
     def test_inject_collection_class_dict_bypasses_dynamic_object(self):
         field = Field(iris_type="%ArrayOfDataTypes")
@@ -312,6 +325,28 @@ class TestNativeProxyAdapter(unittest.TestCase):
             password="SYS",
         )
         self.assertEqual(result, "dbapi-conn")
+
+    def test_get_dbapi_connection_reuses_native_connection_cursor(self):
+        connection = SimpleNamespace(cursor=MagicMock(return_value="cursor"), close=MagicMock())
+        adapter = NativeProxyAdapter(connection)
+
+        result = adapter.get_dbapi_connection()
+
+        self.assertEqual(result.cursor(), "cursor")
+        result.close()
+        connection.close.assert_not_called()
+
+    def test_configure_default_runtime_clears_bound_model_runtime_caches(self):
+        class CacheResetModel(Model):
+            Name: str | None = None
+
+        CacheResetModel._fast_new = object()
+        CacheResetModel._sql_table_name = "Cached.Table"
+
+        configure_default_runtime(self.adapter)
+
+        self.assertIsNone(CacheResetModel._fast_new)
+        self.assertFalse(hasattr(CacheResetModel, "_sql_table_name"))
 
     def test_missing_class_error_is_rewritten_with_context(self):
         fake_iris = SimpleNamespace(

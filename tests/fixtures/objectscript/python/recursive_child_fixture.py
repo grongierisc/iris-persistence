@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-from typing import Annotated
-
-from iris_orm import Field, IRISModel
+from iris_orm import Field, Model
 
 
-class SourceRecursiveChild(IRISModel):
-    Name: Annotated[str, Field(required=True, maxlen=80)]
-    Importance: Annotated[int | None, Field(required=False, default=5)] = 5
+class SourceRecursiveChild(Model, persistent=True):
+    Name: str = Field(required=True, max_length=80)
+    Importance: int | None = 5
 
     class Meta:
         classname = "Demo.SourceRecursiveChild"
-        superclasses = "%Library.Persistent"
         mode = "replace"
 
 

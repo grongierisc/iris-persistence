@@ -1,6 +1,9 @@
+from inspect import signature
+from typing import Annotated, Optional
+
 import pytest
 
-from iris_orm import ClassMetadata
+from iris_orm import ClassMetadata, Field, Index, Model
 from iris_orm.runtime import configure_default_runtime
 from iris_orm.testing import FakeAdapter
 from tests.fixtures.python.model_behavior_fixtures import (
@@ -13,6 +16,28 @@ from tests.fixtures.python.model_behavior_fixtures import (
     ReadonlyModel,
     ReplaceAutoSyncModel,
 )
+
+
+class LiteProduct(Model, persistent=True):
+    Id: Optional[int] = Field(default=None, primary_key=True)
+    Name: str = Field(required=True, max_length=200)
+    Price: Annotated[float, Field(default=0.0)]
+    InStock: bool = True
+    Tags: list[str] = Field(default_factory=list, iris_type="%List")
+
+    class Meta:
+        classname = "Demo.LiteProduct"
+        mode = "replace"
+
+
+class IndexedProduct(Model, persistent=True):
+    Id: Optional[int] = Field(default=None, primary_key=True, index_name="PK")
+    Name: str = Field(required=True, unique=True, index_type="bitmap")
+    Sku: str = Field(required=True, index=True)
+
+    class Meta:
+        classname = "Demo.IndexedProduct"
+        mode = "replace"
 
 
 @pytest.fixture(autouse=True)
@@ -137,3 +162,121 @@ def test_save_failure_uses_formatted_status_message(monkeypatch):
         match=r"Save failed for Demo\.FailingSaveModel: ERROR #5808: Key not unique",
     ):
         FailingSaveModel(Name="demo").save()
+
+
+def test_model_supports_field_assignment_syntax_and_runtime_values():
+    product = LiteProduct(Name="Widget Pro")
+
+    assert isinstance(product.Name, str)
+    assert product.Name.split() == ["Widget", "Pro"]
+    assert product.Price == 0.0
+    assert product.InStock is True
+    assert product.Tags == []
+    assert product.__dict__["Name"] == "Widget Pro"
+    assert getattr(LiteProduct, "Name", None) is None
+
+
+def test_model_supports_mixed_syntax_and_persistence_round_trip():
+    product = LiteProduct(Name="Widget", Tags=["a", "b"])
+    product.save()
+
+    loaded = LiteProduct.get(product.pk)
+
+    assert loaded is not None
+    assert loaded.Name == "Widget"
+    assert loaded.Price == 0.0
+    assert loaded.InStock is True
+    assert loaded.Tags == ["a", "b"]
+
+
+def test_model_default_factory_is_per_instance():
+    first = LiteProduct(Name="First")
+    second = LiteProduct(Name="Second")
+
+    first.Tags.append("x")
+
+    assert first.Tags == ["x"]
+    assert second.Tags == []
+
+
+def test_model_signature_exposes_normalized_constructor_fields():
+    params = signature(LiteProduct).parameters
+
+    assert list(params) == ["Id", "Name", "Price", "InStock", "Tags"]
+    assert params["Name"].default is params["Name"].empty
+    assert params["Price"].default == 0.0
+    assert params["InStock"].default is True
+
+
+def test_model_rejects_unknown_fields():
+    with pytest.raises(TypeError, match="unexpected keyword argument|Unknown field"):
+        LiteProduct(Name="Widget", Missing=True)
+
+
+def test_model_rejects_ambiguous_dual_field_declarations():
+    with pytest.raises(TypeError, match="cannot declare Field"):
+        class BadModel(Model):
+            Name: Annotated[str, Field(max_length=100)] = Field(required=True)
+
+
+def test_model_generates_real_constructor_per_class():
+    assert LiteProduct.__dict__["__init__"] is not Model.__init__
+    assert list(signature(LiteProduct.__init__).parameters) == [
+        "self",
+        "Id",
+        "Name",
+        "Price",
+        "InStock",
+        "Tags",
+    ]
+
+
+def test_model_init_subclass_accepts_model_keywords():
+    params = signature(Model.__init_subclass__).parameters
+
+    assert "persistent" in params
+    assert "serial" in params
+    assert "superclasses" in params
+
+
+def test_field_index_metadata_synthesizes_model_indexes():
+    indexes = {index.name: index for index in IndexedProduct._indexes}
+
+    assert indexes["PK"].properties == "Id"
+    assert indexes["PK"].primary_key is True
+    assert indexes["PK"].unique is True
+    assert indexes["NameIdx"].properties == "Name"
+    assert indexes["NameIdx"].unique is True
+    assert indexes["NameIdx"].type == "bitmap"
+    assert indexes["SkuIdx"].properties == "Sku"
+    assert indexes["SkuIdx"].unique is False
+
+
+def test_field_index_metadata_conflicts_with_meta_indexes():
+    with pytest.raises(TypeError, match="Meta.indexes already defines index"):
+        class BadIndexedModel(Model, persistent=True):
+            Name: str = Field(required=True, unique=True)
+
+            class Meta:
+                classname = "Demo.BadIndexedModel"
+                mode = "replace"
+                indexes = [Index("ExistingNameIdx", properties="Name")]
+
+
+def test_model_class_flags_control_superclasses():
+    class PersistentModel(Model, persistent=True):
+        Name: str
+
+    class SerialModel(Model, serial=True):
+        Name: str
+
+    assert PersistentModel._superclasses == "%Persistent"
+    assert SerialModel._superclasses == "%SerialObject"
+
+
+@pytest.mark.parametrize("field_name", ["pk", "_pk", "_iris_obj"])
+def test_model_rejects_reserved_field_names(field_name):
+    with pytest.raises(TypeError, match="reserved field name"):
+        namespace = {"__annotations__": {field_name: str}}
+        ModelMeta = type(Model)
+        ModelMeta("BadReservedModel", (Model,), namespace)

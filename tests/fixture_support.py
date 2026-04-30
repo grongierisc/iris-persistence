@@ -78,21 +78,31 @@ def load_objectscript_fixtures(names: list[str]) -> list[LoadedObjectScriptFixtu
         status = system_obj.LoadDir(str(OBJECTSCRIPT_CLS_FIXTURES), "cuk")
         if not status:
             raise RuntimeError("failed to batch-load ObjectScript fixture sources")
-        return [
-            LoadedObjectScriptFixture(
-                name=spec.name,
-                classnames=spec.classnames,
-                source=(
-                    "cls"
-                    if all(
-                        iris.cls("%Dictionary.ClassDefinition")._ExistsId(classname)
-                        for classname in spec.classnames
+        loaded: list[LoadedObjectScriptFixture] = []
+        for spec in specs:
+            if all(
+                iris.cls("%Dictionary.ClassDefinition")._ExistsId(classname)
+                for classname in spec.classnames
+            ):
+                loaded.append(
+                    LoadedObjectScriptFixture(
+                        name=spec.name,
+                        classnames=spec.classnames,
+                        source="cls",
                     )
-                    else "python"
-                ),
+                )
+                continue
+
+            for model_cls in spec.models:
+                model_cls.sync_schema()
+            loaded.append(
+                LoadedObjectScriptFixture(
+                    name=spec.name,
+                    classnames=spec.classnames,
+                    source="python",
+                )
             )
-            for spec in specs
-        ]
+        return loaded
     except Exception:
         loaded: list[LoadedObjectScriptFixture] = []
         for spec in specs:

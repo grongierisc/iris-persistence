@@ -9,12 +9,12 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from iris_orm import IRISModel
+from iris_orm import Model
 
 from examples.demo.support import configure_demo_runtime, maybe_sync_schema
 
 
-class HelloRecord(IRISModel):
+class HelloRecord(Model, persistent=True):
     Message: str
 
     class Meta:

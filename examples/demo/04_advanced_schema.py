@@ -4,28 +4,26 @@ from __future__ import annotations
 import datetime
 import sys
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from iris_orm import ClassMetadata, Field, IRISModel, Index, StorageData, StorageDefinition
+from iris_orm import ClassMetadata, Field, Index, Model, StorageData, StorageDefinition
 
 from examples.demo.support import configure_demo_runtime, maybe_sync_schema, unique_suffix
 
 
-class ShowcaseRecord(IRISModel):
-    Title: Annotated[str, Field(required=True, maxlen=350)]
-    Description: Annotated[str | None, Field(required=False, default="No desc", maxlen=500)] = (
-        "No desc"
-    )
-    Price: Annotated[float | None, Field(required=False, default=15.5)] = 15.5
-    IsActive: Annotated[bool | None, Field(required=False, default=True)] = True
-    BlobData: Annotated[bytes | None, Field(required=False)] = None
-    Payload: Annotated[dict | None, Field(required=False)] = None
-    Tags: Annotated[list | None, Field(required=False)] = None
-    CreatedAt: Annotated[datetime.datetime | None, Field(required=False)] = None
+class ShowcaseRecord(Model, persistent=True):
+    Title: str = Field(required=True, max_length=350)
+    Description: str | None = Field(default="No desc", max_length=500)
+    Price: float | None = 15.5
+    IsActive: bool | None = True
+    BlobData: bytes | None = None
+    Payload: dict | None = None
+    Tags: list | None = None
+    CreatedAt: datetime.datetime | None = None
 
     class Meta:
         classname = "Demo.ExampleShowcaseRecord"

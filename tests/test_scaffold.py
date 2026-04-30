@@ -74,6 +74,39 @@ class _StubRuntime:
         return _StubConnection(self._rows_by_query)
 
 
+class _StubCollection:
+    def __init__(self, items):
+        self._items = list(items)
+
+    def Count(self):
+        return len(self._items)
+
+    def GetAt(self, index):
+        return self._items[index - 1]
+
+
+class _StubRuntimeWithParameters(_StubRuntime):
+    def __init__(self, rows_by_query, parameters_by_class):
+        super().__init__(rows_by_query)
+        self._parameters_by_class = parameters_by_class
+
+    def get_object(self, class_name: str, obj_id: str):
+        if class_name != "%Dictionary.ClassDefinition":
+            return None
+        params = self._parameters_by_class.get(obj_id)
+        if params is None:
+            return None
+        return {"Parameters": _StubCollection(params)}
+
+    def get_property(self, obj, prop_name: str):
+        if isinstance(obj, dict):
+            return obj.get(prop_name)
+        return obj.get(prop_name)
+
+    def invoke_method(self, obj, method_name: str, *args):
+        return getattr(obj, method_name)(*args)
+
+
 def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path):
     rows_by_query = {
         (
@@ -115,12 +148,12 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
             ("%Internal", "%Library.String", 0, None, None, "", "%Internal", 0),
         ],
         (
-            "SELECT Name, _Default FROM %Dictionary.CompiledParameter WHERE parent = ?",
+            "SELECT Name, _Default, Origin FROM %Dictionary.CompiledParameter WHERE parent = ?",
             ("Demo.StubFixture",),
         ): [
-            ("CUSTOM", "demo"),
-            ("GUID", "skip-me"),
-            ("%INTERNAL", "skip-me-too"),
+            ("CUSTOM", "demo", "Demo.StubFixture"),
+            ("GUID", "skip-me", "Demo.StubFixture"),
+            ("%INTERNAL", "skip-me-too", "Demo.StubFixture"),
         ],
         (
             "SELECT Name, Properties, _Unique, Type, PrimaryKey "
@@ -356,15 +389,16 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
     assert StubFixture._indexes[0].primary_key is True
 
     generated_text = (tmp_path / "stubfixture.py").read_text(encoding="utf-8")
-    assert 'Field(iris_type="%Library.String", required=True, maxlen=120)' in generated_text
+    assert "class StubFixture(Model, persistent=True):" in generated_text
+    assert 'Field(iris_type="%Library.String", required=True, max_length=120)' in generated_text
     assert 'Field(iris_type="%Library.Boolean", default=True)' in generated_text
     assert (
         "Field(iris_type=\"%Library.DynamicObject\", readonly=True, "
-        "sql_field_name='payload_json')"
+        "sql_field_name='payload_json', default=None)"
         in generated_text
     )
     assert (
-        'Field(iris_type="%Library.String", collection=\'list\')'
+        'Field(iris_type="%Library.String", collection=\'list\', default=None)'
         in generated_text
     )
     assert 'id_location="^Demo.StubFixtureD"' in generated_text
@@ -455,12 +489,12 @@ def test_scaffold_reads_property_relationship_metadata(monkeypatch, tmp_path: Pa
     generated_text = module_path.read_text(encoding="utf-8")
     assert (
         "Field(iris_type=\"Demo.RelatedFixture\", relationship='parent', "
-        "on_delete='cascade', inverse='Children')"
+        "on_delete='cascade', inverse='Children', default=None)"
         in generated_text
     )
     assert (
         "Field(iris_type=\"%Library.String\", transient=True, "
-        "storable=False, multi_dimensional=True)"
+        "storable=False, multi_dimensional=True, default=None)"
         in generated_text
     )
     assert 'Field(iris_type="%Library.Integer", required=True, identity=True)' in generated_text
@@ -526,12 +560,12 @@ def test_scaffold_reads_property_sql_projection_metadata(monkeypatch, tmp_path: 
     module_path = Path(result.files[0])
     generated_text = module_path.read_text(encoding="utf-8")
     assert (
-        'Field(iris_type="%List", sql_list_delimiter=\'|\', sql_list_type=\'DELIMITED\')'
+        'Field(iris_type="%List", sql_list_delimiter=\'|\', sql_list_type=\'DELIMITED\', default=None)'
         in generated_text
     )
     assert (
         'Field(iris_type="%Library.String", sql_compute_code=\'Set {*} = {Title}\', '
-        "sql_compute_on_change='Title', sql_computed=True)"
+        "sql_compute_on_change='Title', sql_computed=True, default=None)"
         in generated_text
     )
 
@@ -600,7 +634,7 @@ def test_scaffold_reads_class_metadata(monkeypatch, tmp_path: Path):
     assert result.warnings == []
     module_path = Path(result.files[0])
     generated_text = module_path.read_text(encoding="utf-8")
-    assert "from iris_orm import ClassMetadata, Field, IRISModel, Index, StorageDefinition" in generated_text
+    assert "from iris_orm import ClassMetadata, Field, Model" in generated_text
     assert "metadata = ClassMetadata(" in generated_text
     assert 'description="scaffolded class metadata"' in generated_text
     assert "deprecated=True" in generated_text
@@ -636,7 +670,7 @@ def test_scaffold_from_iris_reports_metadata_warnings(monkeypatch, tmp_path: Pat
             ("Title", "%Library.String", 1, None, None, "", "Title", 0),
         ],
         (
-            "SELECT Name, _Default FROM %Dictionary.CompiledParameter WHERE parent = ?",
+            "SELECT Name, _Default, Origin FROM %Dictionary.CompiledParameter WHERE parent = ?",
             ("Demo.WarnFixture",),
         ): RuntimeError("parameter lookup failed"),
         (
@@ -670,6 +704,62 @@ def test_scaffold_from_iris_reports_metadata_warnings(monkeypatch, tmp_path: Pat
     assert module.WarnFixture._parameters == {}
 
 
+def test_scaffold_parameter_fallback_excludes_inherited_parameters(monkeypatch, tmp_path: Path):
+    rows_by_query = {
+        (
+            "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name LIKE ?",
+            ("Demo.ParamFixture",),
+        ): [
+            ("Demo.ParamFixture", "%Persistent"),
+        ],
+        (
+            (
+                "SELECT Name, Type, Required, InitialExpression, Parameters, "
+                "Collection, SqlFieldName, ReadOnly "
+                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
+            ),
+            ("Demo.ParamFixture",),
+        ): [
+            ("Title", "%Library.String", 1, None, None, "", "Title", 0),
+        ],
+        (
+            "SELECT Name, _Default, Origin FROM %Dictionary.CompiledParameter WHERE parent = ?",
+            ("Demo.ParamFixture",),
+        ): [],
+        (
+            "SELECT Name, Default FROM %Dictionary.ParameterDefinition WHERE parent = ?",
+            ("Demo.ParamFixture",),
+        ): [],
+    }
+    runtime = _StubRuntimeWithParameters(
+        rows_by_query,
+        {
+            "Demo.ParamFixture": [
+                {"Name": "LOCAL_ONLY", "Default": "local", "Origin": "Demo.ParamFixture"},
+                {"Name": "INHERITED", "Default": "base", "Origin": "Demo.BaseFixture"},
+                {"Name": "GUID", "Default": "skip-guid", "Origin": "Demo.ParamFixture"},
+                {"Name": "%INTERNAL", "Default": "skip-internal", "Origin": "Demo.ParamFixture"},
+            ]
+        },
+    )
+
+    monkeypatch.setattr(scaffold_module, "get_runtime", lambda: runtime)
+
+    result = scaffold_module.scaffold_from_iris(
+        "Demo.ParamFixture",
+        str(tmp_path),
+        extract_meta=True,
+        return_result=True,
+    )
+
+    assert result.warnings == []
+    module = _load_module(Path(result.files[0]))
+    assert module.ParamFixture._parameters == {"LOCAL_ONLY": "local"}
+    generated_text = Path(result.files[0]).read_text(encoding="utf-8")
+    assert '"LOCAL_ONLY": "local"' in generated_text
+    assert "INHERITED" not in generated_text
+
+
 def test_scaffold_selectivity_merges_storage_property_definitions(monkeypatch, tmp_path: Path):
     rows_by_query = {
         (
@@ -690,7 +780,7 @@ def test_scaffold_selectivity_merges_storage_property_definitions(monkeypatch, t
             ("Count", "%Library.Integer", 0, None, None, "", "Count", 0),
         ],
         (
-            "SELECT Name, Default FROM %Dictionary.CompiledParameter WHERE parent = ?",
+            "SELECT Name, _Default, Origin FROM %Dictionary.CompiledParameter WHERE parent = ?",
             ("Demo.SelectivityFixture",),
         ): [],
         (
@@ -815,7 +905,7 @@ def test_scaffold_can_extract_hidden_storage_metadata(monkeypatch, tmp_path: Pat
             ("Title", "%Library.String", 1, None, _iris_dict({"MAXLEN": "120"}), "", "Title", 0),
         ],
         (
-            "SELECT Name, Default FROM %Dictionary.CompiledParameter WHERE parent = ?",
+            "SELECT Name, _Default, Origin FROM %Dictionary.CompiledParameter WHERE parent = ?",
             ("Demo.HiddenFixture",),
         ): [],
         (
@@ -992,7 +1082,7 @@ def test_scaffold_preserves_objectscript_initial_expression_and_can_follow_relat
     assert basic_result.warnings == []
     assert basic_result.files == [str(basic_dir / "request.py")]
     basic_text = (basic_dir / "request.py").read_text(encoding="utf-8")
-    basic_request_line = 'Request: Annotated[Any | None, Field(iris_type="Demo.API.Request")]'
+    basic_request_line = 'Request: Any | None = Field(iris_type="Demo.API.Request", default=None)'
     assert basic_request_line in basic_text
     assert "initial_expression='##class(Demo.Util.Clock).NowUTC()'" in basic_text
     assert "= ##class(Demo.Util.Clock).NowUTC()" not in basic_text
@@ -1010,7 +1100,7 @@ def test_scaffold_preserves_objectscript_initial_expression_and_can_follow_relat
     generated_text = (follow_dir / "request.py").read_text(encoding="utf-8")
     assert "from api_request import APIRequest" in generated_text
     assert (
-        'Request: Annotated[APIRequest | None, Field(iris_type="Demo.API.Request")]'
+        'Request: APIRequest | None = Field(iris_type="Demo.API.Request", default=None)'
         in generated_text
     )
     assert "initial_expression='##class(Demo.Util.Clock).NowUTC()'" in generated_text
@@ -1107,13 +1197,13 @@ def test_scaffold_include_related_uses_unique_names_for_same_basename_classes(
     assert "from vendora_request import VendorARequest" in generated_text
     assert "from vendorb_request import VendorBRequest" in generated_text
     assert (
-        'Primary: Annotated[VendorARequest | None, '
-        'Field(iris_type="VendorA.Request")]'
+        'Primary: VendorARequest | None = '
+        'Field(iris_type="VendorA.Request", default=None)'
         in generated_text
     )
     assert (
-        'Secondary: Annotated[VendorBRequest | None, '
-        'Field(iris_type="VendorB.Request")]'
+        'Secondary: VendorBRequest | None = '
+        'Field(iris_type="VendorB.Request", default=None)'
         in generated_text
     )
 
@@ -1188,13 +1278,13 @@ def test_scaffold_collection_object_properties_are_typed_as_collections(
     assert "from item import Item" in generated_text
     assert "from lookupentry import LookupEntry" in generated_text
     assert (
-        'Items: Annotated[list[Item] | None, '
-        'Field(iris_type="Demo.Item", collection=\'list\')] = None'
+        'Items: list[Item] | None = '
+        'Field(iris_type="Demo.Item", collection=\'list\', default=None)'
         in generated_text
     )
     assert (
-        'Entries: Annotated[dict[str, LookupEntry] | None, '
-        'Field(iris_type="Demo.LookupEntry", collection=\'array\')] = None'
+        'Entries: dict[str, LookupEntry] | None = '
+        'Field(iris_type="Demo.LookupEntry", collection=\'array\', default=None)'
         in generated_text
     )
 
@@ -1236,25 +1326,25 @@ def test_scaffold_collection_class_types_are_typed_as_collections_without_collec
 
     assert result.warnings == []
     generated_text = (tmp_path / "listfixture.py").read_text(encoding="utf-8")
-    assert 'ListAttributes: Annotated[list[Any] | None, Field(iris_type="%List")] = None' in generated_text
+    assert 'ListAttributes: list[Any] | None = Field(iris_type="%List", default=None)' in generated_text
     assert (
-        'ListDataType: Annotated[list[Any] | None, '
-        'Field(iris_type="%ListOfDataTypes")] = None'
+        'ListDataType: list[Any] | None = '
+        'Field(iris_type="%ListOfDataTypes", default=None)'
         in generated_text
     )
     assert (
-        'ArrayDataType: Annotated[dict[str, Any] | None, '
-        'Field(iris_type="%ArrayOfDataTypes")] = None'
+        'ArrayDataType: dict[str, Any] | None = '
+        'Field(iris_type="%ArrayOfDataTypes", default=None)'
         in generated_text
     )
     assert (
-        'ListOfObjects: Annotated[list[Any] | None, '
-        'Field(iris_type="%ListOfObjects")] = None'
+        'ListOfObjects: list[Any] | None = '
+        'Field(iris_type="%ListOfObjects", default=None)'
         in generated_text
     )
     assert (
-        'ArrayOfObjects: Annotated[dict[str, Any] | None, '
-        'Field(iris_type="%ArrayOfObjects")] = None'
+        'ArrayOfObjects: dict[str, Any] | None = '
+        'Field(iris_type="%ArrayOfObjects", default=None)'
         in generated_text
     )
 
@@ -1405,11 +1495,11 @@ def test_scaffold_include_related_recurses_two_levels(
     root_text = (tmp_path / "rootfixture.py").read_text(encoding="utf-8")
     child_text = (tmp_path / "childnode.py").read_text(encoding="utf-8")
     assert "from childnode import ChildNode" in root_text
-    assert 'Child: Annotated[ChildNode | None, Field(iris_type="Demo.ChildNode")]' in root_text
+    assert 'Child: ChildNode | None = Field(iris_type="Demo.ChildNode", default=None)' in root_text
     assert "from grandchildnode import GrandchildNode" in child_text
     assert (
-        'Grandchild: Annotated[GrandchildNode | None, '
-        'Field(iris_type="Demo.GrandchildNode")]'
+        'Grandchild: GrandchildNode | None = '
+        'Field(iris_type="Demo.GrandchildNode", default=None)'
         in child_text
     )
 

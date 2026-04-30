@@ -15,7 +15,7 @@ def main() -> None:
     try:
         print("\nScaffold typed proxy models from live IRIS:")
         iris_paths = scaffold_from_iris(
-            "Demo.*",
+            "User.Simple",
             generated_root / "from_iris",
             mode="observe",
             extract_meta=True,

@@ -1213,6 +1213,7 @@ def sync_schema(model_cls: Type[Any], _seen: set[str] | None = None) -> None:
     _sync_storage(runtime, cd, classname, storage_meta, mode)
 
     st = runtime.save_object(cd)
-    print("SAVE STATUS:", st)
+    if not runtime.is_ok(st):
+        raise RuntimeError(f"Schema save failed for {classname}: {runtime.format_status(st)}")
 
-    runtime.call_classmethod("%SYSTEM.OBJ", "Compile", classname, "fc")
+    runtime.call_classmethod("%SYSTEM.OBJ", "Compile", classname, "fc /display=none")

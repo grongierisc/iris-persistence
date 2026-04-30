@@ -253,6 +253,12 @@ def test_sync_schema_writes_extended_metadata(monkeypatch):
     assert invalid_condition.Name == "1"
     assert invalid_condition.Expression == "i<1"
 
+    assert (
+        "%SYSTEM.OBJ",
+        "Compile",
+        ("Demo.SchemaMetadataFixture", "fc /display=none"),
+    ) in runtime.calls
+
 
 def test_sync_schema_writes_relationship_property_metadata(monkeypatch):
     runtime = _RecordingRuntime()

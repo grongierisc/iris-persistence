@@ -43,15 +43,66 @@ jobs:
         run: |
           docker cp "${{ steps.iris-container.outputs.id }}:/tmp/test-results.xml" test-results-unit-${{ matrix.image }}.xml || true
 
-      - name: Surface failing unit tests
+      - name: Upload unit test results
         if: always()
-        uses: pmeier/pytest-results-action@master
+        uses: actions/upload-artifact@v4
         with:
+          name: test-results-unit-${{ matrix.image }}
           path: test-results-unit-${{ matrix.image }}.xml
-          summary: true
-          display-options: fEX
-          fail-on-empty: false
-          title: Unit test results (${{ matrix.image }})
+          if-no-files-found: ignore
+
+      - name: Summarize unit test results
+        if: always()
+        env:
+          JUNIT_XML: test-results-unit-${{ matrix.image }}.xml
+          SUMMARY_TITLE: Unit test results (${{ matrix.image }})
+        run: |
+          python3 - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+
+          path = os.environ["JUNIT_XML"]
+          title = os.environ["SUMMARY_TITLE"]
+          summary_path = os.environ["GITHUB_STEP_SUMMARY"]
+
+          with open(summary_path, "a", encoding="utf-8") as summary:
+              summary.write(f"### {title}\n\n")
+              if not os.path.exists(path):
+                  summary.write("No JUnit XML file was copied from the IRIS container.\n\n")
+                  raise SystemExit(0)
+
+              root = ET.parse(path).getroot()
+              suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite"))
+              totals = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
+              for suite in suites:
+                  for key in totals:
+                      totals[key] += int(float(suite.attrib.get(key, 0)))
+
+              summary.write(
+                  "| tests | failures | errors | skipped |\n"
+                  "| ---: | ---: | ---: | ---: |\n"
+                  f"| {totals['tests']} | {totals['failures']} | "
+                  f"{totals['errors']} | {totals['skipped']} |\n\n"
+              )
+
+              problem_cases = []
+              for case in root.iter("testcase"):
+                  problems = [
+                      child.tag
+                      for child in case
+                      if child.tag in {"failure", "error", "skipped"}
+                  ]
+                  if problems:
+                      classname = case.attrib.get("classname", "")
+                      name = case.attrib.get("name", "")
+                      problem_cases.append(f"- `{classname}::{name}`: {', '.join(problems)}")
+
+              if problem_cases:
+                  summary.write("\n".join(problem_cases[:50]))
+                  if len(problem_cases) > 50:
+                      summary.write(f"\n- ... {len(problem_cases) - 50} more")
+                  summary.write("\n\n")
+          PY
 
   e2e:
     name: E2E (${{ matrix.image }})
@@ -83,12 +134,63 @@ jobs:
         run: |
           docker cp "${{ steps.iris-container.outputs.id }}:/tmp/test-results.xml" test-results-e2e-${{ matrix.image }}.xml || true
 
-      - name: Surface failing E2E tests
+      - name: Upload E2E test results
         if: always()
-        uses: pmeier/pytest-results-action@master
+        uses: actions/upload-artifact@v4
         with:
+          name: test-results-e2e-${{ matrix.image }}
           path: test-results-e2e-${{ matrix.image }}.xml
-          summary: true
-          display-options: fEX
-          fail-on-empty: false
-          title: E2E test results (${{ matrix.image }})
+          if-no-files-found: ignore
+
+      - name: Summarize E2E test results
+        if: always()
+        env:
+          JUNIT_XML: test-results-e2e-${{ matrix.image }}.xml
+          SUMMARY_TITLE: E2E test results (${{ matrix.image }})
+        run: |
+          python3 - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+
+          path = os.environ["JUNIT_XML"]
+          title = os.environ["SUMMARY_TITLE"]
+          summary_path = os.environ["GITHUB_STEP_SUMMARY"]
+
+          with open(summary_path, "a", encoding="utf-8") as summary:
+              summary.write(f"### {title}\n\n")
+              if not os.path.exists(path):
+                  summary.write("No JUnit XML file was copied from the IRIS container.\n\n")
+                  raise SystemExit(0)
+
+              root = ET.parse(path).getroot()
+              suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite"))
+              totals = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
+              for suite in suites:
+                  for key in totals:
+                      totals[key] += int(float(suite.attrib.get(key, 0)))
+
+              summary.write(
+                  "| tests | failures | errors | skipped |\n"
+                  "| ---: | ---: | ---: | ---: |\n"
+                  f"| {totals['tests']} | {totals['failures']} | "
+                  f"{totals['errors']} | {totals['skipped']} |\n\n"
+              )
+
+              problem_cases = []
+              for case in root.iter("testcase"):
+                  problems = [
+                      child.tag
+                      for child in case
+                      if child.tag in {"failure", "error", "skipped"}
+                  ]
+                  if problems:
+                      classname = case.attrib.get("classname", "")
+                      name = case.attrib.get("name", "")
+                      problem_cases.append(f"- `{classname}::{name}`: {', '.join(problems)}")
+
+              if problem_cases:
+                  summary.write("\n".join(problem_cases[:50]))
+                  if len(problem_cases) > 50:
+                      summary.write(f"\n- ... {len(problem_cases) - 50} more")
+                  summary.write("\n\n")
+          PY

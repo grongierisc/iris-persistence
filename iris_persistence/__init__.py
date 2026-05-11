@@ -6,9 +6,10 @@ __version__ = "0.1.0"
 
 from iris_persistence.models import Model
 from iris_persistence.runtime import configure
+from iris_persistence.scaffold import ScaffoldResult, ScaffoldWarning, scaffold_from_iris
 from iris_persistence.schema import SchemaDiff, diff_schema
-from iris_persistence.scaffold import ScaffoldResult, ScaffoldWarning, scaffold_from_cls, scaffold_from_iris
 from iris_persistence.types import (
+    UNSET,
     ClassMetadata,
     Field,
     Index,
@@ -22,7 +23,6 @@ from iris_persistence.types import (
     StorageSQLMapSub,
     StorageSQLMapSubAccessVar,
     StorageSQLMapSubInvalidCondition,
-    UNSET,
 )
 
 __all__ = [
@@ -47,5 +47,4 @@ __all__ = [
     "ScaffoldResult",
     "ScaffoldWarning",
     "scaffold_from_iris",
-    "scaffold_from_cls",
 ]

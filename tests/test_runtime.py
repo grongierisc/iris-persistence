@@ -355,16 +355,14 @@ class TestIRISRuntimeAdapter(unittest.TestCase):
         result.close()
         connection.close.assert_not_called()
 
-    def test_configure_default_runtime_clears_bound_model_runtime_caches(self):
+    def test_configure_default_runtime_clears_model_runtime_caches(self):
         class CacheResetModel(Model):
             Name: str | None = None
 
-        CacheResetModel._fast_new = object()
         CacheResetModel._sql_table_name = "Cached.Table"
 
         configure_default_runtime(self.adapter)
 
-        self.assertIsNone(CacheResetModel._fast_new)
         self.assertFalse(hasattr(CacheResetModel, "_sql_table_name"))
 
     def test_get_runtime_does_not_reconfigure_wrapper_runtime(self):

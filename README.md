@@ -311,16 +311,6 @@ for warning in result.warnings:
     print(warning.message)
 ```
 
-Generate from exported `.cls` files:
-
-```python
-from iris_persistence import scaffold_from_cls
-
-scaffold_from_cls("./cls", "./generated_models")
-```
-
-`scaffold_from_cls()` is reserved for future work and currently raises `NotImplementedError`.
-
 Scaffold rules:
 
 - `mode="observe"` is the default
@@ -351,10 +341,14 @@ Runnable examples:
 - `StorageSQLMap`
 - `configure`
 - `scaffold_from_iris`
-- `scaffold_from_cls`
 - `iris_persistence.testing.InMemoryAdapter`
 
 Advanced:
 
 - `Model.sync_schema()`
 - [Advanced Schema Mapping](./docs/advanced_schema_mapping.md)
+
+## Roadmap
+
+- `iris_persistence.scaffold.scaffold_from_cls()` for exported `.cls` files. It is intentionally
+  unimplemented today and raises `NotImplementedError`.

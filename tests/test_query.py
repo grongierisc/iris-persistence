@@ -1,3 +1,5 @@
+import pytest
+
 import iris_persistence.runtime as runtime_module
 from iris_persistence.models import Model
 from iris_persistence.query import _build_model_from_iris_obj, _resolve_sql_table_name, save_model
@@ -41,6 +43,11 @@ class _FakeConnection:
 class _FakeRuntime:
     def get_dbapi_connection(self):
         return _FakeConnection()
+
+
+class _FailingMetadataRuntime:
+    def get_dbapi_connection(self):
+        raise RuntimeError("metadata unavailable")
 
 
 class _ClosingCursor:
@@ -130,6 +137,39 @@ def test_resolve_sql_table_name_materializes_remote_rows_before_cursor_close():
         QueryFixture._sql_table_name = None
 
 
+def test_resolve_sql_table_name_warns_when_metadata_lookup_fails():
+    previous_runtime = runtime_module._active_runtime
+    configure_default_runtime(_FailingMetadataRuntime())
+    QueryFixture._sql_table_name = None
+
+    try:
+        with pytest.warns(RuntimeWarning, match="Could not resolve SQL table name"):
+            assert _resolve_sql_table_name(QueryFixture) == "User.Simple"
+    finally:
+        runtime_module._active_runtime = previous_runtime
+        QueryFixture._sql_table_name = None
+
+
+def test_queryset_rejects_unknown_where_field():
+    QueryFixture._sql_table_name = "User.Simple"
+
+    try:
+        with pytest.raises(ValueError, match="Unknown field"):
+            QueryFixture.where(**{"my_field; DROP": "x"}).all()
+    finally:
+        QueryFixture._sql_table_name = None
+
+
+def test_queryset_rejects_unknown_order_by_field():
+    QueryFixture._sql_table_name = "User.Simple"
+
+    try:
+        with pytest.raises(ValueError, match="Unknown field"):
+            QueryFixture.where().order_by("my_field; DROP").all()
+    finally:
+        QueryFixture._sql_table_name = None
+
+
 def test_queryset_all_closes_cursor_and_connection(monkeypatch):
     cursor = _ClosingCursor(rows=[("1",), ("2",)])
     connection = _ClosingConnection(cursor)
@@ -171,7 +211,6 @@ def test_save_casts_string_none_to_iris_empty_string_marker_generic_path():
         save_model(NullableStringFixture(Name=None))
     finally:
         runtime_module._active_runtime = previous_runtime
-        NullableStringFixture._fast_new = None
 
     assert ("Name", chr(0)) in runtime.set_calls
 

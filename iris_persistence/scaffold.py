@@ -1863,5 +1863,5 @@ def scaffold_from_iris(
 
 
 def scaffold_from_cls(cls_dir: str, output_dir: str, mode: str = "observe") -> None:
-    """Scaffold from exported .cls files."""
-    raise NotImplementedError("File scaffolding is not fully implemented yet.")
+    """Roadmap placeholder for scaffolding from exported .cls files."""
+    raise NotImplementedError("scaffold_from_cls is roadmap-only and is not implemented yet.")

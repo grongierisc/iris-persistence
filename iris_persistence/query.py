@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from typing import Any, Dict, Generic, List, Optional, Type, TypeVar, get_args, get_origin
 
 import iris_persistence.models
@@ -202,9 +203,13 @@ def _materialize_related_value(runtime: Any, declared_type: Any, value: Any) -> 
 
 def _resolve_sql_field_name(model_cls: Type[TModel], field_name: str) -> str:
     field_meta = model_cls._fields.get(field_name)
-    if field_meta is not None and getattr(field_meta, "sql_field_name", None):
-        return field_meta.sql_field_name
-    return field_name
+    if field_meta is None:
+        valid_fields = ", ".join(sorted(model_cls._fields))
+        raise ValueError(
+            f"Unknown field {field_name!r} for {model_cls.__name__}. "
+            f"Expected one of: {valid_fields}"
+        )
+    return str(getattr(field_meta, "sql_field_name", None) or field_name)
 
 
 def _resolve_sql_table_name(model_cls: Type[TModel]) -> str:
@@ -238,7 +243,13 @@ def _resolve_sql_table_name(model_cls: Type[TModel]) -> str:
             close = getattr(conn, "close", None)
             if callable(close):
                 close()
-    except Exception:
+    except Exception as exc:
+        warnings.warn(
+            f"Could not resolve SQL table name for {model_cls._classname!r} "
+            f"from IRIS metadata: {exc}. Falling back to model metadata.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         row = None
 
     if row is not None:
@@ -361,14 +372,12 @@ def save_model(instance: TModel) -> None:
     if is_update:
         iris_obj = runtime.get_object(classname, instance._pk)
     else:
-        # Hot path for real IRIS adapters; test adapters only need the public contract.
-        _new_fn = cls._fast_new
-        if _new_fn is None:
-            cls_factory = getattr(runtime, "_cls", None)
-            if cls_factory is not None:
-                _new_fn = cls_factory(classname)._New
-                cls._fast_new = _new_fn
-        iris_obj = _new_fn() if _new_fn is not None else runtime.create_object(classname)
+        cls_factory = getattr(runtime, "_cls", None)
+        iris_obj = (
+            cls_factory(classname)._New()
+            if cls_factory is not None
+            else runtime.create_object(classname)
+        )
     instance._iris_obj = iris_obj
 
     inst_dict = instance.__dict__

@@ -13,7 +13,7 @@
 - scaffold from live IRIS
 - recursive references between `%Persistent` and `%SerialObject` models
 - typed `StorageDefinition` metadata
-- `iris_persistence.testing.FakeAdapter` for unit tests
+- `iris_persistence.testing.InMemoryAdapter` for unit tests
 - structured scaffold warnings/results for partial metadata extraction
 
 ## Quick Start
@@ -227,7 +227,7 @@ class Order(Model, persistent=True):
 
 ## Runtime Configuration
 
-`iris_persistence` uses the `iris` module (from InterSystems) as its single unified runtime for both embedded and remote access.
+`iris_persistence` uses `iris-embedded-python-wrapper` as its unified runtime facade for embedded, embedded-local, and native remote access.
 
 **Embedded Python** (running inside IRIS — no argument needed):
 
@@ -246,18 +246,24 @@ conn = iris.connect(host, port, namespace, user, password)
 iris_persistence.configure(conn)
 ```
 
-If `configure()` is never called, `iris_persistence` falls back to the embedded runtime automatically on first use.
+If `configure()` is never called, `iris_persistence` reads the current `iris.runtime` state without mutating it. Configure embedded mode with `IRISINSTALLDIR` or `iris.connect(path=...)`, or configure native mode with `iris_persistence.configure(conn)`.
+
+If you already have a DB-API connection that should be reused for queries and scaffolding, bind it explicitly:
+
+```python
+iris_persistence.configure(dbapi_connection=dbapi_conn)
+```
 
 ## Testing
 
-`FakeAdapter` moved into the package so downstream projects can test models without a live IRIS instance.
+`InMemoryAdapter` is available for model tests without a live IRIS instance.
 It is intentionally limited to CRUD/query tests and does not emulate `%Dictionary` or schema compilation.
 
 ```python
-from iris_persistence.testing import FakeAdapter, preload_schema
+from iris_persistence.testing import InMemoryAdapter
 from iris_persistence.runtime import configure_default_runtime
 
-adapter = FakeAdapter()
+adapter = InMemoryAdapter()
 configure_default_runtime(runtime=adapter)
 ```
 
@@ -346,10 +352,9 @@ Runnable examples:
 - `configure`
 - `scaffold_from_iris`
 - `scaffold_from_cls`
-- `iris_persistence.testing.FakeAdapter`
+- `iris_persistence.testing.InMemoryAdapter`
 
 Advanced:
 
 - `Model.sync_schema()`
-- `iris_persistence.testing.preload_schema`
 - [Advanced Schema Mapping](./docs/advanced_schema_mapping.md)

@@ -9,7 +9,7 @@ description = "Python object persistence for InterSystems IRIS, inspired by %Per
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
-    "iris-embedded-python-wrapper",
+    "iris-embedded-python-wrapper>=0.5.19",
 ]
 
 [project.optional-dependencies]

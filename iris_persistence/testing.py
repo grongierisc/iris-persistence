@@ -3,7 +3,7 @@ from typing import Any, Dict
 from iris_persistence.runtime import RuntimeAdapter
 
 
-class FakeAdapter(RuntimeAdapter):
+class InMemoryAdapter(RuntimeAdapter):
     """Simple CRUD-only test double.
 
     This adapter is intentionally narrow: it is useful for model/query tests but does
@@ -160,7 +160,3 @@ class FakeAdapter(RuntimeAdapter):
                 pass
 
         return _Connection(self.db, self)
-
-
-def preload_schema(*args, **kwargs):
-    pass

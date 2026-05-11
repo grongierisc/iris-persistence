@@ -15,14 +15,14 @@ if str(REPO_ROOT) not in sys.path:
 
 import iris_persistence
 from iris_persistence.runtime import configure_default_runtime
-from iris_persistence.testing import FakeAdapter
+from iris_persistence.testing import InMemoryAdapter
 
 
 def configure_demo_runtime(backend: str | None = None) -> str:
     selected = (backend or os.environ.get("IRIS_DEMO_BACKEND", "auto")).strip().lower()
 
     if selected == "fake":
-        configure_default_runtime(FakeAdapter())
+        configure_default_runtime(InMemoryAdapter())
         return "fake"
 
     if selected == "remote":
@@ -54,7 +54,7 @@ def configure_demo_runtime(backend: str | None = None) -> str:
     except Exception:
         if selected != "auto":
             raise
-        configure_default_runtime(FakeAdapter())
+        configure_default_runtime(InMemoryAdapter())
         return "fake"
 
 

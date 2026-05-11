@@ -18,7 +18,7 @@ class RuntimeAdapter(Protocol):
     def set_property(self, obj: Any, prop_name: str, value: Any) -> None: ...
     def get_property(self, obj: Any, prop_name: str) -> Any: ...
     def invoke_method(self, obj: Any, method_name: str, *args: Any) -> Any: ...
-    def get_object_id(self, obj: Any) -> str: ...
+    def get_object_id(self, obj: Any) -> str | None: ...
     def is_ok(self, status: Any) -> bool: ...
     def format_status(self, status: Any) -> str: ...
     def extract_python_value(self, val: Any) -> Any: ...
@@ -33,6 +33,7 @@ class RuntimeAdapter(Protocol):
 
 
 _active_runtime: RuntimeAdapter | None = None
+_wrapper_runtime: IRISRuntimeAdapter | None = None
 
 _SCALAR_PRIMITIVES = (int, str, float, bool, bytes, bytearray)
 
@@ -112,20 +113,16 @@ def _collection_kind_from_field(field_meta: Any | None) -> str | None:
 
 
 def get_runtime() -> RuntimeAdapter:
-    global _active_runtime
-    if _active_runtime is None:
-        try:
-            import iris
+    if _active_runtime is not None:
+        return _active_runtime
+    return _get_wrapper_runtime()
 
-            iris.runtime.configure()
-            mode = getattr(iris.runtime, "mode", "embedded")
-            if mode == "native":
-                _active_runtime = NativeProxyAdapter()
-            else:
-                _active_runtime = EmbeddedAdapter()
-        except ImportError:
-            raise RuntimeError("iris_persistence not configured and `iris` module is unavailable.")
-    return _active_runtime
+
+def _get_wrapper_runtime() -> IRISRuntimeAdapter:
+    global _wrapper_runtime
+    if _wrapper_runtime is None:
+        _wrapper_runtime = IRISRuntimeAdapter()
+    return _wrapper_runtime
 
 
 def _reset_model_runtime_caches() -> None:
@@ -146,69 +143,82 @@ def _reset_model_runtime_caches() -> None:
             delattr(model_cls, "_sql_table_name")
 
 
-def configure_default_runtime(runtime: RuntimeAdapter) -> None:
+def configure_default_runtime(runtime: RuntimeAdapter | None) -> None:
+    """Override the wrapper-backed runtime, primarily for unit tests."""
     global _active_runtime
     _active_runtime = runtime
     _reset_model_runtime_caches()
 
 
-def configure(native_connection=None) -> None:
+def configure(
+    native_connection: Any | None = None,
+    *,
+    dbapi_connection: Any | None = None,
+    iris_handle: Any | None = None,
+    mode: str | None = None,
+    install_dir: str | None = None,
+) -> None:
+    """Configure the underlying iris wrapper runtime and clear test overrides."""
     try:
         import iris
     except ImportError:
         raise ImportError("Failed to import the `iris` package.")
 
-    if native_connection:
-        iris.runtime.configure(mode="native", native_connection=native_connection)
-        configure_default_runtime(NativeProxyAdapter(native_connection))
-    else:
-        iris.runtime.configure()
-        mode = getattr(iris.runtime, "mode", "embedded")
-        if mode == "native":
-            configure_default_runtime(NativeProxyAdapter())
-        else:
-            configure_default_runtime(EmbeddedAdapter())
+    config: dict[str, Any] = {}
+    if mode is not None:
+        config["mode"] = mode
+    if install_dir is not None:
+        config["install_dir"] = install_dir
+    if native_connection is not None:
+        config["native_connection"] = native_connection
+    if dbapi_connection is not None:
+        config["dbapi"] = dbapi_connection
+    if iris_handle is not None:
+        config["iris"] = iris_handle
+
+    iris.runtime.configure(**config)
+    configure_default_runtime(None)
 
 
-class BaseIRISAdapter:
-    def __init__(self):
-        self._cls_cache: dict[str, Any] = {}
+class IRISRuntimeAdapter:
+    """Thin adapter over the iris wrapper facade plus persistence-specific value handling."""
 
-    def _encode_percent_list(self, values: list[Any]) -> Any:
-        row = io.StringIO()
-        csv.writer(row, lineterminator="").writerow(values)
-        return self.call_classmethod("%Library.List", "OdbcToLogical", row.getvalue())
+    def _runtime_state(self) -> Any | None:
+        try:
+            import iris
+        except ImportError:
+            return None
 
-    def decode_percent_list(self, value: Any) -> list[Any]:
-        if value in (None, ""):
-            return []
-
-        import iris
-
-        logical_bytes = value if isinstance(value, bytes) else str(value).encode("latin1")
-        iris_list = iris.IRISList(logical_bytes)
-        return [iris_list.get(index) for index in range(1, iris_list.count() + 1)]
+        runtime = getattr(iris, "runtime", None)
+        get_state = getattr(runtime, "get", None)
+        if callable(get_state):
+            return get_state()
+        return None
 
     def _cls(self, class_name: str):
-        import iris
-        cached = self._cls_cache.get(class_name)
-        if cached is not None:
-            return cached
         try:
-            ref = iris.cls(class_name)
+            import iris
+        except ImportError:
+            raise RuntimeError("iris_persistence not configured and `iris` module is unavailable.")
+
+        state = self._runtime_state()
+        if getattr(state, "state", None) == "unavailable":
+            raise RuntimeError(
+                "No IRIS runtime is available. Configure embedded mode with "
+                "`IRISINSTALLDIR`, `iris.connect(path=...)`, or configure native "
+                "mode with `iris_persistence.configure(connection)`."
+            )
+
+        try:
+            return iris.cls(class_name)
         except RuntimeError as exc:
             if _is_missing_class_error(exc):
                 raise RuntimeError(_format_missing_class_error(class_name)) from exc
             raise
-        self._cls_cache[class_name] = ref
-        return ref
 
     def call_classmethod(self, class_name: str, method_name: str, *args: Any) -> Any:
         cls_ref = self._cls(class_name)
-        if args:
-            return getattr(cls_ref, method_name)(*args)
-        else:
-            return getattr(cls_ref, method_name)()
+        return getattr(cls_ref, method_name)(*args)
 
     def create_object(self, class_name: str) -> Any:
         return self.call_classmethod(class_name, "_New")
@@ -237,15 +247,41 @@ class BaseIRISAdapter:
         return self.is_ok(status)
 
     def get_dbapi_connection(self) -> Any:
-        import iris
+        try:
+            import iris
+        except ImportError:
+            raise RuntimeError("iris_persistence not configured and `iris` module is unavailable.")
 
-        return iris.dbapi.connect()
+        state = self._runtime_state()
+        if getattr(state, "dbapi", None) is not None:
+            return iris.dbapi.connect(mode="auto")
+
+        if getattr(state, "mode", None) == "native":
+            native_connection = getattr(state, "native_connection", None)
+            if native_connection is not None and callable(
+                getattr(native_connection, "cursor", None)
+            ):
+                return _NonClosingConnectionProxy(native_connection)
+
+            hostname = getattr(native_connection, "hostname", None)
+            port = getattr(native_connection, "port", None)
+            namespace = getattr(native_connection, "namespace", None)
+            username = os.environ.get("IRISUSERNAME")
+            password = os.environ.get("IRISPASSWORD")
+            if hostname and port and namespace and username and password:
+                return iris.dbapi.connect(
+                    mode="native",
+                    hostname=hostname,
+                    port=port,
+                    namespace=namespace,
+                    username=username,
+                    password=password,
+                )
+
+        return iris.dbapi.connect(mode="auto")
 
     def invoke_method(self, obj: Any, method_name: str, *args: Any) -> Any:
-        if args:
-            return getattr(obj, method_name)(*args)
-        else:
-            return getattr(obj, method_name)()
+        return getattr(obj, method_name)(*args)
 
     def _populate_collection_property(
         self,
@@ -285,7 +321,27 @@ class BaseIRISAdapter:
 
         return False
 
+    def _native_handles(self, obj: Any) -> tuple[Any, Any, bool] | None:
+        oref = obj._oref if hasattr(obj, "_oref") else obj
+        db = obj._db if hasattr(obj, "_db") else None
+        if db is None:
+            return None
+        return (oref, db, hasattr(oref, "invoke"))
+
     def _clear_property_value(self, obj: Any, field_name: str) -> bool:
+        native_handles = self._native_handles(obj)
+        if native_handles is not None:
+            try:
+                oref, db, use_core_methods = native_handles
+                stream_oref = oref.get(field_name) if use_core_methods else db.get(oref, field_name)
+                if use_core_methods:
+                    stream_oref.invoke("Clear")
+                else:
+                    db.invoke(stream_oref, "Clear")
+                return True
+            except Exception:
+                return False
+
         current_prop = self.get_property(obj, field_name)
         if not hasattr(current_prop, "Clear"):
             return False
@@ -293,6 +349,21 @@ class BaseIRISAdapter:
         return True
 
     def _write_stream_property(self, obj: Any, field_name: str, val: bytes | bytearray) -> bool:
+        native_handles = self._native_handles(obj)
+        if native_handles is not None:
+            try:
+                oref, db, use_core_methods = native_handles
+                stream_oref = oref.get(field_name) if use_core_methods else db.get(oref, field_name)
+                if use_core_methods:
+                    stream_oref.invoke("Clear")
+                    stream_oref.invoke("Write", val)
+                else:
+                    db.invoke(stream_oref, "Clear")
+                    db.invoke(stream_oref, "Write", val)
+                return True
+            except Exception:
+                return False
+
         current_prop = self.get_property(obj, field_name)
         if not hasattr(current_prop, "Write"):
             return False
@@ -307,6 +378,16 @@ class BaseIRISAdapter:
         iris_class_name: str,
         val: Any,
     ) -> bool:
+        native_handles = self._native_handles(obj)
+        if native_handles is not None:
+            oref, db, use_core_methods = native_handles
+            dyn_value = db.classMethodValue(iris_class_name, "%FromJSON", json.dumps(val))
+            if use_core_methods:
+                oref.set(field_name, dyn_value)
+            else:
+                db.set(oref, field_name, dyn_value)
+            return True
+
         dyn_value = self.call_classmethod(iris_class_name, "_FromJSON", json.dumps(val))
         self.set_property(obj, field_name, dyn_value)
         return True
@@ -331,6 +412,11 @@ class BaseIRISAdapter:
             pass
         self.set_property(obj, field_name, val)
 
+    def _encode_percent_list(self, values: list[Any]) -> Any:
+        row = io.StringIO()
+        csv.writer(row, lineterminator="").writerow(values)
+        return self.call_classmethod("%Library.List", "OdbcToLogical", row.getvalue())
+
     def _inject_sequence_value(
         self,
         obj: Any,
@@ -350,6 +436,44 @@ class BaseIRISAdapter:
         except Exception:
             pass
         self.set_property(obj, field_name, val)
+
+    def set_property(self, obj: Any, prop_name: str, value: Any) -> None:
+        if isinstance(value, bool):
+            value = 1 if value else 0
+        setattr(obj, prop_name, value)
+
+    def get_property(self, obj: Any, prop_name: str) -> Any:
+        return getattr(obj, prop_name)
+
+    def get_object_id(self, obj: Any) -> str | None:
+        try:
+            val = obj._Id()
+            if val:
+                return str(val)
+        except AttributeError:
+            pass
+        try:
+            val = obj.Id()
+            if val:
+                return str(val)
+        except AttributeError:
+            pass
+        if hasattr(obj, "%Id"):
+            val = getattr(obj, "%Id")()
+            if val:
+                return str(val)
+        return None
+
+    def is_ok(self, status: Any) -> bool:
+        if type(status) is int:
+            return status != 0
+        if isinstance(status, int):
+            return status != 0
+        if isinstance(status, str):
+            return not status.startswith("0 ")
+        if getattr(status, "IsOK", None):
+            return status.IsOK()
+        return False
 
     def _extract_collection_value(self, val: Any) -> Any:
         if (
@@ -381,11 +505,11 @@ class BaseIRISAdapter:
                     ]
             except Exception:
                 pass
-            
+
         return None
 
     def extract_python_value(self, val: Any) -> Any:
-        if type(val) in _SCALAR_PRIMITIVES:   # fast path: no collection check needed
+        if type(val) in _SCALAR_PRIMITIVES:
             return val
         extracted_collection = self._extract_collection_value(val)
         if extracted_collection is not None:
@@ -401,13 +525,11 @@ class BaseIRISAdapter:
             iris_class = type(val).__name__
 
         if iris_class in ("%Library.DynamicObject", "%Library.DynamicArray"):
-            import json
-
             try:
-                s = self.call_classmethod("%Stream.GlobalCharacter", "_New")
-                val._ToJSON(s)
-                s.Rewind()
-                val = json.loads(s.Read())
+                stream = self.call_classmethod("%Stream.GlobalCharacter", "_New")
+                val._ToJSON(stream)
+                stream.Rewind()
+                val = json.loads(stream.Read())
             except Exception:
                 pass
         elif iris_class in (
@@ -427,6 +549,16 @@ class BaseIRISAdapter:
             except Exception:
                 pass
         return val
+
+    def decode_percent_list(self, value: Any) -> list[Any]:
+        if value in (None, ""):
+            return []
+
+        import iris
+
+        logical_bytes = value if isinstance(value, bytes) else str(value).encode("latin1")
+        iris_list = iris.IRISList(logical_bytes)
+        return [iris_list.get(index) for index in range(1, iris_list.count() + 1)]
 
     def inject_iris_value(
         self,
@@ -449,170 +581,3 @@ class BaseIRISAdapter:
             self._inject_sequence_value(obj, field_name, val, field_meta=field_meta)
         else:
             self.set_property(obj, field_name, val)
-
-
-class NativeProxyAdapter(BaseIRISAdapter):
-    def __init__(self, native_connection: Any | None = None):
-        super().__init__()
-        self._native_connection = native_connection
-
-    def get_dbapi_connection(self) -> Any:
-        if self._native_connection is not None and callable(
-            getattr(self._native_connection, "cursor", None)
-        ):
-            return _NonClosingConnectionProxy(self._native_connection)
-
-        import iris
-
-        connection = self._native_connection
-        hostname = getattr(connection, "hostname", None)
-        port = getattr(connection, "port", None)
-        namespace = getattr(connection, "namespace", None)
-        username = os.environ.get("IRISUSERNAME")
-        password = os.environ.get("IRISPASSWORD")
-
-        if hostname and port and namespace and username and password:
-            return iris.dbapi.connect(
-                hostname=hostname,
-                port=port,
-                namespace=namespace,
-                username=username,
-                password=password,
-            )
-        else:
-            raise RuntimeError("Native connection configuration is incomplete. Please provide hostname, port, namespace, username and password either via the `native_connection` argument or environment variables (IRISUSERNAME, IRISPASSWORD).")
-
-
-    def _native_handles(self, obj: Any) -> tuple[Any, Any, bool] | None:
-        oref = obj._oref if hasattr(obj, "_oref") else obj
-        db = obj._db if hasattr(obj, "_db") else None
-        if db is None:
-            return None
-        return (oref, db, hasattr(oref, "invoke"))
-
-    def _clear_property_value(self, obj: Any, field_name: str) -> bool:
-        native_handles = self._native_handles(obj)
-        if native_handles is None:
-            return super()._clear_property_value(obj, field_name)
-
-        try:
-            oref, db, use_core_methods = native_handles
-            stream_oref = oref.get(field_name) if use_core_methods else db.get(oref, field_name)
-            if use_core_methods:
-                stream_oref.invoke("Clear")
-            else:
-                db.invoke(stream_oref, "Clear")
-            return True
-        except Exception:
-            return False
-
-    def _write_stream_property(self, obj: Any, field_name: str, val: bytes | bytearray) -> bool:
-        native_handles = self._native_handles(obj)
-        if native_handles is None:
-            return super()._write_stream_property(obj, field_name, val)
-
-        try:
-            oref, db, use_core_methods = native_handles
-            stream_oref = oref.get(field_name) if use_core_methods else db.get(oref, field_name)
-            if use_core_methods:
-                stream_oref.invoke("Clear")
-                stream_oref.invoke("Write", val)
-            else:
-                db.invoke(stream_oref, "Clear")
-                db.invoke(stream_oref, "Write", val)
-            return True
-        except Exception:
-            return False
-
-    def _set_dynamic_json_value(
-        self,
-        obj: Any,
-        field_name: str,
-        iris_class_name: str,
-        val: Any,
-    ) -> bool:
-        native_handles = self._native_handles(obj)
-        if native_handles is None:
-            return super()._set_dynamic_json_value(obj, field_name, iris_class_name, val)
-
-        oref, db, use_core_methods = native_handles
-        dyn_value = db.classMethodValue(iris_class_name, "%FromJSON", json.dumps(val))
-        if use_core_methods:
-            oref.set(field_name, dyn_value)
-        else:
-            db.set(oref, field_name, dyn_value)
-        return True
-
-    def set_property(self, obj: Any, prop_name: str, value: Any) -> None:
-        setattr(obj, prop_name, value)
-
-    def get_property(self, obj: Any, prop_name: str) -> Any:
-        return getattr(obj, prop_name)
-
-    def get_object_id(self, obj: Any) -> str:
-        try:
-            val = obj._Id()
-            if val:
-                return str(val)
-        except AttributeError:
-            pass
-        try:
-            val = obj.Id()
-            if val:
-                return str(val)
-        except AttributeError:
-            pass
-        if hasattr(obj, "%Id"):
-            val = getattr(obj, "%Id")()
-            if val:
-                return str(val)
-        return None
-
-    def is_ok(self, status: Any) -> bool:
-        if getattr(status, "IsOK", None):
-            return status.IsOK()
-        if isinstance(status, int) and status == 1:
-            return True
-        return False
-
-
-class EmbeddedAdapter(BaseIRISAdapter):
-    def set_property(self, obj: Any, prop_name: str, value: Any) -> None:
-        if isinstance(value, bool):
-            value = 1 if value else 0
-        setattr(obj, prop_name, value)
-
-    def get_property(self, obj: Any, prop_name: str) -> Any:
-        return getattr(obj, prop_name)
-
-    def get_object_id(self, obj: Any) -> str:
-        try:
-            val = obj._Id()
-            if val:
-                return str(val)
-        except AttributeError:
-            pass
-        try:
-            val = obj.Id()
-            if val:
-                return str(val)
-        except AttributeError:
-            pass
-        if hasattr(obj, "%Id"):
-            val = getattr(obj, "%Id")()
-            if val:
-                return str(val)
-        return None
-
-    def is_ok(self, status: Any) -> bool:
-        # Fast path: embedded _Save()/_DeleteId() return int (1=ok, 0=error).
-        # type() is faster than isinstance() because it skips subclass checks.
-        if type(status) is int:
-            return status != 0
-        if isinstance(status, int):
-            return status != 0
-        if isinstance(status, str):
-            return not status.startswith("0 ")
-        if getattr(status, "IsOK", None):
-            return status.IsOK()
-        return False

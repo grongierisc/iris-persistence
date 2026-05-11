@@ -23,7 +23,7 @@ This folder contains a progressive set of `iris_persistence` demos, starting wit
 The demos default to `IRIS_DEMO_BACKEND=auto`:
 
 - if `iris` is available, they try embedded IRIS first
-- if IRIS is unavailable, they fall back to `iris_persistence.testing.FakeAdapter`
+- if IRIS is unavailable, they fall back to `iris_persistence.testing.InMemoryAdapter`
 
 You can override that explicitly:
 

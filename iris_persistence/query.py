@@ -3,7 +3,11 @@ from __future__ import annotations
 from typing import Any, Dict, Generic, List, Optional, Type, TypeVar, get_args, get_origin
 
 import iris_persistence.models
-from iris_persistence.codecs import coerce_value_for_load, coerce_value_for_save, resolve_declared_type
+from iris_persistence.codecs import (
+    coerce_value_for_load,
+    coerce_value_for_save,
+    resolve_declared_type,
+)
 from iris_persistence.runtime import get_runtime
 
 TModel = TypeVar("TModel", bound="iris_persistence.models.Model")
@@ -124,7 +128,10 @@ def _build_model_from_iris_obj(
                         model_field._collection_kind, model_field._element_type, python_val
                     )
                 else:
-                    d[field_name] = _build_model_from_iris_obj(model_field.declared_type, python_val)
+                    d[field_name] = _build_model_from_iris_obj(
+                        model_field.declared_type,
+                        python_val,
+                    )
 
     # Build instance directly — bypass _from_loaded_values + per-field setattr loop
     instance = model_cls.__new__(model_cls)
@@ -263,7 +270,8 @@ def _maybe_auto_sync_schema(model_cls: Type[TModel]) -> None:
     mode = getattr(model_cls, "_sync_mode", "extend")
     if mode == "observe":
         raise RuntimeError(
-            f"{model_cls.__name__} enables `Meta.auto_sync`, but mode='observe' never writes schema. "
+            f"{model_cls.__name__} enables `Meta.auto_sync`, but mode='observe' "
+            "never writes schema. "
             "Disable auto-sync or call `Model.sync_schema()` explicitly in a writable mode."
         )
     if mode == "replace":
@@ -316,14 +324,22 @@ class QuerySet(Generic[TModel]):
 
         conn = runtime.get_dbapi_connection()
         cursor = conn.cursor()
-        cursor.execute(sql, params)
+        try:
+            cursor.execute(sql, params)
 
-        results = []
-        for row in cursor:
-            row_id = row[0]
-            obj = self.model_cls.get(str(row_id))
-            if obj is not None:
-                results.append(obj)
+            results = []
+            for row in cursor:
+                row_id = row[0]
+                obj = self.model_cls.get(str(row_id))
+                if obj is not None:
+                    results.append(obj)
+        finally:
+            close = getattr(cursor, "close", None)
+            if callable(close):
+                close()
+            close = getattr(conn, "close", None)
+            if callable(close):
+                close()
 
         return results
 
@@ -378,7 +394,11 @@ def save_model(instance: TModel) -> None:
             for field_name, declared_type in cls._scalar_coerce_fields:
                 val = inst_dict.get(field_name)
                 if val is not None:
-                    runtime.inject_iris_value(iris_obj, field_name, coerce_value_for_save(declared_type, val))
+                    runtime.inject_iris_value(
+                        iris_obj,
+                        field_name,
+                        coerce_value_for_save(declared_type, val),
+                    )
 
         # Complex fields: collections, related models, readonly.
         if cls._complex_save_fields:
@@ -389,7 +409,12 @@ def save_model(instance: TModel) -> None:
                 if val is None:
                     continue
                 materialized = _materialize_related_value(runtime, model_field.declared_type, val)
-                runtime.inject_iris_value(iris_obj, field_name, materialized, field_meta=model_field.field_info)
+                runtime.inject_iris_value(
+                    iris_obj,
+                    field_name,
+                    materialized,
+                    field_meta=model_field.field_info,
+                )
 
     st = runtime.save_object(iris_obj)
 

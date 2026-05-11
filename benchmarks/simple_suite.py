@@ -15,9 +15,9 @@ import iris
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from iris_orm import Field, Model, configure
-from iris_orm.query import _resolve_sql_table_name
-from iris_orm.runtime import get_runtime
+from iris_persistence import Field, Model, configure
+from iris_persistence.query import _resolve_sql_table_name
+from iris_persistence.runtime import get_runtime
 
 BENCHMARK_ROOT = Path(__file__).parent
 OBJECTSCRIPT_CLS_ROOT = BENCHMARK_ROOT / "objectscript" / "cls"
@@ -406,14 +406,14 @@ def _run_with_remote(fn: Callable[[], BenchmarkRun]) -> BenchmarkRun:
 
 def _print_summary(runs: list[BenchmarkRun]) -> None:
     print(
-        f"{'mode':<14} {'runs':>4} {'rows':>6} {'write(s)':>11} "
+        f"{'mode':<22} {'runs':>4} {'rows':>6} {'write(s)':>11} "
         f"{'read(s)':>11} {'fetch_all(s)':>14} {'write r/s':>11} "
         f"{'read r/s':>10} {'fetch r/s':>10}"
     )
     for mode in (
-        "embedded_orm",
+        "embedded_persistence",
         "embedded_dbapi",
-        "remote_orm",
+        "remote_persistence",
         "remote_dbapi",
         "objectscript",
     ):
@@ -425,7 +425,7 @@ def _print_summary(runs: list[BenchmarkRun]) -> None:
         fetch_avg = statistics.mean(run.fetch_all_seconds for run in mode_runs)
         rows = mode_runs[0].rows
         print(
-            f"{mode:<14} {len(mode_runs):>4} {rows:>6} "
+            f"{mode:<22} {len(mode_runs):>4} {rows:>6} "
             f"{write_avg:>11.4f} {read_avg:>11.4f} {fetch_avg:>14.4f} "
             f"{rows / write_avg:>11.1f} {rows / read_avg:>10.1f} {rows / fetch_avg:>10.1f}"
         )
@@ -434,7 +434,7 @@ def _print_summary(runs: list[BenchmarkRun]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Benchmark the same IRIS class via embedded iris_orm, remote iris_orm, "
+            "Benchmark the same IRIS class via embedded iris_persistence, remote iris_persistence, "
             "and pure ObjectScript."
         )
     )
@@ -471,7 +471,7 @@ def main() -> None:
             ),
             lambda iteration=iteration: _run_with_embedded(
                 lambda: _run_python_benchmark(
-                    mode="embedded_orm",
+                    mode="embedded_persistence",
                     rows=args.rows,
                     iteration=iteration,
                 )
@@ -485,7 +485,7 @@ def main() -> None:
             ),
             lambda iteration=iteration: _run_with_remote(
                 lambda: _run_python_benchmark(
-                    mode="remote_orm",
+                    mode="remote_persistence",
                     rows=args.rows,
                     iteration=iteration,
                 )

@@ -305,10 +305,24 @@ configure_default_runtime(runtime=adapter)
 Run unit tests only:
 
 ```bash
-.venv/bin/pytest -m "not integration"
+./scripts/test-unit.sh
 ```
 
-Run the live IRIS round-trip coverage:
+Run the live IRIS round-trip coverage inside Docker:
+
+```bash
+./scripts/test-docker.sh
+```
+
+The Docker E2E runner uses `docker-compose-test.yml` and defaults to
+`containers.intersystems.com/intersystems/iris-community:latest-cd`.
+Override the image tag when needed:
+
+```bash
+IRIS_IMAGE_TAG=latest-preview ./scripts/test-docker.sh
+```
+
+You can still run integration tests directly against a configured local IRIS runtime:
 
 ```bash
 .venv/bin/pytest -m integration

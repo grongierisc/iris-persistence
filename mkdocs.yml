@@ -1,0 +1,7 @@
+site_name: iris-persistence
+repo_url: https://github.com/grongierisc/iris-persistence
+docs_dir: docs
+
+nav:
+  - Home: README.md
+  - Advanced Schema Mapping: advanced_schema_mapping.md

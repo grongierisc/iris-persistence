@@ -1,0 +1,89 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  repository_dispatch:
+    types: [test workflow]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Unit (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.11"
+          - "3.12"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test]" ruff
+
+      - name: Run unit tests
+        run: |
+          ./scripts/test-unit.sh --junit-xml=test-results-unit-${{ matrix.python-version }}.xml
+
+      - name: Surface failing unit tests
+        if: always()
+        uses: pmeier/pytest-results-action@main
+        with:
+          path: test-results-unit-${{ matrix.python-version }}.xml
+          summary: true
+          display-options: fEX
+          fail-on-empty: false
+          title: Unit test results (${{ matrix.python-version }})
+
+  e2e:
+    name: E2E (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - latest-em
+          - latest-cd
+          - latest-preview
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Docker E2E tests
+        env:
+          IRIS_IMAGE_TAG: ${{ matrix.image }}
+        run: |
+          ./scripts/test-docker.sh --junit-xml=/tmp/test-results.xml
+
+      - name: Find IRIS container
+        if: always()
+        id: iris-container
+        run: |
+          echo "id=$(docker compose -f docker-compose-test.yml ps -q iris)" >> "$GITHUB_OUTPUT"
+
+      - name: Copy E2E test results
+        if: always()
+        run: |
+          docker cp "${{ steps.iris-container.outputs.id }}:/tmp/test-results.xml" test-results-e2e-${{ matrix.image }}.xml || true
+
+      - name: Surface failing E2E tests
+        if: always()
+        uses: pmeier/pytest-results-action@main
+        with:
+          path: test-results-e2e-${{ matrix.image }}.xml
+          summary: true
+          display-options: fEX
+          fail-on-empty: false
+          title: E2E test results (${{ matrix.image }})

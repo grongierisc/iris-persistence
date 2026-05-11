@@ -16,16 +16,16 @@ from typing import (
     get_type_hints,
 )
 
-from iris_orm.codecs import resolve_declared_type
-from iris_orm.types import ClassMetadata
-from iris_orm.types import Field
-from iris_orm.types import FieldInfo, Index, ModelField, UNSET
+from iris_persistence.codecs import resolve_declared_type
+from iris_persistence.types import ClassMetadata
+from iris_persistence.types import Field
+from iris_persistence.types import FieldInfo, Index, ModelField, UNSET
 
 # Types that need no coercion before being passed to set_property.
 _PRIMITIVE_TYPES: frozenset[type] = frozenset({str, int, float, bool})
 
 if TYPE_CHECKING:
-    from iris_orm.query import QuerySet
+    from iris_persistence.query import QuerySet
 
 T = TypeVar("T", bound="Model")
 
@@ -135,7 +135,7 @@ def _build_model_field(
             or not field_info.required
         )
 
-    from iris_orm.query import (
+    from iris_persistence.query import (
         _is_model_type,
         _is_percent_list_field,
         _is_scalar_string_field,
@@ -304,7 +304,7 @@ def _build_fast_load(model_cls: Any, model_fields: Dict[str, ModelField], is_ser
 
     lines.append("    return instance")
     source = "\n".join(lines)
-    from iris_orm.runtime import get_runtime as _get_runtime_fn
+    from iris_persistence.runtime import get_runtime as _get_runtime_fn
     namespace: dict[str, Any] = {
         "_model_cls": model_cls,
         "_get_runtime": _get_runtime_fn,
@@ -613,7 +613,7 @@ def _build_fast_load(model_cls: Any, model_fields: Dict[str, ModelField], is_ser
 
     lines.append("    return instance")
     source = "\n".join(lines)
-    from iris_orm.runtime import get_runtime as _get_runtime_fn
+    from iris_persistence.runtime import get_runtime as _get_runtime_fn
     namespace: dict[str, Any] = {
         "_model_cls": model_cls,
         "_get_runtime": _get_runtime_fn,
@@ -1029,14 +1029,14 @@ class Model(metaclass=ModelMeta):
         return self._pk
 
     def save(self) -> None:
-        from iris_orm.query import save_model
+        from iris_persistence.query import save_model
 
         save_model(self)
 
     @classmethod
     def sync_schema(cls, *, dry_run: bool = False):
-        from iris_orm.schema import diff_schema as schema_diff
-        from iris_orm.schema import sync_schema as schema_sync
+        from iris_persistence.schema import diff_schema as schema_diff
+        from iris_persistence.schema import sync_schema as schema_sync
 
         if dry_run:
             return schema_diff(cls)
@@ -1045,25 +1045,25 @@ class Model(metaclass=ModelMeta):
 
     @classmethod
     def diff_schema(cls):
-        from iris_orm.schema import diff_schema as schema_diff
+        from iris_persistence.schema import diff_schema as schema_diff
 
         return schema_diff(cls)
 
     @classmethod
     def get(cls: Type[T], pk: str) -> Optional[T]:
-        from iris_orm.query import get_model
+        from iris_persistence.query import get_model
 
         return get_model(cls, pk)
 
     @classmethod
     def all(cls: Type[T]) -> List[T]:
-        from iris_orm.query import QuerySet
+        from iris_persistence.query import QuerySet
 
         return QuerySet(cls).all()
 
     @classmethod
     def where(cls: Type[T], **kwargs) -> "QuerySet[T]":
-        from iris_orm.query import QuerySet
+        from iris_persistence.query import QuerySet
 
         return QuerySet(cls).where(**kwargs)
 
@@ -1073,6 +1073,3 @@ class Model(metaclass=ModelMeta):
                 _validate_field_value(model_field, getattr(self, name))
             elif model_field.required:
                 raise ValueError(f"Field '{name}' is required")
-
-
-IRISModel = Model

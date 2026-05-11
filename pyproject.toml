@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "iris_orm"
+name = "iris-persistence"
 version = "0.1.0"
-description = "A small mapper for InterSystems IRIS with a Python-first model class"
+description = "Python object persistence for InterSystems IRIS, inspired by %Persistent"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
@@ -23,7 +23,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["iris_orm"]
+packages = ["iris_persistence"]
 
 [tool.pytest.ini_options]
 markers = [
@@ -39,7 +39,7 @@ select = ["E", "F", "I"]
 
 [tool.mypy]
 python_version = "3.9"
-packages = ["iris_orm"]
+packages = ["iris_persistence"]
 warn_unused_configs = true
 check_untyped_defs = true
 no_implicit_optional = true

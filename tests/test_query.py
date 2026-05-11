@@ -1,7 +1,7 @@
-import iris_orm.runtime as runtime_module
-from iris_orm.models import Model
-from iris_orm.query import _build_model_from_iris_obj, _resolve_sql_table_name, save_model
-from iris_orm.runtime import configure_default_runtime
+import iris_persistence.runtime as runtime_module
+from iris_persistence.models import Model
+from iris_persistence.query import _build_model_from_iris_obj, _resolve_sql_table_name, save_model
+from iris_persistence.runtime import configure_default_runtime
 
 
 class _CursorBoundRow:

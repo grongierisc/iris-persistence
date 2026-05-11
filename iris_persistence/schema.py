@@ -5,9 +5,9 @@ from dataclasses import dataclass
 from difflib import unified_diff
 from typing import Any, Type, get_args, get_origin, get_type_hints
 
-import iris_orm.models
-from iris_orm.runtime import get_runtime
-from iris_orm.types import FieldInfo, UNSET
+import iris_persistence.models
+from iris_persistence.runtime import get_runtime
+from iris_persistence.types import FieldInfo, UNSET
 
 
 CLASS_METADATA_KEYS = (
@@ -506,7 +506,7 @@ def _map_python_type_to_iris(py_type: Any, field_meta: FieldInfo) -> str:
         return "%Library.Date"
     if str(py_type) == "<class 'datetime.time'>":
         return "%Library.Time"
-    if isinstance(py_type, type) and issubclass(py_type, iris_orm.models.Model):
+    if isinstance(py_type, type) and issubclass(py_type, iris_persistence.models.Model):
         return py_type._classname
 
     return "%Library.String"
@@ -646,7 +646,7 @@ def _sync_related_models(
         resolved = _resolve_model_type(model_field.declared_type)
         if (
             isinstance(resolved, type)
-            and issubclass(resolved, iris_orm.models.Model)
+            and issubclass(resolved, iris_persistence.models.Model)
             and resolved is not model_cls
         ):
             sync_schema(resolved, seen)

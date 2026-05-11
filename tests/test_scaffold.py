@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-import iris_orm.scaffold as scaffold_module
+import iris_persistence.scaffold as scaffold_module
 
 
 def _load_module(module_path: Path):
@@ -634,7 +634,7 @@ def test_scaffold_reads_class_metadata(monkeypatch, tmp_path: Path):
     assert result.warnings == []
     module_path = Path(result.files[0])
     generated_text = module_path.read_text(encoding="utf-8")
-    assert "from iris_orm import ClassMetadata, Field, Model" in generated_text
+    assert "from iris_persistence import ClassMetadata, Field, Model" in generated_text
     assert "metadata = ClassMetadata(" in generated_text
     assert 'description="scaffolded class metadata"' in generated_text
     assert "deprecated=True" in generated_text

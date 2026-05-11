@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from iris_orm import Model
+from iris_persistence import Model
 
 from examples.demo.support import configure_demo_runtime, maybe_sync_schema
 
@@ -26,7 +26,7 @@ def run_demo(*, backend: str | None = None) -> dict[str, Any]:
     runtime_backend = configure_demo_runtime(backend)
     maybe_sync_schema(HelloRecord, backend=runtime_backend)
 
-    row = HelloRecord(Message="Hello from iris_orm")
+    row = HelloRecord(Message="Hello from iris_persistence")
     row.save()
 
     loaded = HelloRecord.get(row.pk)
@@ -46,7 +46,7 @@ def main() -> None:
     print(f"Backend: {result['backend']}")
     print(f"Saved HelloRecord with pk={result['saved_pk']}")
     print(f"Loaded row: {result['loaded']}")
-    print(f"Total rows visible through ORM: {len(result['all_rows'])}")
+    print(f"Total rows visible through persistence layer: {len(result['all_rows'])}")
 
 
 if __name__ == "__main__":

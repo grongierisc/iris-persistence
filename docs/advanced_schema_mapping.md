@@ -1,9 +1,9 @@
 # Advanced Schema Mapping
 
-This document maps `iris_orm`'s Python model metadata to the IRIS class dictionary,
+This document maps `iris_persistence`'s Python model metadata to the IRIS class dictionary,
 SQL projection, and physical storage metadata.
 
-`iris_orm` works across three layers:
+`iris_persistence` works across three layers:
 
 - Python model definition: `Model`, `Field(...)`, `Index(...)`, `StorageDefinition(...)`
 - IRIS class metadata: `%Dictionary.*Definition` and `%Dictionary.Compiled*`
@@ -11,7 +11,7 @@ SQL projection, and physical storage metadata.
 
 ## Mental Model
 
-`iris_orm` does not generate standalone SQL DDL directly.
+`iris_persistence` does not generate standalone SQL DDL directly.
 It writes IRIS class metadata, and IRIS projects that metadata into SQL schema.
 
 In practice:
@@ -31,7 +31,7 @@ In practice:
 | Python `Meta` attribute | IRIS metadata target | SQL / runtime effect |
 | --- | --- | --- |
 | `classname` | `%Dictionary.ClassDefinition.Name` | Defines the IRIS class name; SQL table naming is derived by IRIS from the class unless separately customized in IRIS |
-| `mode` | no direct dictionary field | Controls ownership behavior in `iris_orm`: `extend`, `replace`, `observe` |
+| `mode` | no direct dictionary field | Controls ownership behavior in `iris_persistence`: `extend`, `replace`, `observe` |
 | `auto_sync` | no direct dictionary field | When `True`, `save()` runs `sync_schema()` automatically before writing, but only in non-destructive `extend` mode |
 | `superclasses` | `%Dictionary.ClassDefinition.Super` | Controls whether the class is `%Persistent`, `%SerialObject`, `Ens.Request`, etc., which changes table projection and object behavior |
 | `metadata=ClassMetadata(...)` | `%Dictionary.ClassDefinition` scalar flags | Class-level descriptive, compiler-facing, and SQL projection metadata |
@@ -101,7 +101,7 @@ class Demo(Model, persistent=True):
 
 Notes:
 
-- `ClassMetadata` is optional; if absent, `iris_orm` leaves those class-level flags alone in `extend` mode.
+- `ClassMetadata` is optional; if absent, `iris_persistence` leaves those class-level flags alone in `extend` mode.
 - The scaffold only emits non-default class metadata fields.
 - `replace` mode clears omitted class metadata naturally because the class is recreated.
 - `Internal` and `SqlViewName` are intentionally not modeled yet because they are exposed by compiled metadata but are not writable reliably through `%Dictionary.ClassDefinition` in this environment.
@@ -161,7 +161,7 @@ Field metadata is written to `%Dictionary.PropertyDefinition` and then projected
 Notes:
 
 - `Field.default` is written as an IRIS initial expression.
-- `Field.sql_type` remains a backward-compatible alias for `Field.iris_type`.
+- `Field.sql_type` is accepted as an alias for `Field.iris_type`.
 - `Field.storable` defaults to `True`; the scaffold only emits `storable=False` when IRIS marks the property as non-storable.
 - The scaffold only emits non-default field flags, so `identity=False`, `transient=False`, and `multi_dimensional=False` are omitted.
 - SQL-projection field metadata is scaffolded only when the compiled property exposes non-empty values for it.
@@ -434,7 +434,7 @@ This opt-in adds:
 
 ## SQL Projection Notes
 
-Important caveats when reading `iris_orm` metadata as SQL schema:
+Important caveats when reading `iris_persistence` metadata as SQL schema:
 
 - `classname` is not a raw SQL table name override by itself.
   IRIS derives SQL projection from the class definition and superclass behavior.
@@ -456,5 +456,5 @@ The current codebase round-trips:
 - SQL map parent metadata
 - SQL map data, row-id specs, subscripts, access vars, and invalid conditions
 
-Anything outside these public dataclasses is still IRIS-only metadata and will not round-trip through `iris_orm`
+Anything outside these public dataclasses is still IRIS-only metadata and will not round-trip through `iris_persistence`
 unless a corresponding Python type is added first.

@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from iris_orm import ClassMetadata, Field, Index, Model, StorageData, StorageDefinition
+from iris_persistence import ClassMetadata, Field, Index, Model, StorageData, StorageDefinition
 
 from examples.demo.support import configure_demo_runtime, maybe_sync_schema, unique_suffix
 

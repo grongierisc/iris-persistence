@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from iris_orm import Field, Model
+from iris_persistence import Field, Model
 from tests.fixtures.objectscript.python.recursive_address_fixture import SourceRecursiveAddress
 from tests.fixtures.objectscript.python.recursive_child_fixture import SourceRecursiveChild
 

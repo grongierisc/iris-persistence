@@ -2,18 +2,18 @@ from __future__ import annotations
 
 from typing import Any, Dict, Generic, List, Optional, Type, TypeVar, get_args, get_origin
 
-import iris_orm.models
-from iris_orm.codecs import coerce_value_for_load, coerce_value_for_save, resolve_declared_type
-from iris_orm.runtime import get_runtime
+import iris_persistence.models
+from iris_persistence.codecs import coerce_value_for_load, coerce_value_for_save, resolve_declared_type
+from iris_persistence.runtime import get_runtime
 
-TModel = TypeVar("TModel", bound="iris_orm.models.Model")
+TModel = TypeVar("TModel", bound="iris_persistence.models.Model")
 
 
 def _is_model_type(value: Any) -> bool:
-    return isinstance(value, type) and issubclass(value, iris_orm.models.Model)
+    return isinstance(value, type) and issubclass(value, iris_persistence.models.Model)
 
 
-def _is_serial_type(model_cls: Type[iris_orm.models.Model]) -> bool:
+def _is_serial_type(model_cls: Type[iris_persistence.models.Model]) -> bool:
     superclasses = getattr(model_cls, "_superclasses", "") or ""
     return "SerialObject" in superclasses
 
@@ -345,12 +345,14 @@ def save_model(instance: TModel) -> None:
     if is_update:
         iris_obj = runtime.get_object(classname, instance._pk)
     else:
-        # Hot path: use cached _New bound method to skip call_classmethod → _cls chain.
+        # Hot path for real IRIS adapters; test adapters only need the public contract.
         _new_fn = cls._fast_new
         if _new_fn is None:
-            _new_fn = runtime._cls(classname)._New
-            cls._fast_new = _new_fn
-        iris_obj = _new_fn()
+            cls_factory = getattr(runtime, "_cls", None)
+            if cls_factory is not None:
+                _new_fn = cls_factory(classname)._New
+                cls._fast_new = _new_fn
+        iris_obj = _new_fn() if _new_fn is not None else runtime.create_object(classname)
     instance._iris_obj = iris_obj
 
     inst_dict = instance.__dict__

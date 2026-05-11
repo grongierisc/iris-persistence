@@ -124,13 +124,13 @@ def get_runtime() -> RuntimeAdapter:
             else:
                 _active_runtime = EmbeddedAdapter()
         except ImportError:
-            raise RuntimeError("iris_orm not configured and `iris` module is unavailable.")
+            raise RuntimeError("iris_persistence not configured and `iris` module is unavailable.")
     return _active_runtime
 
 
 def _reset_model_runtime_caches() -> None:
     try:
-        import iris_orm.models as models
+        import iris_persistence.models as models
     except Exception:
         return
 

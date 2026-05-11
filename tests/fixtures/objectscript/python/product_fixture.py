@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from iris_orm import Field, Model, StorageDefinition, StorageProperty
+from iris_persistence import Field, Model, StorageDefinition, StorageProperty
 
 
 class DemoProductFixture(Model, persistent=True):

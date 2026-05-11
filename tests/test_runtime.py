@@ -3,10 +3,10 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
-from iris_orm import Field
-from iris_orm import Model
-from iris_orm.runtime import configure_default_runtime
-from iris_orm.runtime import NativeProxyAdapter
+from iris_persistence import Field
+from iris_persistence import Model
+from iris_persistence.runtime import configure_default_runtime
+from iris_persistence.runtime import NativeProxyAdapter
 
 
 class TestNativeProxyAdapter(unittest.TestCase):

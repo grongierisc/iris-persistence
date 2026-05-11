@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from iris_orm import (
+from iris_persistence import (
     ClassMetadata,
     Field,
     Index,

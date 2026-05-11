@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from iris_orm import Field, Model
+from iris_persistence import Field, Model
 
 
 class ListFixtureItem(Model, serial=True):

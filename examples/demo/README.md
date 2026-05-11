@@ -1,6 +1,6 @@
 # Demo Walkthrough
 
-This folder contains a progressive set of `iris_orm` demos, starting with a single-field `Model` and ending with a live IRIS scaffold round-trip.
+This folder contains a progressive set of `iris_persistence` demos, starting with a single-field `Model` and ending with a live IRIS scaffold round-trip.
 
 ## Run Order
 
@@ -23,7 +23,7 @@ This folder contains a progressive set of `iris_orm` demos, starting with a sing
 The demos default to `IRIS_DEMO_BACKEND=auto`:
 
 - if `iris` is available, they try embedded IRIS first
-- if IRIS is unavailable, they fall back to `iris_orm.testing.FakeAdapter`
+- if IRIS is unavailable, they fall back to `iris_persistence.testing.FakeAdapter`
 
 You can override that explicitly:
 

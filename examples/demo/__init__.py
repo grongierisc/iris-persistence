@@ -1,1 +1,1 @@
-"""Progressive demos for iris_orm."""
+"""Progressive demos for iris_persistence."""

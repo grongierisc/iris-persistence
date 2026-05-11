@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from iris_orm import Field, Model
+from iris_persistence import Field, Model
 
 
 class SourceSerialFixture(Model, serial=True):

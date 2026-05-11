@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from iris_orm import Field, Model
+from iris_persistence import Field, Model
 
 
 class DemoFixture(Model, persistent=True):

@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-import iris_orm
-from iris_orm import scaffold_from_iris
+import iris_persistence
+from iris_persistence import scaffold_from_iris
 from tests.fixtures.python.full_circle_fixture import FullCircleFixture
 from tests.fixtures.python.round_trip_fixtures import (
     ClassMetadataRoundTripFixture,

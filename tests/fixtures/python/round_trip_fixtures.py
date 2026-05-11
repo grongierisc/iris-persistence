@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from iris_orm import ClassMetadata, Field, Model
+from iris_persistence import ClassMetadata, Field, Model
 
 
 class ClassMetadataRoundTripFixture(Model, persistent=True):

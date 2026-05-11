@@ -7,6 +7,6 @@ iris-main.log
 .venv-iris
 waitISC.log
 
-.iris_orm
+.iris_persistence
 generated_models
 .other

@@ -1,5 +1,5 @@
 """
-Types and definitions for iris_orm schema layout.
+Types and definitions for iris_persistence schema layout.
 """
 
 from __future__ import annotations

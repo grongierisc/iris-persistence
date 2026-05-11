@@ -1,6 +1,6 @@
-import iris_orm.schema as schema_module
-from iris_orm import Field
-from iris_orm.schema import _map_python_type_to_iris
+import iris_persistence.schema as schema_module
+from iris_persistence import Field
+from iris_persistence.schema import _map_python_type_to_iris
 from tests.fixtures.python.schema_mapping_fixtures import (
     ClassMetadataFixture,
     ExtendIndexFixture,

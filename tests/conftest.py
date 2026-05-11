@@ -34,7 +34,7 @@ def pytest_generate_tests(metafunc):
 @pytest.fixture
 def configured_iris_runtime(request):
     import iris
-    import iris_orm
+    import iris_persistence
 
     backend = getattr(request, "param", "embedded")
     if backend == "remote":
@@ -59,7 +59,7 @@ def configured_iris_runtime(request):
                 "remote IRIS backend requires env vars: " + ", ".join(missing)
             )
         connection = iris.connect(host, int(port), namespace, username, password)
-        iris_orm.configure(connection)
+        iris_persistence.configure(connection)
         try:
             yield "remote"
         finally:
@@ -67,10 +67,10 @@ def configured_iris_runtime(request):
             if callable(close):
                 close()
             try:
-                iris_orm.configure()
+                iris_persistence.configure()
             except Exception:
                 pass
         return
 
-    iris_orm.configure()
+    iris_persistence.configure()
     yield "embedded"

@@ -1,6 +1,6 @@
 from typing import Any, Dict
 
-from iris_orm.runtime import RuntimeAdapter
+from iris_persistence.runtime import RuntimeAdapter
 
 
 class FakeAdapter(RuntimeAdapter):

@@ -3,9 +3,9 @@ from typing import Annotated, Optional
 
 import pytest
 
-from iris_orm import ClassMetadata, Field, Index, Model
-from iris_orm.runtime import configure_default_runtime
-from iris_orm.testing import FakeAdapter
+from iris_persistence import ClassMetadata, Field, Index, Model
+from iris_persistence.runtime import configure_default_runtime
+from iris_persistence.testing import FakeAdapter
 from tests.fixtures.python.model_behavior_fixtures import (
     AutoSyncModel,
     ClassMetadataModel,

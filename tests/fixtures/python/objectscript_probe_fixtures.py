@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from iris_orm import Model
+from iris_persistence import Model
 
 
 class DemoProductProbe(Model):

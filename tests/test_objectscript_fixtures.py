@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-import iris_orm
-from iris_orm import scaffold_from_iris
-from iris_orm.runtime import get_runtime
+import iris_persistence
+from iris_persistence import scaffold_from_iris
+from iris_persistence.runtime import get_runtime
 from tests.fixture_support import (
     OBJECTSCRIPT_CLS_FIXTURES,
     OBJECTSCRIPT_FIXTURES,
@@ -139,8 +139,8 @@ def test_objectscript_fixture_scaffold_e2e(loaded_objectscript_fixtures, tmp_pat
             value
             for value in module.__dict__.values()
             if isinstance(value, type)
-            and issubclass(value, iris_orm.IRISModel)
-            and value is not iris_orm.IRISModel
+            and issubclass(value, iris_persistence.Model)
+            and value is not iris_persistence.Model
         )
         modules_by_class[generated_class._classname] = generated_class
 
@@ -382,7 +382,7 @@ def test_list_fixture_scaffold_round_trip(loaded_objectscript_fixtures, tmp_path
 def test_objectscript_storage_property_selectivity_scaffold(
     loaded_objectscript_fixtures, tmp_path: Path
 ):
-    from iris_orm.runtime import get_runtime
+    from iris_persistence.runtime import get_runtime
 
     persistent_fixture = next(
         fixture for fixture in loaded_objectscript_fixtures if fixture.name == "persistent_fixture"
@@ -442,7 +442,7 @@ def test_scaffold_selectivity_option_for_demo_demo(
     loaded_demo_namespace_fixtures,
     tmp_path: Path,
 ):
-    from iris_orm.runtime import get_runtime
+    from iris_persistence.runtime import get_runtime
 
     runtime = get_runtime()
     conn = runtime.get_dbapi_connection()
@@ -488,7 +488,7 @@ def test_scaffold_storage_statistics_for_demo_product(
     loaded_demo_namespace_fixtures,
     tmp_path: Path,
 ):
-    from iris_orm.runtime import get_runtime
+    from iris_persistence.runtime import get_runtime
 
     runtime = get_runtime()
     conn = runtime.get_dbapi_connection()
@@ -534,7 +534,7 @@ def test_scaffold_storage_statistics_for_demo_product(
 def test_healthshare_request_scaffold_handles_initial_expression_and_related_request(
     tmp_path: Path,
 ):
-    from iris_orm.runtime import get_runtime
+    from iris_persistence.runtime import get_runtime
 
     runtime = get_runtime()
     exists = runtime.call_classmethod(

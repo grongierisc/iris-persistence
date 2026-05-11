@@ -13,9 +13,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import iris_orm
-from iris_orm.runtime import configure_default_runtime
-from iris_orm.testing import FakeAdapter
+import iris_persistence
+from iris_persistence.runtime import configure_default_runtime
+from iris_persistence.testing import FakeAdapter
 
 
 def configure_demo_runtime(backend: str | None = None) -> str:
@@ -38,7 +38,7 @@ def configure_demo_runtime(backend: str | None = None) -> str:
                 "Remote demos require IRISUSERNAME and IRISPASSWORD in the environment."
             )
         connection = iris.connect(host, port, namespace, username, password)
-        iris_orm.configure(connection)
+        iris_persistence.configure(connection)
         return "remote"
 
     if selected not in {"auto", "embedded"}:
@@ -47,7 +47,7 @@ def configure_demo_runtime(backend: str | None = None) -> str:
         )
 
     try:
-        iris_orm.configure()
+        iris_persistence.configure()
         import iris
 
         return str(getattr(iris.runtime, "mode", "embedded"))

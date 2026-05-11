@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import re
 
-from iris_orm.runtime import configure_default_runtime
-from iris_orm.testing import FakeAdapter
+from iris_persistence.runtime import configure_default_runtime
+from iris_persistence.testing import FakeAdapter
 from tests.fixtures.python.demo_fixture import make_demo_toto, run_demo_fixture
 
 

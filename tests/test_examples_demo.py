@@ -31,7 +31,7 @@ def test_progressive_examples_run_with_fake_backend():
     advanced_result = advanced.run_demo(backend="fake")
 
     assert minimal_result["backend"] == "fake"
-    assert minimal_result["loaded"].Message == "Hello from iris_orm"
+    assert minimal_result["loaded"].Message == "Hello from iris_persistence"
     assert len(minimal_result["all_rows"]) == 1
 
     assert basic_result["backend"] == "fake"

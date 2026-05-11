@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-import iris_orm
-from iris_orm.runtime import configure_default_runtime, get_runtime
-from iris_orm.testing import FakeAdapter
+import iris_persistence
+from iris_persistence.runtime import configure_default_runtime, get_runtime
+from iris_persistence.testing import FakeAdapter
 from tests.fixtures.python.demo_list_models import DemoListFixture, DemoListFixtureItem
 
 
@@ -14,7 +14,7 @@ def configure_fixture_runtime(*, backend: str = "auto") -> str:
         return "fake"
 
     try:
-        iris_orm.configure()
+        iris_persistence.configure()
         get_runtime().get_dbapi_connection()
         return "iris"
     except Exception:

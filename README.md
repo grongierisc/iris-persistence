@@ -1,6 +1,6 @@
-# iris_orm
+# iris_persistence
 
-`iris_orm` is a small mapper for InterSystems IRIS with a Python-first model class, brownfield scaffolding, and typed storage metadata.
+`iris_persistence` is a Python object persistence layer for InterSystems IRIS, inspired by `%Persistent`. It provides a Python-first model class, brownfield scaffolding, and typed storage metadata using IRIS APIs rather than SQL as its persistence model.
 
 ## What This Version Supports
 
@@ -13,7 +13,7 @@
 - scaffold from live IRIS
 - recursive references between `%Persistent` and `%SerialObject` models
 - typed `StorageDefinition` metadata
-- `iris_orm.testing.FakeAdapter` for unit tests
+- `iris_persistence.testing.FakeAdapter` for unit tests
 - structured scaffold warnings/results for partial metadata extraction
 
 ## Quick Start
@@ -23,16 +23,16 @@ from __future__ import annotations
 
 from typing import Annotated
 
-import iris_orm
-from iris_orm import Field, Model
+import iris_persistence
+from iris_persistence import Field, Model
 
 # Embedded Python (running inside IRIS) — no argument needed.
-iris_orm.configure()
+iris_persistence.configure()
 
 # Remote connection — pass the iris native-API object.
 # import iris
 # conn = iris.connect(host, port, ns, user, pw)
-# iris_orm.configure(conn)
+# iris_persistence.configure(conn)
 
 
 class Product(Model, persistent=True):
@@ -54,11 +54,11 @@ rows = Product.where(name="Widget").order_by("name").all()
 
 ## Model Definition
 
-Fields can be declared either SQLModel-style or with `Annotated` metadata:
+Fields can be declared either with `Field(...)` defaults or with `Annotated` metadata:
 
 ```python
 from typing import Annotated
-from iris_orm import Field, Model
+from iris_persistence import Field, Model
 
 
 class Article(Model, persistent=True):
@@ -89,10 +89,8 @@ class Meta:
     parameters = {"DEFAULTGLOBAL": "^Demo.ArticleD"}
 ```
 
-`IRISModel` still exists as a compatibility alias, but new code should prefer `Model`.
-
 `Meta.parameters` is written into IRIS class parameters during `sync_schema()`.
-When scaffolding with `extract_meta=True`, `iris_orm` reads parameters from
+When scaffolding with `extract_meta=True`, `iris_persistence` reads parameters from
 `%Dictionary.CompiledParameter` and falls back to the live
 `%Dictionary.ClassDefinition.Parameters` collection if the SQL dictionary view is empty.
 
@@ -156,7 +154,7 @@ Behavior:
 Storage uses typed dataclasses instead of raw nested dicts.
 
 ```python
-from iris_orm import StorageData, StorageDefinition, StorageProperty, StorageSQLMap
+from iris_persistence import StorageData, StorageDefinition, StorageProperty, StorageSQLMap
 
 
 class Product(Model, persistent=True):
@@ -185,11 +183,11 @@ class Product(Model, persistent=True):
         )
 ```
 
-Plain dicts are still accepted for backward compatibility, but `StorageDefinition(...)` is the intended API.
+Plain dicts are accepted, but `StorageDefinition(...)` is the intended API.
 
 ## Related Objects
 
-`iris_orm` supports nested model references:
+`iris_persistence` supports nested model references:
 
 - `%Persistent` models can reference other `%Persistent` models
 - `%Persistent` models can embed `%SerialObject` models
@@ -198,7 +196,7 @@ Plain dicts are still accepted for backward compatibility, but `StorageDefinitio
 
 ```python
 from typing import Annotated
-from iris_orm import Field, Model
+from iris_persistence import Field, Model
 
 
 class Address(Model, serial=True):
@@ -229,26 +227,26 @@ class Order(Model, persistent=True):
 
 ## Runtime Configuration
 
-`iris_orm` uses the `iris` module (from InterSystems) as its single unified runtime for both embedded and remote access.
+`iris_persistence` uses the `iris` module (from InterSystems) as its single unified runtime for both embedded and remote access.
 
 **Embedded Python** (running inside IRIS — no argument needed):
 
 ```python
-import iris_orm
-iris_orm.configure()
+import iris_persistence
+iris_persistence.configure()
 ```
 
 **Remote** (running externally via the Native API):
 
 ```python
 import iris
-import iris_orm
+import iris_persistence
 
 conn = iris.connect(host, port, namespace, user, password)
-iris_orm.configure(conn)
+iris_persistence.configure(conn)
 ```
 
-If `configure()` is never called, `iris_orm` falls back to the embedded runtime automatically on first use.
+If `configure()` is never called, `iris_persistence` falls back to the embedded runtime automatically on first use.
 
 ## Testing
 
@@ -256,8 +254,8 @@ If `configure()` is never called, `iris_orm` falls back to the embedded runtime 
 It is intentionally limited to CRUD/query tests and does not emulate `%Dictionary` or schema compilation.
 
 ```python
-from iris_orm.testing import FakeAdapter, preload_schema
-from iris_orm.runtime import configure_default_runtime
+from iris_persistence.testing import FakeAdapter, preload_schema
+from iris_persistence.runtime import configure_default_runtime
 
 adapter = FakeAdapter()
 configure_default_runtime(runtime=adapter)
@@ -292,7 +290,7 @@ That fixture set covers:
 Generate typed models from live IRIS:
 
 ```python
-from iris_orm import ScaffoldResult, scaffold_from_iris
+from iris_persistence import ScaffoldResult, scaffold_from_iris
 
 scaffold_from_iris("Demo.*", "./generated_models")
 
@@ -310,7 +308,7 @@ for warning in result.warnings:
 Generate from exported `.cls` files:
 
 ```python
-from iris_orm import scaffold_from_cls
+from iris_persistence import scaffold_from_cls
 
 scaffold_from_cls("./cls", "./generated_models")
 ```
@@ -326,7 +324,7 @@ Scaffold rules:
 - `scaffold_selectivity=True` enriches `StorageProperty(..., selectivity=...)` from `%Dictionary.StoragePropertyDefinition`
 - `mode="extend"` preserves indexes and parameters in `Meta`
 - `return_result=True` returns generated file paths plus any metadata extraction warnings
-- generated model files are expected to import cleanly as a compatibility contract
+- generated model files are expected to import cleanly
 - include related classes in the scaffold pattern if you want generated models to reference each other with typed imports
 
 Runnable examples:
@@ -339,7 +337,6 @@ Runnable examples:
 ## Public API
 
 - `Model`
-- `IRISModel`
 - `Field`
 - `Index`
 - `StorageDefinition`
@@ -349,10 +346,10 @@ Runnable examples:
 - `configure`
 - `scaffold_from_iris`
 - `scaffold_from_cls`
-- `iris_orm.testing.FakeAdapter`
+- `iris_persistence.testing.FakeAdapter`
 
 Advanced:
 
 - `Model.sync_schema()`
-- `iris_orm.testing.preload_schema`
+- `iris_persistence.testing.preload_schema`
 - [Advanced Schema Mapping](./docs/advanced_schema_mapping.md)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime
 
-from iris_orm import Field, Model, StorageData, StorageDefinition
+from iris_persistence import Field, Model, StorageData, StorageDefinition
 
 
 class FullCircleFixture(Model, persistent=True):

@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from iris_orm.runtime import get_runtime
+from iris_persistence.runtime import get_runtime
 
 
 def _map_iris_type_to_python(iris_type: str) -> str:
@@ -1683,7 +1683,7 @@ def _render_model(
         lines.extend(["", "import datetime"])
     if typing_imports:
         lines.extend(["", f"from typing import {', '.join(sorted(typing_imports))}"])
-    lines.extend(["", f"from iris_orm import {', '.join(sorted(iris_imports))}"])
+    lines.extend(["", f"from iris_persistence import {', '.join(sorted(iris_imports))}"])
     if custom_imports:
         lines.extend(["", *custom_imports])
     lines.extend(["", model_declaration])

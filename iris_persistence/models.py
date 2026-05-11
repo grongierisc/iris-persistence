@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import keyword
+from dataclasses import fields as dataclass_fields
+from dataclasses import is_dataclass
 from inspect import Parameter, Signature
 from typing import (
     TYPE_CHECKING,
@@ -26,6 +28,7 @@ if TYPE_CHECKING:
     from iris_persistence.query import QuerySet
 
 T = TypeVar("T", bound="Model")
+TDataclass = TypeVar("TDataclass")
 
 
 class _FactoryDefault:
@@ -584,6 +587,92 @@ def _partition_read_fields(
     return read_str, read_primitive, read_bool, read_coerce, read_complex
 
 
+def _model_value_to_dict(value: Any) -> Any:
+    if isinstance(value, Model):
+        return value.to_dict()
+    if isinstance(value, list):
+        return [_model_value_to_dict(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _model_value_to_dict(item) for key, item in value.items()}
+    return value
+
+
+def _is_model_class(value: Any) -> bool:
+    return isinstance(value, type) and issubclass(value, Model)
+
+
+def _is_dataclass_type(value: Any) -> bool:
+    return isinstance(value, type) and is_dataclass(value)
+
+
+def _convert_mapping_value_to_model(value: Any, declared_type: Any) -> Any:
+    if value is None:
+        return None
+
+    resolved_type = resolve_declared_type(declared_type)
+    origin = get_origin(resolved_type)
+    if origin in (list, List) and isinstance(value, list):
+        args = get_args(resolved_type)
+        element_type = args[0] if args else Any
+        return [_convert_mapping_value_to_model(item, element_type) for item in value]
+    if origin in (dict, Dict) and isinstance(value, dict):
+        args = get_args(resolved_type)
+        value_type = args[1] if len(args) == 2 else Any
+        return {
+            key: _convert_mapping_value_to_model(item, value_type)
+            for key, item in value.items()
+        }
+    if _is_model_class(resolved_type) and isinstance(value, dict):
+        return resolved_type.from_dict(value)
+    return value
+
+
+def _convert_dataclass_value_to_model(value: Any, declared_type: Any) -> Any:
+    if value is None:
+        return None
+
+    resolved_type = resolve_declared_type(declared_type)
+    origin = get_origin(resolved_type)
+    if origin in (list, List) and isinstance(value, list):
+        args = get_args(resolved_type)
+        element_type = args[0] if args else Any
+        return [_convert_dataclass_value_to_model(item, element_type) for item in value]
+    if origin in (dict, Dict) and isinstance(value, dict):
+        args = get_args(resolved_type)
+        value_type = args[1] if len(args) == 2 else Any
+        return {
+            key: _convert_dataclass_value_to_model(item, value_type)
+            for key, item in value.items()
+        }
+    if _is_model_class(resolved_type) and is_dataclass(value) and not isinstance(value, type):
+        return resolved_type.from_dataclass(value)
+    return value
+
+
+def _convert_model_value_to_dataclass(value: Any, target_type: Any) -> Any:
+    if value is None:
+        return None
+
+    resolved_type = resolve_declared_type(target_type)
+    origin = get_origin(resolved_type)
+    if origin in (list, List) and isinstance(value, list):
+        args = get_args(resolved_type)
+        element_type = args[0] if args else Any
+        return [_convert_model_value_to_dataclass(item, element_type) for item in value]
+    if origin in (dict, Dict) and isinstance(value, dict):
+        args = get_args(resolved_type)
+        value_type = args[1] if len(args) == 2 else Any
+        return {
+            key: _convert_model_value_to_dataclass(item, value_type)
+            for key, item in value.items()
+        }
+    if isinstance(value, Model):
+        if _is_dataclass_type(resolved_type):
+            return value.to_dataclass(resolved_type)
+        return value.to_dict()
+    return value
+
+
 class ModelMeta(type):
     def __new__(mcs, name: str, bases: tuple, namespace: dict, **kwargs: Any):
         namespace_copy = dict(namespace)
@@ -751,6 +840,66 @@ class Model(metaclass=ModelMeta):
         for name, value in values.items():
             setattr(instance, name, value)
         return instance
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return declared model fields as plain Python values."""
+        values: dict[str, Any] = {}
+        for name in self.__class__.__model_fields__:
+            if hasattr(self, name):
+                values[name] = _model_value_to_dict(getattr(self, name))
+        return values
+
+    @classmethod
+    def from_dict(cls: Type[T], values: dict[str, Any]) -> T:
+        """Build a model from a mapping of declared field names to Python values."""
+        if not isinstance(values, dict):
+            raise TypeError(f"{cls.__name__}.from_dict() expects a dict")
+
+        converted: dict[str, Any] = {}
+        for name, value in values.items():
+            model_field = cls.__model_fields__.get(name)
+            if model_field is None:
+                converted[name] = value
+            else:
+                converted[name] = _convert_mapping_value_to_model(
+                    value,
+                    model_field.declared_type,
+                )
+        return cls(**converted)
+
+    def to_dataclass(self, dataclass_type: Type[TDataclass]) -> TDataclass:
+        """Build a dataclass DTO from matching model field names."""
+        if not _is_dataclass_type(dataclass_type):
+            raise TypeError("to_dataclass() expects a dataclass type")
+
+        values: dict[str, Any] = {}
+        for dataclass_field in dataclass_fields(dataclass_type):
+            if not dataclass_field.init:
+                continue
+            name = dataclass_field.name
+            if name in self.__class__.__model_fields__ and hasattr(self, name):
+                values[name] = _convert_model_value_to_dataclass(
+                    getattr(self, name),
+                    dataclass_field.type,
+                )
+        return dataclass_type(**values)
+
+    @classmethod
+    def from_dataclass(cls: Type[T], value: Any) -> T:
+        """Build a model from a dataclass DTO with matching field names."""
+        if isinstance(value, type) or not is_dataclass(value):
+            raise TypeError(f"{cls.__name__}.from_dataclass() expects a dataclass instance")
+
+        values: dict[str, Any] = {}
+        for dataclass_field in dataclass_fields(value):
+            name = dataclass_field.name
+            model_field = cls.__model_fields__.get(name)
+            if model_field is not None:
+                values[name] = _convert_dataclass_value_to_model(
+                    getattr(value, name),
+                    model_field.declared_type,
+                )
+        return cls.from_dict(values)
 
     def __repr__(self) -> str:
         fields = [f"pk={repr(self.pk)}"]

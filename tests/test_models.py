@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from inspect import signature
 from typing import Annotated, Optional
 
@@ -38,6 +39,39 @@ class IndexedProduct(Model, persistent=True):
     class Meta:
         classname = "Demo.IndexedProduct"
         mode = "replace"
+
+
+class BaseInventoryItem(Model):
+    Name: str
+    Tags: list[str] = Field(default_factory=list)
+
+
+class InventoryItem(BaseInventoryItem):
+    Price: float = 0.0
+
+
+class OrderLineModel(Model, serial=True):
+    Sku: str
+    Qty: int
+
+
+class OrderModel(Model):
+    Number: str
+    Lines: list[OrderLineModel] = Field(default_factory=list)
+    Lookup: dict[str, OrderLineModel] = Field(default_factory=dict)
+
+
+@dataclass
+class OrderLineDTO:
+    Sku: str
+    Qty: int
+
+
+@dataclass
+class OrderDTO:
+    Number: str
+    Lines: list[OrderLineDTO]
+    Lookup: dict[str, OrderLineDTO]
 
 
 @pytest.fixture(autouse=True)
@@ -197,6 +231,86 @@ def test_model_default_factory_is_per_instance():
 
     assert first.Tags == ["x"]
     assert second.Tags == []
+
+
+def test_model_inheritance_collects_base_fields():
+    item = InventoryItem(Name="Widget", Tags=["inventory"], Price=12.5)
+
+    assert list(InventoryItem.__model_fields__) == ["Name", "Tags", "Price"]
+    assert list(signature(InventoryItem).parameters) == ["Name", "Tags", "Price"]
+    assert item.Name == "Widget"
+    assert item.Tags == ["inventory"]
+    assert item.Price == 12.5
+
+
+def test_model_to_dict_and_from_dict_include_inherited_fields():
+    item = InventoryItem.from_dict({"Name": "Widget", "Tags": ["a"], "Price": 10.0})
+
+    assert isinstance(item, InventoryItem)
+    assert item.to_dict() == {"Name": "Widget", "Tags": ["a"], "Price": 10.0}
+
+
+def test_model_dict_conversion_recurses_nested_models():
+    order = OrderModel.from_dict(
+        {
+            "Number": "A100",
+            "Lines": [{"Sku": "SKU-1", "Qty": 2}],
+            "Lookup": {"primary": {"Sku": "SKU-2", "Qty": 3}},
+        }
+    )
+
+    assert isinstance(order.Lines[0], OrderLineModel)
+    assert isinstance(order.Lookup["primary"], OrderLineModel)
+    assert order.to_dict() == {
+        "Number": "A100",
+        "Lines": [{"Sku": "SKU-1", "Qty": 2}],
+        "Lookup": {"primary": {"Sku": "SKU-2", "Qty": 3}},
+    }
+
+
+def test_model_dataclass_conversion_recurses_nested_dtos():
+    order = OrderModel(
+        Number="A100",
+        Lines=[OrderLineModel(Sku="SKU-1", Qty=2)],
+        Lookup={"primary": OrderLineModel(Sku="SKU-2", Qty=3)},
+    )
+
+    dto = order.to_dataclass(OrderDTO)
+
+    assert dto == OrderDTO(
+        Number="A100",
+        Lines=[OrderLineDTO(Sku="SKU-1", Qty=2)],
+        Lookup={"primary": OrderLineDTO(Sku="SKU-2", Qty=3)},
+    )
+
+
+def test_model_from_dataclass_recurses_nested_dtos():
+    dto = OrderDTO(
+        Number="A100",
+        Lines=[OrderLineDTO(Sku="SKU-1", Qty=2)],
+        Lookup={"primary": OrderLineDTO(Sku="SKU-2", Qty=3)},
+    )
+
+    order = OrderModel.from_dataclass(dto)
+
+    assert isinstance(order, OrderModel)
+    assert isinstance(order.Lines[0], OrderLineModel)
+    assert isinstance(order.Lookup["primary"], OrderLineModel)
+    assert order.to_dict() == {
+        "Number": "A100",
+        "Lines": [{"Sku": "SKU-1", "Qty": 2}],
+        "Lookup": {"primary": {"Sku": "SKU-2", "Qty": 3}},
+    }
+
+
+def test_dataclass_conversion_rejects_wrong_inputs():
+    item = InventoryItem(Name="Widget")
+
+    with pytest.raises(TypeError, match="dataclass type"):
+        item.to_dataclass(dict)
+
+    with pytest.raises(TypeError, match="dataclass instance"):
+        InventoryItem.from_dataclass({"Name": "Widget"})
 
 
 def test_model_signature_exposes_normalized_constructor_fields():

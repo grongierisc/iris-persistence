@@ -12,6 +12,8 @@
 - `extend`, `replace`, and `observe` schema sync modes
 - scaffold from live IRIS
 - recursive references between `%Persistent` and `%SerialObject` models
+- native `Model` inheritance
+- explicit `dict` and dataclass DTO conversion helpers
 - typed `StorageDefinition` metadata
 - `iris_persistence.testing.InMemoryAdapter` for unit tests
 - structured scaffold warnings/results for partial metadata extraction
@@ -51,6 +53,39 @@ product.save()
 same = Product.get(product.pk)
 rows = Product.where(name="Widget").order_by("name").all()
 ```
+
+## Model Inheritance And DTOs
+
+Use `Model` inheritance for shared persistence fields:
+
+```python
+class NamedRecord(Model):
+    name: str
+
+
+class Product(NamedRecord, persistent=True):
+    price: float = 0.0
+```
+
+Use explicit conversion helpers for API or application DTOs:
+
+```python
+from dataclasses import dataclass
+
+
+@dataclass
+class ProductDTO:
+    name: str
+    price: float
+
+
+product = Product.from_dict({"name": "Widget", "price": 12.5})
+payload = product.to_dict()
+dto = product.to_dataclass(ProductDTO)
+same = Product.from_dataclass(dto)
+```
+
+Dataclasses are supported as DTOs, not as persistence base classes.
 
 ## Model Definition
 

@@ -15,8 +15,8 @@ from tests.fixture_support import (
     OBJECTSCRIPT_FIXTURES,
     OBJECTSCRIPT_PYTHON_FIXTURES,
     delete_iris_classes,
-    load_objectscript_fixtures,
     load_module_from_path,
+    load_objectscript_fixtures,
 )
 from tests.fixtures.objectscript.python.persistent_fixture import SourcePersistentFixture
 

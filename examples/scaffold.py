@@ -14,7 +14,7 @@ def main() -> None:
 
     try:
         print("\nScaffold typed proxy models from live IRIS:")
-        iris_paths = scaffold_from_iris(
+        for path in scaffold_from_iris(
             "User.Simple",
             generated_root / "from_iris",
             mode="observe",
@@ -22,7 +22,8 @@ def main() -> None:
             include_related=True,
             scaffold_selectivity=True,
             extract_hidden_meta=True,
-        )
+        ):
+            print(" ", path)
         # scaffold HS.FHIRServer.Interop.Request
         # scaffold_from_iris(
         #     "HS.FHIRServer.Interop.Request",
@@ -31,8 +32,6 @@ def main() -> None:
         #     extract_meta=True,
         #     include_related=True,
         # )
-        # for path in iris_paths:
-        #     print(" ", path)
     except Exception as exc:
         print(" live IRIS scaffold skipped:", exc)
 

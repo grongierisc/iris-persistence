@@ -41,6 +41,7 @@ def load_module_from_path(module_path: Path) -> ModuleType:
 
 def delete_iris_classes(classnames: list[str]) -> None:
     import iris
+
     from iris_persistence.runtime import get_runtime
 
     get_runtime()
@@ -66,6 +67,7 @@ def _load_objectscript_fixture_spec(name: str) -> ObjectScriptFixtureSpec:
 
 def load_objectscript_fixtures(names: list[str]) -> list[LoadedObjectScriptFixture]:
     import iris
+
     from iris_persistence.runtime import get_runtime
 
     specs = [_load_objectscript_fixture_spec(name) for name in names]

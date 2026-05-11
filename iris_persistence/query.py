@@ -368,9 +368,11 @@ def save_model(instance: TModel) -> None:
         # trusted to be well-formed by the time save() is called.
         instance._validate_for_save()
 
-    is_update = bool(instance._pk)
+    pk = instance._pk
+    is_update = bool(pk)
     if is_update:
-        iris_obj = runtime.get_object(classname, instance._pk)
+        assert pk is not None
+        iris_obj = runtime.get_object(classname, pk)
     else:
         cls_factory = getattr(runtime, "_cls", None)
         iris_obj = (

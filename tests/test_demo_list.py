@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 
 import pytest
+
 from iris_persistence.runtime import get_runtime
 from tests.fixtures.python.demo_list_fixture import (
     configure_fixture_runtime,
@@ -42,12 +43,17 @@ def test_demo_list_run_demo_resets_previous_rows_in_fake_runtime():
 def test_demo_list_configure_demo_runtime_falls_back_to_fake(monkeypatch):
     import tests.fixtures.python.demo_list_fixture as demo_list_fixture
 
+    def broken_dbapi_connection(self):
+        raise RuntimeError("no dbapi")
+
+    broken_runtime = type(
+        "BrokenRuntime",
+        (),
+        {"get_dbapi_connection": broken_dbapi_connection},
+    )()
+
     monkeypatch.setattr(demo_list_fixture.iris_persistence, "configure", lambda: None)
-    monkeypatch.setattr(
-        demo_list_fixture,
-        "get_runtime",
-        lambda: type("BrokenRuntime", (), {"get_dbapi_connection": lambda self: (_ for _ in ()).throw(RuntimeError("no dbapi"))})(),
-    )
+    monkeypatch.setattr(demo_list_fixture, "get_runtime", lambda: broken_runtime)
 
     backend = configure_fixture_runtime()
 

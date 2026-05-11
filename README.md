@@ -2,6 +2,8 @@
 
 `iris_persistence` is a Python object persistence layer for InterSystems IRIS, inspired by `%Persistent`. It provides a Python-first model class, brownfield scaffolding, and typed storage metadata using IRIS APIs rather than SQL as its persistence model.
 
+> Status: `0.1.0` public preview. The API is experimental and may change before a stable `1.0` release. Python 3.10 or newer is required.
+
 ## What This Version Supports
 
 - `Model` as the primary base class
@@ -343,6 +345,58 @@ That fixture set covers:
 - `%SerialObject`
 - recursive object graphs (`%Persistent` referencing `%Persistent` and `%SerialObject`)
 
+## Release Verification
+
+Run the local checks:
+
+```bash
+.venv/bin/python -m ruff check iris_persistence tests examples benchmarks
+.venv/bin/python -m mypy iris_persistence
+.venv/bin/python -m pytest -m "not integration"
+```
+
+Run live IRIS integration coverage against the community image:
+
+```bash
+IRIS_IMAGE_TAG=latest-cd ./scripts/test-docker.sh
+```
+
+Latest verification, 2026-05-11:
+
+- Ruff: passed
+- mypy: passed, `10` source files checked
+- Unit/non-integration tests: `91 passed`, `14 deselected`
+- Docker integration, `latest-cd`: `12 passed`, `2 skipped`, `91 deselected`
+
+## Benchmarks
+
+Run the simple benchmark in Docker:
+
+```bash
+./scripts/benchmark-simple.sh --rows 500 --repeats 3
+```
+
+Run it from a local virtualenv:
+
+```bash
+.venv/bin/python benchmarks/simple_suite.py --rows 500 --repeats 3
+```
+
+On macOS, do not export `DYLD_LIBRARY_PATH` to the IRIS install `bin` directory for
+local benchmark runs. That can force the Native API wheel to bind to incompatible
+IRIS dylibs. If your shell exports it globally, unset it for the benchmark process:
+
+```bash
+env -u DYLD_LIBRARY_PATH .venv/bin/python benchmarks/simple_suite.py --rows 500 --repeats 3
+```
+
+Use `--modes` to run a subset, and `--require-remote` when remote modes must fail
+instead of being skipped:
+
+```bash
+.venv/bin/python benchmarks/simple_suite.py --modes embedded_persistence,objectscript
+```
+
 ## Scaffold
 
 Generate typed models from live IRIS:
@@ -377,8 +431,6 @@ Scaffold rules:
 
 Runnable examples:
 
-- [examples/python_first.py](examples/python_first.py)
-- [examples/proxy.py](examples/proxy.py)
 - [examples/scaffold.py](examples/scaffold.py)
 - [examples/demo/README.md](examples/demo/README.md)
 

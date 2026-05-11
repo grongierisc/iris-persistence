@@ -1586,18 +1586,18 @@ def _render_storage_lines(
         lines.append("            ),")
     if storage_indices:
         lines.append("            indices=(")
-        for item in storage_indices:
-            lines.append(f"                {_render_storage_index(item)},")
+        for storage_index in storage_indices:
+            lines.append(f"                {_render_storage_index(storage_index)},")
         lines.append("            ),")
     if storage_properties:
         lines.append("            properties=(")
-        for item in storage_properties:
-            lines.append(f"                {_render_storage_property(item)},")
+        for storage_property in storage_properties:
+            lines.append(f"                {_render_storage_property(storage_property)},")
         lines.append("            ),")
     if storage_sql_maps:
         lines.append("            sql_maps=(")
-        for item in storage_sql_maps:
-            rendered_map = _render_storage_sql_map(item)
+        for storage_sql_map in storage_sql_maps:
+            rendered_map = _render_storage_sql_map(storage_sql_map)
             lines.append(f"                {rendered_map[0]}")
             for map_line in rendered_map[1:-1]:
                 lines.append(f"                {map_line}")

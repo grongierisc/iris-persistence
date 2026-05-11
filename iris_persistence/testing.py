@@ -32,7 +32,7 @@ class InMemoryAdapter(RuntimeAdapter):
                 raise AttributeError(name)
 
         obj = _FakeObj()
-        obj._is_new = True
+        setattr(obj, "_is_new", True)
         return obj
 
     def save_object(self, obj: Any) -> Any:
@@ -94,7 +94,7 @@ class InMemoryAdapter(RuntimeAdapter):
     def invoke_method(self, obj: Any, method_name: str, *args: Any) -> Any:
         pass
 
-    def get_object_id(self, obj: Any) -> str:
+    def get_object_id(self, obj: Any) -> str | None:
         return getattr(obj, "id_val", None)
 
     def is_ok(self, status: Any) -> bool:
@@ -124,8 +124,9 @@ class InMemoryAdapter(RuntimeAdapter):
 
     def get_dbapi_connection(self) -> Any:
         class _Cursor:
-            def __init__(self, db):
+            def __init__(self, db, db_adapter):
                 self._db = db
+                self._db_adapter = db_adapter
                 self._rows = []
 
             def execute(self, sql, params=()):
@@ -152,9 +153,7 @@ class InMemoryAdapter(RuntimeAdapter):
                 self._db_adapter = db_adapter
 
             def cursor(self):
-                cursor = _Cursor(self._db)
-                cursor._db_adapter = self._db_adapter
-                return cursor
+                return _Cursor(self._db, self._db_adapter)
 
             def close(self):
                 pass

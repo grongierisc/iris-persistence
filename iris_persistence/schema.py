@@ -3,12 +3,11 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 from difflib import unified_diff
-from typing import Any, Type, get_args, get_origin, get_type_hints
+from typing import Any, Type, get_args, get_origin
 
 import iris_persistence.models
 from iris_persistence.runtime import get_runtime
-from iris_persistence.types import FieldInfo, UNSET
-
+from iris_persistence.types import UNSET, FieldInfo
 
 CLASS_METADATA_KEYS = (
     "description",
@@ -258,7 +257,9 @@ def _collect_model_schema_state(model_cls: Type[Any]) -> dict[str, Any]:
     storage_meta = getattr(model_cls, "_storage", None)
     if storage_meta is not None:
         state["storage"] = {
-            "attrs": _compact_mapping({key: getattr(storage_meta, key, None) for key in STORAGE_KEYS}),
+            "attrs": _compact_mapping(
+                {key: getattr(storage_meta, key, None) for key in STORAGE_KEYS}
+            ),
             "properties": {
                 item.name: _compact_mapping(
                     {key: getattr(item, key, None) for key in STORAGE_PROPERTY_KEYS}
@@ -385,7 +386,8 @@ def _collect_live_schema_state(runtime: Any, classname: str) -> dict[str, Any]:
             ),
             "properties": {},
         }
-        for item in _iter_runtime_list(runtime, _safe_get_property(runtime, selected_storage, "Properties")):
+        storage_properties = _safe_get_property(runtime, selected_storage, "Properties")
+        for item in _iter_runtime_list(runtime, storage_properties):
             name = _safe_get_property(runtime, item, "Name")
             if not name:
                 continue
@@ -474,7 +476,7 @@ def _resolve_model_type(py_type: Any) -> Any:
 
 
 def _map_python_type_to_iris(py_type: Any, field_meta: FieldInfo) -> str:
-    if getattr(field_meta, "iris_type", None):
+    if field_meta.iris_type is not None:
         return field_meta.iris_type
 
     if hasattr(py_type, "__origin__"):
@@ -803,7 +805,12 @@ def _sync_indexes(
         runtime.set_property(idx_def, "parent", classname)
         runtime.set_property(idx_def, "Properties", index_meta.properties)
         _set_runtime_flag_if_true(runtime, idx_def, "Unique", getattr(index_meta, "unique", False))
-        _set_runtime_property_if_not_none(runtime, idx_def, "Type", getattr(index_meta, "type", None))
+        _set_runtime_property_if_not_none(
+            runtime,
+            idx_def,
+            "Type",
+            getattr(index_meta, "type", None),
+        )
         _set_runtime_flag_if_true(
             runtime,
             idx_def,
@@ -1032,8 +1039,18 @@ def _insert_storage_sql_maps(
                 "parent",
                 f"{classname}||{storage_name}||{sql_map_meta.name}",
             )
-            _set_runtime_property_if_not_none(runtime, sql_map_data, "Node", getattr(data_meta, "node", None))
-            _set_runtime_property_if_not_none(runtime, sql_map_data, "Piece", getattr(data_meta, "piece", None))
+            _set_runtime_property_if_not_none(
+                runtime,
+                sql_map_data,
+                "Node",
+                getattr(data_meta, "node", None),
+            )
+            _set_runtime_property_if_not_none(
+                runtime,
+                sql_map_data,
+                "Piece",
+                getattr(data_meta, "piece", None),
+            )
             _set_runtime_property_if_not_none(
                 runtime, sql_map_data, "Delimiter", getattr(data_meta, "delimiter", None)
             )

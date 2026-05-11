@@ -13,6 +13,7 @@ from typing import (
     Optional,
     Type,
     TypeVar,
+    cast,
     get_args,
     get_origin,
     get_type_hints,
@@ -165,7 +166,7 @@ def _build_model_field(
 def _build_signature(model_fields: Dict[str, ModelField]) -> Signature:
     parameters = []
     for model_field in model_fields.values():
-        default = Parameter.empty
+        default: Any = Parameter.empty
         if model_field.default_factory is not UNSET:
             default = FACTORY_DEFAULT
         elif model_field.default is not UNSET:
@@ -399,9 +400,9 @@ def _value_matches_declared_type(declared_type: Any, value: Any) -> bool:
             and _value_matches_declared_type(value_type, item)
             for key, item in value.items()
         )
-    args = [arg for arg in get_args(declared_type) if arg is not type(None)]
-    if args:
-        return any(_value_matches_declared_type(arg, value) for arg in args)
+    union_args = [arg for arg in get_args(declared_type) if arg is not type(None)]
+    if union_args:
+        return any(_value_matches_declared_type(arg, value) for arg in union_args)
     return True
 
 
@@ -726,8 +727,9 @@ class ModelMeta(type):
         setattr(cls, "_classname", getattr(meta_inner, "classname", name))
         setattr(cls, "_sync_mode", getattr(meta_inner, "mode", "extend"))
         setattr(cls, "_auto_sync", getattr(meta_inner, "auto_sync", False))
-        setattr(cls, "_validate_on_init", getattr(meta_inner, "validate_on_init", True))
-        if not cls._validate_on_init:
+        validate_on_init = getattr(meta_inner, "validate_on_init", True)
+        setattr(cls, "_validate_on_init", validate_on_init)
+        if not validate_on_init:
             fast_init = _build_fast_init(model_fields)
             if fast_init is not None:
                 fast_init.__qualname__ = f"{cls.__qualname__}.__init__"
@@ -873,7 +875,7 @@ class Model(metaclass=ModelMeta):
             raise TypeError("to_dataclass() expects a dataclass type")
 
         values: dict[str, Any] = {}
-        for dataclass_field in dataclass_fields(dataclass_type):
+        for dataclass_field in dataclass_fields(cast(Any, dataclass_type)):
             if not dataclass_field.init:
                 continue
             name = dataclass_field.name

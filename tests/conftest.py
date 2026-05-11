@@ -34,6 +34,7 @@ def pytest_generate_tests(metafunc):
 @pytest.fixture
 def configured_iris_runtime(request):
     import iris
+
     import iris_persistence
 
     backend = getattr(request, "param", "embedded")

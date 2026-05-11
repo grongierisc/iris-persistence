@@ -7,7 +7,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import Any, Callable, Dict, Optional, Tuple, overload
+from typing import Any, Callable, Dict, Optional, Tuple
 
 
 class _UnsetType:
@@ -77,41 +77,6 @@ class FieldInfo:
             raise TypeError("Field cannot define both default and default_factory")
         if self.default_factory is not UNSET and not callable(self.default_factory):
             raise TypeError("Field default_factory must be callable")
-
-
-@overload
-def Field(
-    *,
-    required: bool = ...,
-    default: Any = ...,
-    default_factory: Callable[[], Any] | Any = ...,
-    nullable: Optional[bool] = ...,
-    primary_key: bool = ...,
-    index: bool = ...,
-    unique: bool = ...,
-    index_name: Optional[str] = ...,
-    index_type: Optional[str] = ...,
-    max_length: Optional[int] = ...,
-    initial_expression: Optional[str] = ...,
-    maxlen: Optional[int] = ...,
-    readonly: bool = ...,
-    collection: Optional[str] = ...,
-    iris_type: Optional[str] = ...,
-    sql_type: Optional[str] = ...,
-    sql_field_name: Optional[str] = ...,
-    identity: bool = ...,
-    relationship: Optional[str] = ...,
-    on_delete: Optional[str] = ...,
-    inverse: Optional[str] = ...,
-    transient: bool = ...,
-    storable: bool = ...,
-    multi_dimensional: bool = ...,
-    sql_list_delimiter: Optional[str] = ...,
-    sql_list_type: Optional[str] = ...,
-    sql_compute_code: Optional[str] = ...,
-    sql_compute_on_change: Optional[str] = ...,
-    sql_computed: bool = ...,
-) -> Any: ...
 
 
 def Field(

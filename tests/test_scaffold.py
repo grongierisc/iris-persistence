@@ -406,8 +406,16 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
     assert 'state="StubState"' in generated_text
     assert 'stream_location="^Demo.StubFixtureS"' in generated_text
     assert 'extent_size="17"' in generated_text
-    assert 'StorageIndex(name="IDKEY", location="^Demo.StubFixtureI(\\"IDKEY\\")", small_chunk_size="0")' in generated_text
-    assert 'StorageIndex(name="TitleIdx", location="^Demo.StubFixtureI(\\"TitleIdx\\")", small_chunk_size="32")' in generated_text
+    assert (
+        'StorageIndex(name="IDKEY", location="^Demo.StubFixtureI(\\"IDKEY\\")", '
+        'small_chunk_size="0")'
+        in generated_text
+    )
+    assert (
+        'StorageIndex(name="TitleIdx", location="^Demo.StubFixtureI(\\"TitleIdx\\")", '
+        'small_chunk_size="32")'
+        in generated_text
+    )
     assert 'extent_location=' not in generated_text
     assert 'counter_location=' not in generated_text
     assert 'version_location=' not in generated_text
@@ -560,7 +568,8 @@ def test_scaffold_reads_property_sql_projection_metadata(monkeypatch, tmp_path: 
     module_path = Path(result.files[0])
     generated_text = module_path.read_text(encoding="utf-8")
     assert (
-        'Field(iris_type="%List", sql_list_delimiter=\'|\', sql_list_type=\'DELIMITED\', default=None)'
+        'Field(iris_type="%List", sql_list_delimiter=\'|\', '
+        "sql_list_type='DELIMITED', default=None)"
         in generated_text
     )
     assert (
@@ -1326,7 +1335,10 @@ def test_scaffold_collection_class_types_are_typed_as_collections_without_collec
 
     assert result.warnings == []
     generated_text = (tmp_path / "listfixture.py").read_text(encoding="utf-8")
-    assert 'ListAttributes: list[Any] | None = Field(iris_type="%List", default=None)' in generated_text
+    assert (
+        'ListAttributes: list[Any] | None = Field(iris_type="%List", default=None)'
+        in generated_text
+    )
     assert (
         'ListDataType: list[Any] | None = '
         'Field(iris_type="%ListOfDataTypes", default=None)'

@@ -61,6 +61,15 @@ def _collection_kind_from_field(field_meta: Any | None) -> str | None:
 class IRISValueAdapterMixin:
     """Persistence-specific IRIS value conversion shared by runtime adapters."""
 
+    def call_classmethod(self, class_name: str, method_name: str, *args: Any) -> Any:
+        raise NotImplementedError
+
+    def set_property(self, obj: Any, prop_name: str, value: Any) -> None:
+        raise NotImplementedError
+
+    def get_property(self, obj: Any, prop_name: str) -> Any:
+        raise NotImplementedError
+
     def _populate_collection_property(
         self,
         obj: Any,

@@ -6,8 +6,8 @@ from tests.fixtures.python.schema_mapping_fixtures import (
     ExtendIndexFixture,
     ParameterFixture,
     RelationshipMetadataFixture,
-    SQLProjectionMetadataFixture,
     SchemaMetadataFixture,
+    SQLProjectionMetadataFixture,
 )
 
 

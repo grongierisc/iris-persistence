@@ -302,7 +302,7 @@ adapter = InMemoryAdapter()
 configure_default_runtime(runtime=adapter)
 ```
 
-Run unit tests only:
+Run unit tests inside the IRIS Docker container:
 
 ```bash
 ./scripts/test-unit.sh
@@ -321,6 +321,9 @@ Override the image tag when needed:
 ```bash
 IRIS_IMAGE_TAG=latest-preview ./scripts/test-docker.sh
 ```
+
+`test-unit.sh` and `test-docker.sh` use the same local container runner. `test-unit.sh`
+selects `pytest -m "not integration"`; `test-docker.sh` selects `pytest -m integration`.
 
 You can still run integration tests directly against a configured local IRIS runtime:
 

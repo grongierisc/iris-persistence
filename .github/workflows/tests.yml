@@ -2,9 +2,9 @@ name: Tests
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
   repository_dispatch:
     types: [test workflow]
   workflow_dispatch:
@@ -14,39 +14,44 @@ permissions:
 
 jobs:
   unit:
-    name: Unit (${{ matrix.python-version }})
+    name: Unit (${{ matrix.image }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version:
-          - "3.11"
-          - "3.12"
+        image:
+          - latest-em
+          - latest-cd
+          - latest-preview
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install test dependencies
+      - name: Run Docker unit tests
+        env:
+          IRIS_IMAGE_TAG: ${{ matrix.image }}
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[test]" ruff
+          ./scripts/test-unit.sh --junit-xml=/tmp/test-results.xml
 
-      - name: Run unit tests
+      - name: Find IRIS container
+        if: always()
+        id: iris-container
         run: |
-          ./scripts/test-unit.sh --junit-xml=test-results-unit-${{ matrix.python-version }}.xml
+          echo "id=$(docker compose -f docker-compose-test.yml ps -q iris)" >> "$GITHUB_OUTPUT"
+
+      - name: Copy unit test results
+        if: always()
+        run: |
+          docker cp "${{ steps.iris-container.outputs.id }}:/tmp/test-results.xml" test-results-unit-${{ matrix.image }}.xml || true
 
       - name: Surface failing unit tests
         if: always()
-        uses: pmeier/pytest-results-action@main
+        uses: pmeier/pytest-results-action@master
         with:
-          path: test-results-unit-${{ matrix.python-version }}.xml
+          path: test-results-unit-${{ matrix.image }}.xml
           summary: true
           display-options: fEX
           fail-on-empty: false
-          title: Unit test results (${{ matrix.python-version }})
+          title: Unit test results (${{ matrix.image }})
 
   e2e:
     name: E2E (${{ matrix.image }})
@@ -80,7 +85,7 @@ jobs:
 
       - name: Surface failing E2E tests
         if: always()
-        uses: pmeier/pytest-results-action@main
+        uses: pmeier/pytest-results-action@master
         with:
           path: test-results-e2e-${{ matrix.image }}.xml
           summary: true

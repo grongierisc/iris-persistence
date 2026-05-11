@@ -1,18 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ "${PYTHON_BIN:-}" ]; then
-  PYTHON="$PYTHON_BIN"
-elif [ -x ".venv/bin/python" ]; then
-  PYTHON=".venv/bin/python"
-else
-  PYTHON="python3"
-fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if [ "$#" -eq 0 ]; then
-  PYTEST_ARGS=(-m "not integration")
-else
-  PYTEST_ARGS=("$@")
-fi
+export PYTEST_MARK="${PYTEST_MARK:-not integration}"
 
-exec "$PYTHON" -m pytest "${PYTEST_ARGS[@]}"
+exec "$SCRIPT_DIR/test-docker.sh" "$@"

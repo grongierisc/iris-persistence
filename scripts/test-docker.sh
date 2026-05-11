@@ -3,12 +3,13 @@ set -euo pipefail
 
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose-test.yml}"
 SERVICE="${IRIS_SERVICE:-iris}"
+PYTEST_MARK="${PYTEST_MARK:-integration}"
 
-if [ "$#" -eq 0 ]; then
-  PYTEST_ARGS=(-m integration)
-else
-  PYTEST_ARGS=(-m integration "$@")
+PYTEST_ARGS=()
+if [ -n "$PYTEST_MARK" ]; then
+  PYTEST_ARGS=(-m "$PYTEST_MARK")
 fi
+PYTEST_ARGS+=("$@")
 
 ENV_ARGS=()
 for name in \

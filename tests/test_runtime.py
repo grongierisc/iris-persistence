@@ -1,17 +1,15 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from iris_persistence import Field
-from iris_persistence import Model
-from iris_persistence.runtime import configure_default_runtime
-from iris_persistence.runtime import NativeProxyAdapter
+import iris_persistence.runtime as runtime_module
+from iris_persistence import Field, Model
+from iris_persistence.runtime import IRISRuntimeAdapter, configure_default_runtime
 
 
-class TestNativeProxyAdapter(unittest.TestCase):
+class TestIRISRuntimeAdapter(unittest.TestCase):
     def setUp(self):
-        self.adapter = NativeProxyAdapter()
+        self.adapter = IRISRuntimeAdapter()
 
         # Mock OREF (the raw intersystems object)
         self.mock_oref = MagicMock()
@@ -305,9 +303,18 @@ class TestNativeProxyAdapter(unittest.TestCase):
 
     def test_get_dbapi_connection_uses_explicit_remote_credentials(self):
         fake_dbapi = SimpleNamespace(connect=MagicMock(return_value="dbapi-conn"))
-        fake_iris = SimpleNamespace(dbapi=fake_dbapi)
         connection = SimpleNamespace(hostname="localhost", port=1972, namespace="IRISAPP")
-        adapter = NativeProxyAdapter(connection)
+        fake_iris = SimpleNamespace(
+            dbapi=fake_dbapi,
+            runtime=SimpleNamespace(
+                get=lambda: SimpleNamespace(
+                    mode="native",
+                    dbapi=None,
+                    native_connection=connection,
+                )
+            ),
+        )
+        adapter = IRISRuntimeAdapter()
 
         with patch.dict(
             "os.environ",
@@ -318,6 +325,7 @@ class TestNativeProxyAdapter(unittest.TestCase):
                 result = adapter.get_dbapi_connection()
 
         fake_dbapi.connect.assert_called_once_with(
+            mode="native",
             hostname="localhost",
             port=1972,
             namespace="IRISAPP",
@@ -328,9 +336,20 @@ class TestNativeProxyAdapter(unittest.TestCase):
 
     def test_get_dbapi_connection_reuses_native_connection_cursor(self):
         connection = SimpleNamespace(cursor=MagicMock(return_value="cursor"), close=MagicMock())
-        adapter = NativeProxyAdapter(connection)
+        adapter = IRISRuntimeAdapter()
 
-        result = adapter.get_dbapi_connection()
+        fake_iris = SimpleNamespace(
+            runtime=SimpleNamespace(
+                get=lambda: SimpleNamespace(
+                    mode="native",
+                    dbapi=None,
+                    native_connection=connection,
+                )
+            )
+        )
+
+        with patch.dict("sys.modules", {"iris": fake_iris}):
+            result = adapter.get_dbapi_connection()
 
         self.assertEqual(result.cursor(), "cursor")
         result.close()
@@ -348,6 +367,45 @@ class TestNativeProxyAdapter(unittest.TestCase):
         self.assertIsNone(CacheResetModel._fast_new)
         self.assertFalse(hasattr(CacheResetModel, "_sql_table_name"))
 
+    def test_get_runtime_does_not_reconfigure_wrapper_runtime(self):
+        fake_iris = SimpleNamespace(
+            runtime=SimpleNamespace(configure=MagicMock()),
+        )
+        previous_runtime = runtime_module._active_runtime
+        previous_wrapper_runtime = runtime_module._wrapper_runtime
+        runtime_module._active_runtime = None
+        runtime_module._wrapper_runtime = None
+
+        try:
+            with patch.dict("sys.modules", {"iris": fake_iris}):
+                runtime = runtime_module.get_runtime()
+        finally:
+            runtime_module._active_runtime = previous_runtime
+            runtime_module._wrapper_runtime = previous_wrapper_runtime
+
+        self.assertIsInstance(runtime, IRISRuntimeAdapter)
+        fake_iris.runtime.configure.assert_not_called()
+
+    def test_configure_delegates_to_wrapper_runtime_and_clears_override(self):
+        fake_iris = SimpleNamespace(runtime=SimpleNamespace(configure=MagicMock()))
+        previous_runtime = runtime_module._active_runtime
+        runtime_module._active_runtime = self.adapter
+
+        try:
+            with patch.dict("sys.modules", {"iris": fake_iris}):
+                runtime_module.configure(
+                    native_connection="native-conn",
+                    dbapi_connection="dbapi-conn",
+                )
+                self.assertIsNone(runtime_module._active_runtime)
+        finally:
+            runtime_module._active_runtime = previous_runtime
+
+        fake_iris.runtime.configure.assert_called_once_with(
+            native_connection="native-conn",
+            dbapi="dbapi-conn",
+        )
+
     def test_missing_class_error_is_rewritten_with_context(self):
         fake_iris = SimpleNamespace(
             cls=MagicMock(side_effect=RuntimeError("iris.cls: error finding class"))
@@ -364,8 +422,11 @@ class TestNativeProxyAdapter(unittest.TestCase):
         self.assertIn("Meta.classname", str(exc_info.exception))
 
     def test_format_status_uses_system_status_error_text(self):
+        status_text = (
+            'ERROR #5808: Key not unique: Demo.Demo:TotoIdx:^Demo.DemoI("TotoIdx"," HELLO")'
+        )
         self.adapter.call_classmethod = MagicMock(
-            return_value='ERROR #5808: Key not unique: Demo.Demo:TotoIdx:^Demo.DemoI("TotoIdx"," HELLO")'
+            return_value=status_text,
         )
 
         message = self.adapter.format_status("0 raw-status")
@@ -375,10 +436,7 @@ class TestNativeProxyAdapter(unittest.TestCase):
             "GetErrorText",
             "0 raw-status",
         )
-        self.assertEqual(
-            message,
-            'ERROR #5808: Key not unique: Demo.Demo:TotoIdx:^Demo.DemoI("TotoIdx"," HELLO")',
-        )
+        self.assertEqual(message, status_text)
 
     def test_format_status_falls_back_to_raw_status_text(self):
         self.adapter.call_classmethod = MagicMock(side_effect=RuntimeError("status lookup failed"))

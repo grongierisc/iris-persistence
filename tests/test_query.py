@@ -43,6 +43,34 @@ class _FakeRuntime:
         return _FakeConnection()
 
 
+class _ClosingCursor:
+    def __init__(self, rows):
+        self.rows = rows
+        self.closed = False
+
+    def execute(self, sql, params=()):
+        self.sql = sql
+        self.params = params
+
+    def __iter__(self):
+        return iter(self.rows)
+
+    def close(self):
+        self.closed = True
+
+
+class _ClosingConnection:
+    def __init__(self, cursor):
+        self.cursor_obj = cursor
+        self.closed = False
+
+    def cursor(self):
+        return self.cursor_obj
+
+    def close(self):
+        self.closed = True
+
+
 class QueryFixture(Model):
     my_field: str
 
@@ -100,6 +128,29 @@ def test_resolve_sql_table_name_materializes_remote_rows_before_cursor_close():
     finally:
         runtime_module._active_runtime = previous_runtime
         QueryFixture._sql_table_name = None
+
+
+def test_queryset_all_closes_cursor_and_connection(monkeypatch):
+    cursor = _ClosingCursor(rows=[("1",), ("2",)])
+    connection = _ClosingConnection(cursor)
+
+    class _Runtime:
+        def get_dbapi_connection(self):
+            return connection
+
+    previous_runtime = runtime_module._active_runtime
+    configure_default_runtime(_Runtime())
+    QueryFixture._sql_table_name = "User.Simple"
+    monkeypatch.setattr(QueryFixture, "get", classmethod(lambda cls, pk: f"obj-{pk}"))
+
+    try:
+        assert QueryFixture.all() == ["obj-1", "obj-2"]
+    finally:
+        runtime_module._active_runtime = previous_runtime
+        QueryFixture._sql_table_name = None
+
+    assert cursor.closed is True
+    assert connection.closed is True
 
 
 def test_save_casts_string_none_to_iris_empty_string_marker_generic_path():

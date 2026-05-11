@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from iris_persistence.runtime import configure_default_runtime
-from iris_persistence.testing import FakeAdapter
+from iris_persistence.testing import InMemoryAdapter
 from tests.fixtures.python.demo_fixture import make_demo_toto, run_demo_fixture
 
 
@@ -17,7 +17,7 @@ def test_make_demo_toto_is_unique_and_prefixed():
 
 
 def test_run_demo_round_trip_with_fake_runtime():
-    configure_default_runtime(FakeAdapter())
+    configure_default_runtime(InMemoryAdapter())
 
     result = run_demo_fixture(toto="Hello-UNIT0001", sync_schema=False)
     loaded = result["loaded"]

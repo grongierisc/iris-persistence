@@ -5,7 +5,7 @@ import pytest
 
 from iris_persistence import ClassMetadata, Field, Index, Model
 from iris_persistence.runtime import configure_default_runtime
-from iris_persistence.testing import FakeAdapter
+from iris_persistence.testing import InMemoryAdapter
 from tests.fixtures.python.model_behavior_fixtures import (
     AutoSyncModel,
     ClassMetadataModel,
@@ -42,7 +42,7 @@ class IndexedProduct(Model, persistent=True):
 
 @pytest.fixture(autouse=True)
 def setup_fake_backend():
-    adapter = FakeAdapter()
+    adapter = InMemoryAdapter()
     configure_default_runtime(adapter)
 
 
@@ -75,7 +75,7 @@ def test_query_all():
 
 
 def test_query_uses_sql_field_name():
-    adapter = FakeAdapter()
+    adapter = InMemoryAdapter()
     configure_default_runtime(adapter)
 
     QueryAliasModel.where(Payload="x").order_by("Payload").all()
@@ -143,7 +143,7 @@ def test_auto_sync_rejects_replace_mode():
 
 
 def test_save_failure_uses_formatted_status_message(monkeypatch):
-    class FailingAdapter(FakeAdapter):
+    class FailingAdapter(InMemoryAdapter):
         def save_object(self, obj):
             return "0 raw-status"
 

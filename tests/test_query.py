@@ -2,8 +2,15 @@ import pytest
 
 import iris_persistence.runtime as runtime_module
 from iris_persistence.models import Model
-from iris_persistence.query import _build_model_from_iris_obj, _resolve_sql_table_name, save_model
+from iris_persistence.query import (
+    _build_model_from_iris_obj,
+    _resolve_sql_table_name,
+    from_iris,
+    materialize,
+    save_model,
+)
 from iris_persistence.runtime import configure_default_runtime
+from iris_persistence.testing import InMemoryAdapter
 
 
 class _CursorBoundRow:
@@ -260,3 +267,80 @@ def test_generic_load_casts_iris_empty_string_marker_to_none():
 
     assert loaded is not None
     assert loaded.Name is None
+
+
+def test_materialize_does_not_save_related_persistent_models():
+    class MaterializeChild(Model, persistent=True):
+        Name: str
+
+    class MaterializeParent(Model, persistent=True):
+        Child: MaterializeChild
+
+    previous_runtime = runtime_module._active_runtime
+    adapter = InMemoryAdapter()
+    configure_default_runtime(adapter)
+
+    try:
+        child = MaterializeChild(Name="nested")
+        parent = MaterializeParent(Child=child)
+
+        iris_obj = materialize(parent)
+
+        assert parent.pk is None
+        assert child.pk is None
+        assert adapter.db == {}
+        assert parent._iris_obj is iris_obj
+        assert child._iris_obj is iris_obj.Child
+        assert iris_obj.Child.Name == "nested"
+    finally:
+        runtime_module._active_runtime = previous_runtime
+
+
+def test_save_reuses_materialized_iris_object_and_saves_related_model():
+    class ReuseChild(Model, persistent=True):
+        Name: str
+
+    class ReuseParent(Model, persistent=True):
+        Child: ReuseChild
+
+    previous_runtime = runtime_module._active_runtime
+    adapter = InMemoryAdapter()
+    configure_default_runtime(adapter)
+
+    try:
+        child = ReuseChild(Name="nested")
+        parent = ReuseParent(Child=child)
+        parent_iris_obj = parent.to_iris()
+        child_iris_obj = child._iris_obj
+
+        parent.save()
+
+        assert parent.pk is not None
+        assert child.pk is not None
+        assert parent._iris_obj is parent_iris_obj
+        assert child._iris_obj is child_iris_obj
+        assert getattr(parent_iris_obj, "id_val") == parent.pk
+        assert getattr(child_iris_obj, "id_val") == child.pk
+        assert adapter.db[ReuseChild._classname][child.pk]["Name"] == "nested"
+        assert adapter.db[ReuseParent._classname][parent.pk]["Child"] is child_iris_obj
+    finally:
+        runtime_module._active_runtime = previous_runtime
+
+
+def test_from_iris_wraps_existing_object_handle():
+    class FromIrisFixture(Model):
+        Name: str
+        Active: bool
+
+    iris_obj = type("FakeIRISObject", (), {"Name": "demo", "Active": 1})()
+
+    loaded = from_iris(FromIrisFixture, iris_obj, known_pk="7")
+    method_loaded = FromIrisFixture.from_iris(iris_obj, known_pk="8")
+
+    assert loaded is not None
+    assert loaded.Name == "demo"
+    assert loaded.Active is True
+    assert loaded.pk == "7"
+    assert loaded._iris_obj is iris_obj
+    assert method_loaded is not None
+    assert method_loaded.pk == "8"

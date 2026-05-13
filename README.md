@@ -19,6 +19,7 @@
 - typed `StorageDefinition` metadata
 - `iris_persistence.testing.InMemoryAdapter` for unit tests
 - structured scaffold warnings/results for partial metadata extraction
+- raw IRIS object interop with `to_iris()` and `from_iris()`
 
 ## Quick Start
 
@@ -260,6 +261,30 @@ class Order(Model, persistent=True):
     class Meta:
         classname = "Demo.Order"
         mode = "replace"
+```
+
+## IRIS Object Interop
+
+Use `to_iris()` when you need the underlying IRIS object handle without saving a row:
+
+```python
+product = Product(name="Widget", price=12.5)
+iris_obj = product.to_iris()
+
+assert product.pk is None
+```
+
+`to_iris()` populates the object graph in memory. It may create unsaved IRIS object
+handles for related models, but it does not persist `%Persistent` rows. A later
+`save()` reuses those materialized handles and persists related `%Persistent`
+models through the normal save path.
+
+Use `from_iris()` when you already have an IRIS object handle and want a typed
+Python model wrapper:
+
+```python
+iris_obj = iris.cls("Demo.Product")._OpenId("1")
+product = Product.from_iris(iris_obj, known_pk="1")
 ```
 
 ## Runtime Configuration

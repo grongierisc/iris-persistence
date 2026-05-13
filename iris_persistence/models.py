@@ -919,6 +919,26 @@ class Model(metaclass=ModelMeta):
 
         save_model(self)
 
+    def to_iris(self, *, auto_sync: bool = True, validate: bool = True) -> Any:
+        """Return a populated IRIS object handle without saving this model."""
+
+        from iris_persistence.query import materialize
+
+        return materialize(self, auto_sync=auto_sync, validate=validate)
+
+    @classmethod
+    def from_iris(
+        cls: Type[T],
+        iris_obj: Any,
+        *,
+        known_pk: Optional[str] = None,
+    ) -> Optional[T]:
+        """Build a model instance around an existing IRIS object handle."""
+
+        from iris_persistence.query import from_iris
+
+        return from_iris(cls, iris_obj, known_pk=known_pk)
+
     @classmethod
     def sync_schema(cls, *, dry_run: bool = False):
         from iris_persistence.schema import diff_schema as schema_diff

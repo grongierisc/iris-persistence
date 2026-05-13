@@ -151,21 +151,52 @@ def _build_model_from_iris_obj(
     return instance
 
 
-def _materialize_related_value(runtime: Any, declared_type: Any, value: Any) -> Any:
+def _new_iris_object(runtime: Any, classname: str) -> Any:
+    cls_factory = getattr(runtime, "_cls", None)
+    return (
+        cls_factory(classname)._New()
+        if cls_factory is not None
+        else runtime.create_object(classname)
+    )
+
+
+def _materialize_related_value(
+    runtime: Any,
+    declared_type: Any,
+    value: Any,
+    *,
+    persist_related: bool,
+    auto_sync: bool,
+    validate: bool,
+) -> Any:
     if value is None:
         return None
     collection_kind, element_type = _collection_value_type(declared_type)
     if collection_kind == "list" and isinstance(value, list):
         if _is_model_type(element_type):
             return [
-                _materialize_related_value(runtime, element_type, item)
+                _materialize_related_value(
+                    runtime,
+                    element_type,
+                    item,
+                    persist_related=persist_related,
+                    auto_sync=auto_sync,
+                    validate=validate,
+                )
                 for item in value
             ]
         return [coerce_value_for_save(element_type, item) for item in value]
     if collection_kind == "array" and isinstance(value, dict):
         if _is_model_type(element_type):
             return {
-                str(key): _materialize_related_value(runtime, element_type, item)
+                str(key): _materialize_related_value(
+                    runtime,
+                    element_type,
+                    item,
+                    persist_related=persist_related,
+                    auto_sync=auto_sync,
+                    validate=validate,
+                )
                 for key, item in value.items()
             }
         return {str(key): coerce_value_for_save(element_type, item) for key, item in value.items()}
@@ -188,10 +219,25 @@ def _materialize_related_value(runtime: Any, declared_type: Any, value: Any) -> 
                 runtime.inject_iris_value(
                     iris_obj,
                     field_name,
-                    _materialize_related_value(runtime, nested_type, nested_value),
+                    _materialize_related_value(
+                        runtime,
+                        nested_type,
+                        nested_value,
+                        persist_related=persist_related,
+                        auto_sync=auto_sync,
+                        validate=validate,
+                    ),
                 )
         value._iris_obj = iris_obj
         return iris_obj
+
+    if not persist_related:
+        return _materialize_model(
+            value,
+            auto_sync=auto_sync,
+            validate=validate,
+            persist_related=False,
+        )
 
     save_model(value)
     if value._iris_obj is not None:
@@ -355,33 +401,17 @@ class QuerySet(Generic[TModel]):
         return results
 
 
-def save_model(instance: TModel) -> None:
-    runtime = get_runtime()
+def _populate_iris_object(
+    instance: TModel,
+    iris_obj: Any,
+    runtime: Any,
+    *,
+    is_update: bool,
+    persist_related: bool,
+    auto_sync: bool,
+    validate: bool,
+) -> None:
     cls = instance.__class__
-    classname = instance._classname
-
-    if cls._auto_sync:
-        _maybe_auto_sync_schema(cls)
-    if cls._validate_on_init:
-        # Only validate on save when the model also validates on init; models
-        # that opt out of init-time validation (validate_on_init=False) are
-        # trusted to be well-formed by the time save() is called.
-        instance._validate_for_save()
-
-    pk = instance._pk
-    is_update = bool(pk)
-    if is_update:
-        assert pk is not None
-        iris_obj = runtime.get_object(classname, pk)
-    else:
-        cls_factory = getattr(runtime, "_cls", None)
-        iris_obj = (
-            cls_factory(classname)._New()
-            if cls_factory is not None
-            else runtime.create_object(classname)
-        )
-    instance._iris_obj = iris_obj
-
     inst_dict = instance.__dict__
 
     # Hot path: code-gen field setter avoids set_property() overhead + isinstance checks.
@@ -419,13 +449,119 @@ def save_model(instance: TModel) -> None:
                 val = inst_dict.get(field_name)
                 if val is None:
                     continue
-                materialized = _materialize_related_value(runtime, model_field.declared_type, val)
+                materialized = _materialize_related_value(
+                    runtime,
+                    model_field.declared_type,
+                    val,
+                    persist_related=persist_related,
+                    auto_sync=auto_sync,
+                    validate=validate,
+                )
                 runtime.inject_iris_value(
                     iris_obj,
                     field_name,
                     materialized,
                     field_meta=model_field.field_info,
                 )
+
+
+def _materialize_model(
+    instance: TModel,
+    *,
+    auto_sync: bool,
+    validate: bool,
+    persist_related: bool,
+) -> Any:
+    runtime = get_runtime()
+    cls = instance.__class__
+    classname = instance._classname
+
+    if auto_sync and cls._auto_sync:
+        _maybe_auto_sync_schema(cls)
+    if validate and cls._validate_on_init:
+        instance._validate_for_save()
+
+    pk = instance._pk
+    is_update = bool(pk)
+    iris_obj = instance._iris_obj
+    if iris_obj is None:
+        if is_update:
+            assert pk is not None
+            iris_obj = runtime.get_object(classname, pk)
+        else:
+            iris_obj = _new_iris_object(runtime, classname)
+
+    instance._iris_obj = iris_obj
+    _populate_iris_object(
+        instance,
+        iris_obj,
+        runtime,
+        is_update=is_update,
+        persist_related=persist_related,
+        auto_sync=auto_sync,
+        validate=validate,
+    )
+    return iris_obj
+
+
+def materialize(
+    instance: TModel,
+    *,
+    auto_sync: bool = True,
+    validate: bool = True,
+) -> Any:
+    """Populate and return an IRIS object for a model without saving it."""
+
+    return _materialize_model(
+        instance,
+        auto_sync=auto_sync,
+        validate=validate,
+        persist_related=False,
+    )
+
+
+def from_iris(
+    model_cls: Type[TModel],
+    iris_obj: Any,
+    known_pk: Optional[str] = None,
+) -> Optional[TModel]:
+    """Build a model instance around an existing IRIS object handle."""
+
+    return _build_model_from_iris_obj(model_cls, iris_obj, known_pk=known_pk)
+
+
+def save_model(instance: TModel) -> None:
+    runtime = get_runtime()
+    cls = instance.__class__
+    classname = instance._classname
+
+    if cls._auto_sync:
+        _maybe_auto_sync_schema(cls)
+    if cls._validate_on_init:
+        # Only validate on save when the model also validates on init; models
+        # that opt out of init-time validation (validate_on_init=False) are
+        # trusted to be well-formed by the time save() is called.
+        instance._validate_for_save()
+
+    pk = instance._pk
+    is_update = bool(pk)
+    iris_obj = instance._iris_obj
+    if iris_obj is None:
+        if is_update:
+            assert pk is not None
+            iris_obj = runtime.get_object(classname, pk)
+        else:
+            iris_obj = _new_iris_object(runtime, classname)
+    instance._iris_obj = iris_obj
+    _populate_iris_object(
+        instance,
+        iris_obj,
+        runtime,
+        is_update=is_update,
+        persist_related=True,
+        auto_sync=True,
+        validate=True,
+    )
 
     st = runtime.save_object(iris_obj)
 

@@ -5,6 +5,7 @@ iris_persistence core package
 __version__ = "0.1.0"
 
 from iris_persistence.models import Model
+from iris_persistence.query import from_iris, materialize
 from iris_persistence.runtime import configure
 from iris_persistence.scaffold import ScaffoldResult, ScaffoldWarning, scaffold_from_iris
 from iris_persistence.schema import SchemaDiff, diff_schema
@@ -44,6 +45,8 @@ __all__ = [
     "UNSET",
     "configure",
     "diff_schema",
+    "from_iris",
+    "materialize",
     "ScaffoldResult",
     "ScaffoldWarning",
     "scaffold_from_iris",

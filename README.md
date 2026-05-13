@@ -57,6 +57,12 @@ same = Product.get(product.pk)
 rows = Product.where(name="Widget").order_by("name").all()
 ```
 
+## Update Semantics
+
+`None` is an explicit value. When a model field is nullable, assigning `None`
+and saving clears that IRIS property. Fields that are absent from a partially
+constructed model are not written, so existing IRIS values are left unchanged.
+
 ## Model Inheritance And DTOs
 
 Use `Model` inheritance for shared persistence fields:
@@ -275,9 +281,14 @@ assert product.pk is None
 ```
 
 `to_iris()` populates the object graph in memory. It may create unsaved IRIS object
-handles for related models, but it does not persist `%Persistent` rows. A later
-`save()` reuses those materialized handles and persists related `%Persistent`
-models through the normal save path.
+handles for related models, but it does not call `%Save()` and does not persist
+`%Persistent` rows. A later `save()` reuses those materialized handles and
+persists related `%Persistent` models through the normal save path. For pure
+transient object-body creation, disable persistence-oriented conveniences:
+
+```python
+iris_obj = product.to_iris(auto_sync=False, validate=False)
+```
 
 Use `from_iris()` when you already have an IRIS object handle and want a typed
 Python model wrapper:

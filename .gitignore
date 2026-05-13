@@ -10,3 +10,4 @@ waitISC.log
 .iris_persistence
 generated_models
 .other
+dist

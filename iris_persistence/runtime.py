@@ -8,6 +8,7 @@ from iris_persistence.values import IRISValueAdapterMixin
 
 class RuntimeAdapter(Protocol):
     def call_classmethod(self, class_name: str, method_name: str, *args: Any) -> Any: ...
+    def new_object(self, class_name: str) -> Any: ...
     def create_object(self, class_name: str) -> Any: ...
     def save_object(self, obj: Any) -> Any: ...
     def get_object(self, class_name: str, obj_id: str) -> Any: ...
@@ -87,6 +88,12 @@ def _reset_model_runtime_caches() -> None:
         if "_sql_table_name" in getattr(model_cls, "__dict__", {}):
             delattr(model_cls, "_sql_table_name")
 
+    try:
+        import iris_persistence.query as query
+    except Exception:
+        return
+    query._clear_auto_sync_cache()
+
 
 def configure_default_runtime(runtime: RuntimeAdapter | None) -> None:
     """Override the wrapper-backed runtime, primarily for unit tests."""
@@ -165,8 +172,11 @@ class IRISRuntimeAdapter(IRISValueAdapterMixin):
         cls_ref = self._cls(class_name)
         return getattr(cls_ref, method_name)(*args)
 
+    def new_object(self, class_name: str) -> Any:
+        return self._cls(class_name)._New()
+
     def create_object(self, class_name: str) -> Any:
-        return self.call_classmethod(class_name, "_New")
+        return self.new_object(class_name)
 
     def save_object(self, obj: Any) -> Any:
         return obj._Save()

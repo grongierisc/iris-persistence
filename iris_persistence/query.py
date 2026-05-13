@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import warnings
 from typing import Any, Dict, Generic, List, Optional, Type, TypeVar, get_args, get_origin
 
@@ -12,6 +13,12 @@ from iris_persistence.codecs import (
 from iris_persistence.runtime import get_runtime
 
 TModel = TypeVar("TModel", bound="iris_persistence.models.Model")
+
+_AUTO_SYNCED: set[type[iris_persistence.models.Model]] = set()
+
+
+def _clear_auto_sync_cache() -> None:
+    _AUTO_SYNCED.clear()
 
 
 def _is_model_type(value: Any) -> bool:
@@ -49,6 +56,16 @@ def _is_scalar_string_field(field_meta: Any | None) -> bool:
         "%Library.String",
         "%Library.RawString",
     }
+
+
+def _scalar_null_value_for_save(declared_type: Any) -> Any:
+    if declared_type is str:
+        return chr(0)
+    return ""
+
+
+def _is_empty_scalar_null(value: Any) -> bool:
+    return value in ("", None)
 
 
 def _coerce_collection_for_load(
@@ -93,11 +110,19 @@ def _build_model_from_iris_obj(
 
     # int/float fields: direct getattr, IRIS already returns correct Python type
     for field_name in model_cls._read_primitive_fields:
-        d[field_name] = getattr(iris_obj, field_name, None)
+        raw_val = getattr(iris_obj, field_name, None)
+        if _is_empty_scalar_null(raw_val) and model_cls.__model_fields__[field_name].nullable:
+            d[field_name] = None
+        else:
+            d[field_name] = raw_val
 
     # bool fields: IRIS stores as int 0/1, convert without calling coerce_value_for_load
     for field_name in model_cls._read_bool_fields:
-        d[field_name] = bool(getattr(iris_obj, field_name, None) or 0)
+        raw_val = getattr(iris_obj, field_name, None)
+        if _is_empty_scalar_null(raw_val) and model_cls.__model_fields__[field_name].nullable:
+            d[field_name] = None
+        else:
+            d[field_name] = bool(raw_val or 0)
 
     # Scalar fields needing full coercion (e.g. datetime): still skip get_property dispatch
     if model_cls._read_coerce_fields:
@@ -152,12 +177,10 @@ def _build_model_from_iris_obj(
 
 
 def _new_iris_object(runtime: Any, classname: str) -> Any:
-    cls_factory = getattr(runtime, "_cls", None)
-    return (
-        cls_factory(classname)._New()
-        if cls_factory is not None
-        else runtime.create_object(classname)
-    )
+    new_object = getattr(runtime, "new_object", None)
+    if callable(new_object):
+        return new_object(classname)
+    return runtime.create_object(classname)
 
 
 def _materialize_related_value(
@@ -209,27 +232,12 @@ def _materialize_related_value(
         )
 
     if _is_serial_type(declared_type):
-        iris_obj = value._iris_obj
-        if iris_obj is None:
-            iris_obj = runtime.create_object(declared_type._classname)
-        for field_name, nested_model_field in declared_type.__model_fields__.items():
-            if field_name in value.__dict__:
-                nested_value = getattr(value, field_name)
-                nested_type = nested_model_field.declared_type
-                runtime.inject_iris_value(
-                    iris_obj,
-                    field_name,
-                    _materialize_related_value(
-                        runtime,
-                        nested_type,
-                        nested_value,
-                        persist_related=persist_related,
-                        auto_sync=auto_sync,
-                        validate=validate,
-                    ),
-                )
-        value._iris_obj = iris_obj
-        return iris_obj
+        return _materialize_model(
+            value,
+            auto_sync=auto_sync,
+            validate=validate,
+            persist_related=persist_related,
+        )
 
     if not persist_related:
         return _materialize_model(
@@ -337,7 +345,12 @@ def _maybe_auto_sync_schema(model_cls: Type[TModel]) -> None:
             "Call `Model.sync_schema()` explicitly instead of auto-syncing on save."
         )
 
+    if mode == "extend" and model_cls in _AUTO_SYNCED:
+        return
+
     model_cls.sync_schema()
+    if mode == "extend":
+        _AUTO_SYNCED.add(model_cls)
 
 
 class QuerySet(Generic[TModel]):
@@ -425,20 +438,46 @@ def _populate_iris_object(
             if field_name not in inst_dict:
                 continue
             val = inst_dict.get(field_name)
-            if val is None and cls.__model_fields__[field_name].declared_type is str:
+            model_field = cls.__model_fields__[field_name]
+            if val is None and model_field.declared_type is str:
                 runtime.set_property(iris_obj, field_name, chr(0))
+            elif val is None and model_field.nullable:
+                runtime.set_property(
+                    iris_obj,
+                    field_name,
+                    _scalar_null_value_for_save(model_field.declared_type),
+                )
             elif val is not None:
                 runtime.set_property(iris_obj, field_name, val)
 
         # Scalar fields that require coercion (e.g. datetime types).
         if cls._scalar_coerce_fields:
             for field_name, declared_type in cls._scalar_coerce_fields:
+                if field_name not in inst_dict:
+                    continue
                 val = inst_dict.get(field_name)
-                if val is not None:
+                if val is None:
+                    model_field = cls.__model_fields__[field_name]
+                    if model_field.nullable:
+                        if declared_type in (
+                            datetime.date,
+                            datetime.datetime,
+                            datetime.time,
+                        ):
+                            runtime.set_property(iris_obj, field_name, "")
+                        else:
+                            runtime.inject_iris_value(
+                                iris_obj,
+                                field_name,
+                                None,
+                                field_meta=model_field.field_info,
+                            )
+                else:
                     runtime.inject_iris_value(
                         iris_obj,
                         field_name,
                         coerce_value_for_save(declared_type, val),
+                        field_meta=cls.__model_fields__[field_name].field_info,
                     )
 
         # Complex fields: collections, related models, readonly.
@@ -446,8 +485,17 @@ def _populate_iris_object(
             for field_name, model_field in cls._complex_save_fields:
                 if getattr(model_field.field_info, "readonly", False) and is_update:
                     continue
+                if field_name not in inst_dict:
+                    continue
                 val = inst_dict.get(field_name)
                 if val is None:
+                    if model_field.nullable:
+                        runtime.inject_iris_value(
+                            iris_obj,
+                            field_name,
+                            None,
+                            field_meta=model_field.field_info,
+                        )
                     continue
                 materialized = _materialize_related_value(
                     runtime,
@@ -510,7 +558,7 @@ def materialize(
     auto_sync: bool = True,
     validate: bool = True,
 ) -> Any:
-    """Populate and return an IRIS object for a model without saving it."""
+    """Populate and return an IRIS object for a model without calling %Save()."""
 
     return _materialize_model(
         instance,

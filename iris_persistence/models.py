@@ -298,9 +298,21 @@ def _build_fast_load(model_cls: Any, model_fields: Dict[str, ModelField], is_ser
                 f"d[{name!r}] = None if _v == _NULL_STRING else (_v if _v else '')"
             )
         elif mf.declared_type is bool:
-            lines.append(f"    d[{name!r}] = bool(iris_obj.{name} or 0)")
+            if mf.nullable:
+                lines.append(
+                    f"    _v = iris_obj.{name}; "
+                    f"d[{name!r}] = None if _v in ('', None) else bool(_v or 0)"
+                )
+            else:
+                lines.append(f"    d[{name!r}] = bool(iris_obj.{name} or 0)")
         elif mf.declared_type in (int, float):
-            lines.append(f"    d[{name!r}] = iris_obj.{name}")
+            if mf.nullable:
+                lines.append(
+                    f"    _v = iris_obj.{name}; "
+                    f"d[{name!r}] = None if _v in ('', None) else _v"
+                )
+            else:
+                lines.append(f"    d[{name!r}] = iris_obj.{name}")
         else:
             return None  # datetime, bytes, or other type needing coercion
 
@@ -347,11 +359,21 @@ def _build_fast_save(
             lines.append(f"        _v = inst_dict.get({name!r})")
             lines.append(f"        iris_obj.{name} = _NULL_STRING if _v is None else _v")
         elif mf.declared_type is bool:
-            lines.append(f"    _v = inst_dict.get({name!r})")
-            lines.append(f"    if _v is not None: iris_obj.{name} = 1 if _v else 0")
+            lines.append(f"    if {name!r} in inst_dict:")
+            lines.append(f"        _v = inst_dict.get({name!r})")
+            if mf.nullable:
+                lines.append(
+                    f"        iris_obj.{name} = '' if _v is None else (1 if _v else 0)"
+                )
+            else:
+                lines.append(f"        if _v is not None: iris_obj.{name} = 1 if _v else 0")
         else:
-            lines.append(f"    _v = inst_dict.get({name!r})")
-            lines.append(f"    if _v is not None: iris_obj.{name} = _v")
+            lines.append(f"    if {name!r} in inst_dict:")
+            lines.append(f"        _v = inst_dict.get({name!r})")
+            if mf.nullable:
+                lines.append(f"        iris_obj.{name} = '' if _v is None else _v")
+            else:
+                lines.append(f"        if _v is not None: iris_obj.{name} = _v")
 
     source = "\n".join(lines)
     namespace: dict[str, Any] = {"_NULL_STRING": chr(0)}
@@ -920,7 +942,7 @@ class Model(metaclass=ModelMeta):
         save_model(self)
 
     def to_iris(self, *, auto_sync: bool = True, validate: bool = True) -> Any:
-        """Return a populated IRIS object handle without saving this model."""
+        """Return a populated IRIS object handle without calling %Save()."""
 
         from iris_persistence.query import materialize
 

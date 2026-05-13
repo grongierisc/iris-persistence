@@ -19,6 +19,9 @@ class InMemoryAdapter(RuntimeAdapter):
     def call_classmethod(self, class_name: str, method_name: str, *args: Any) -> Any:
         pass
 
+    def new_object(self, class_name: str) -> Any:
+        return self.create_object(class_name)
+
     def create_object(self, class_name: str) -> Any:
         class _FakeObj:
             _classname = class_name

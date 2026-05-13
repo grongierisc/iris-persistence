@@ -136,6 +136,42 @@ def test_readonly_field_is_not_updated_after_create():
     assert reloaded.Name == "second"
 
 
+def test_none_clears_nullable_scalar_fields_on_update():
+    class NullableScalarUpdateModel(Model, persistent=True):
+        Count: int | None = None
+        Enabled: bool | None = None
+
+    model = NullableScalarUpdateModel(Count=7, Enabled=True)
+    model.save()
+
+    model.Count = None
+    model.Enabled = None
+    model.save()
+
+    loaded = NullableScalarUpdateModel.get(model.pk)
+
+    assert loaded is not None
+    assert loaded.Count is None
+    assert loaded.Enabled is None
+
+
+def test_absent_fields_do_not_clear_existing_values_on_update():
+    class PartialScalarUpdateModel(Model, persistent=True):
+        Count: int | None
+
+    model = PartialScalarUpdateModel(Count=7)
+    model.save()
+
+    partial = PartialScalarUpdateModel()
+    partial._pk = model.pk
+    partial.save()
+
+    loaded = PartialScalarUpdateModel.get(model.pk)
+
+    assert loaded is not None
+    assert loaded.Count == 7
+
+
 def test_model_meta_sets_auto_sync_flag():
     assert AutoSyncModel._auto_sync is True
     assert Product._auto_sync is False
@@ -164,6 +200,25 @@ def test_auto_sync_calls_sync_schema_before_save(monkeypatch):
 
     assert calls == [AutoSyncModel]
     assert model.pk is not None
+
+
+def test_auto_sync_runs_once_per_model_process_cache(monkeypatch):
+    calls = []
+
+    def fake_sync_schema(cls):
+        calls.append(cls)
+
+    monkeypatch.setattr(AutoSyncModel, "sync_schema", classmethod(fake_sync_schema))
+
+    first = AutoSyncModel(Name="first")
+    second = AutoSyncModel(Name="second")
+    first.save()
+    second.save()
+    first.to_iris()
+
+    assert calls == [AutoSyncModel]
+    assert first.pk is not None
+    assert second.pk is not None
 
 
 def test_auto_sync_rejects_observe_mode():

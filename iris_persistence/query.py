@@ -532,35 +532,13 @@ def from_iris(
 
 def save_model(instance: TModel) -> None:
     runtime = get_runtime()
-    cls = instance.__class__
     classname = instance._classname
 
-    if cls._auto_sync:
-        _maybe_auto_sync_schema(cls)
-    if cls._validate_on_init:
-        # Only validate on save when the model also validates on init; models
-        # that opt out of init-time validation (validate_on_init=False) are
-        # trusted to be well-formed by the time save() is called.
-        instance._validate_for_save()
-
-    pk = instance._pk
-    is_update = bool(pk)
-    iris_obj = instance._iris_obj
-    if iris_obj is None:
-        if is_update:
-            assert pk is not None
-            iris_obj = runtime.get_object(classname, pk)
-        else:
-            iris_obj = _new_iris_object(runtime, classname)
-    instance._iris_obj = iris_obj
-    _populate_iris_object(
+    iris_obj = _materialize_model(
         instance,
-        iris_obj,
-        runtime,
-        is_update=is_update,
-        persist_related=True,
         auto_sync=True,
         validate=True,
+        persist_related=True,
     )
 
     st = runtime.save_object(iris_obj)
@@ -578,7 +556,7 @@ def get_model(cls: Type[TModel], pk: str) -> Optional[TModel]:
     runtime = get_runtime()
     iris_obj = runtime.get_object(cls._classname, pk)
 
-    return _build_model_from_iris_obj(cls, iris_obj, known_pk=pk)
+    return from_iris(cls, iris_obj, known_pk=pk)
 
 
 def delete_model(instance: TModel) -> bool:

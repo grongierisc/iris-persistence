@@ -175,6 +175,26 @@ def _empty_schema_state(classname: str) -> dict[str, Any]:
     }
 
 
+def _schema_classname_for_save(classname: str) -> str:
+    if "." in classname or classname.startswith("%"):
+        return classname
+    return f"User.{classname}"
+
+
+def _candidate_classnames(classname: str) -> tuple[str, ...]:
+    default_classname = _schema_classname_for_save(classname)
+    if default_classname == classname:
+        return (classname,)
+    return (classname, default_classname)
+
+
+def _find_existing_classname(runtime: Any, classname: str) -> str | None:
+    for candidate in _candidate_classnames(classname):
+        if runtime.call_classmethod("%Dictionary.ClassDefinition", "_ExistsId", candidate):
+            return candidate
+    return None
+
+
 def _field_initial_expression(field_meta: FieldInfo) -> str | None:
     if getattr(field_meta, "initial_expression", None) is not None:
         return field_meta.initial_expression
@@ -189,7 +209,7 @@ def _field_initial_expression(field_meta: FieldInfo) -> str | None:
 
 
 def _collect_model_schema_state(model_cls: Type[Any]) -> dict[str, Any]:
-    classname = getattr(model_cls, "_classname", model_cls.__name__)
+    classname = _schema_classname_for_save(getattr(model_cls, "_classname", model_cls.__name__))
     state = _empty_schema_state(classname)
     state["super"] = getattr(model_cls, "_superclasses", "%Persistent")
 
@@ -272,12 +292,13 @@ def _collect_model_schema_state(model_cls: Type[Any]) -> dict[str, Any]:
 
 
 def _collect_live_schema_state(runtime: Any, classname: str) -> dict[str, Any]:
-    exists = runtime.call_classmethod("%Dictionary.ClassDefinition", "_ExistsId", classname)
-    state = _empty_schema_state(classname)
-    if not exists:
+    state = _empty_schema_state(_schema_classname_for_save(classname))
+    existing_classname = _find_existing_classname(runtime, classname)
+    if existing_classname is None:
         return state
 
-    class_def = runtime.get_object("%Dictionary.ClassDefinition", classname)
+    state["classname"] = existing_classname
+    class_def = runtime.get_object("%Dictionary.ClassDefinition", existing_classname)
     state["super"] = _safe_get_property(runtime, class_def, "Super")
     state["metadata"] = _compact_mapping(
         {
@@ -296,7 +317,7 @@ def _collect_live_schema_state(runtime: Any, classname: str) -> dict[str, Any]:
         name = _safe_get_property(runtime, item, "Name")
         if not name or str(name).startswith("%") or str(name) == "GUID":
             continue
-        if not _item_belongs_to_class(runtime, item, classname):
+        if not _item_belongs_to_class(runtime, item, existing_classname):
             continue
         parameters[str(name)] = str(_safe_get_property(runtime, item, "Default"))
     state["parameters"] = parameters
@@ -509,7 +530,7 @@ def _map_python_type_to_iris(py_type: Any, field_meta: FieldInfo) -> str:
     if str(py_type) == "<class 'datetime.time'>":
         return "%Library.Time"
     if isinstance(py_type, type) and issubclass(py_type, iris_persistence.models.Model):
-        return py_type._classname
+        return _schema_classname_for_save(py_type._classname)
 
     return "%Library.String"
 
@@ -525,7 +546,7 @@ def diff_schema(model_cls: Type[Any]) -> SchemaDiff:
         desired_state=desired_state,
     )
     return SchemaDiff(
-        classname=classname,
+        classname=planned_state["classname"],
         before=_render_schema_state(live_state),
         after=_render_schema_state(planned_state),
     )
@@ -554,18 +575,25 @@ def _ensure_class_definition(
     runtime: Any,
     classname: str,
     mode: str,
-) -> tuple[Any, bool]:
-    exists = runtime.call_classmethod("%Dictionary.ClassDefinition", "_ExistsId", classname)
-    if mode == "replace" and exists:
-        runtime.call_classmethod("%SYSTEM.OBJ", "Delete", classname, "-d")
-        exists = False
+) -> tuple[Any, bool, str]:
+    existing_classname = _find_existing_classname(runtime, classname)
+    schema_classname = existing_classname or _schema_classname_for_save(classname)
 
-    if exists:
-        return (runtime.get_object("%Dictionary.ClassDefinition", classname), True)
+    if mode == "replace" and existing_classname is not None:
+        runtime.call_classmethod("%SYSTEM.OBJ", "Delete", existing_classname, "-d")
+        existing_classname = None
+        schema_classname = _schema_classname_for_save(classname)
+
+    if existing_classname is not None:
+        return (
+            runtime.get_object("%Dictionary.ClassDefinition", existing_classname),
+            True,
+            existing_classname,
+        )
 
     class_definition = runtime.create_object("%Dictionary.ClassDefinition")
-    runtime.set_property(class_definition, "Name", classname)
-    return (class_definition, False)
+    runtime.set_property(class_definition, "Name", schema_classname)
+    return (class_definition, False, schema_classname)
 
 
 def _apply_class_definition(
@@ -640,6 +668,7 @@ def _sync_parameters(
 
 
 def _sync_related_models(
+    runtime: Any,
     model_cls: Type[Any],
     model_fields: dict[str, Any],
     seen: set[str],
@@ -651,7 +680,7 @@ def _sync_related_models(
             and issubclass(resolved, iris_persistence.models.Model)
             and resolved is not model_cls
         ):
-            sync_schema(resolved, seen)
+            _sync_schema_model(runtime, resolved, seen)
 
 
 def _property_initial_expression(field_meta: FieldInfo) -> str | None:
@@ -1197,40 +1226,91 @@ def _sync_storage(
     runtime.invoke_method(storage_list, "Insert", storage_definition)
 
 
-def sync_schema(model_cls: Type[Any], _seen: set[str] | None = None) -> None:
+def _schema_transaction_methods(runtime: Any) -> tuple[Any, Any, Any] | None:
+    begin = getattr(runtime, "begin_transaction", None)
+    commit = getattr(runtime, "commit_transaction", None)
+    rollback = getattr(runtime, "rollback_transaction", None)
+    if callable(begin) and callable(commit) and callable(rollback):
+        return (begin, commit, rollback)
+    return None
+
+
+def _sync_schema_model(
+    runtime: Any,
+    model_cls: Type[Any],
+    seen: set[str],
+) -> None:
     mode = getattr(model_cls, "_sync_mode", "extend")
     if mode == "observe":
         return
 
-    if _seen is None:
-        _seen = set()
-
-    runtime = get_runtime()
     classname = getattr(model_cls, "_classname", model_cls.__name__)
+    schema_classname = _schema_classname_for_save(classname)
     superclasses = getattr(model_cls, "_superclasses", "%Persistent")
-    if classname in _seen:
-        return
-    _seen.add(classname)
+    existing_classname = _find_existing_classname(runtime, classname)
+    if existing_classname is not None:
+        schema_classname = existing_classname
 
-    cd, _exists = _ensure_class_definition(runtime, classname, mode)
+    if schema_classname in seen:
+        return
+    seen.add(schema_classname)
+
+    cd, _exists, schema_classname = _ensure_class_definition(runtime, classname, mode)
     class_metadata = getattr(model_cls, "_class_metadata", None)
-    _apply_class_definition(runtime, cd, classname, superclasses, class_metadata)
+    _apply_class_definition(runtime, cd, schema_classname, superclasses, class_metadata)
 
     parameters = getattr(model_cls, "_parameters", {}) or {}
-    _sync_parameters(runtime, cd, classname, parameters, mode)
+    _sync_parameters(runtime, cd, schema_classname, parameters, mode)
 
     model_fields = getattr(model_cls, "__model_fields__", {})
-    _sync_related_models(model_cls, model_fields, _seen)
-    _sync_properties(runtime, cd, classname, model_fields, mode)
+    _sync_related_models(runtime, model_cls, model_fields, seen)
+    _sync_properties(runtime, cd, schema_classname, model_fields, mode)
 
     indexes = getattr(model_cls, "_indexes", [])
-    _sync_indexes(runtime, cd, classname, indexes, mode)
+    _sync_indexes(runtime, cd, schema_classname, indexes, mode)
 
     storage_meta = getattr(model_cls, "_storage", None)
-    _sync_storage(runtime, cd, classname, storage_meta, mode)
+    _sync_storage(runtime, cd, schema_classname, storage_meta, mode)
 
     st = runtime.save_object(cd)
     if not runtime.is_ok(st):
-        raise RuntimeError(f"Schema save failed for {classname}: {runtime.format_status(st)}")
+        raise RuntimeError(
+            f"Schema save failed for {schema_classname}: {runtime.format_status(st)}"
+        )
 
-    runtime.call_classmethod("%SYSTEM.OBJ", "Compile", classname, "fc /display=none")
+    runtime.call_classmethod("%SYSTEM.OBJ", "Compile", schema_classname, "fc /display=none")
+
+
+def sync_schema(model_cls: Type[Any], _seen: set[str] | None = None) -> None:
+    if getattr(model_cls, "_sync_mode", "extend") == "observe":
+        return
+
+    runtime = get_runtime()
+    if _seen is not None:
+        _sync_schema_model(runtime, model_cls, _seen)
+        return
+
+    transaction_methods = _schema_transaction_methods(runtime)
+    if transaction_methods is None:
+        _sync_schema_model(runtime, model_cls, set())
+        return
+
+    begin_transaction, commit_transaction, rollback_transaction = transaction_methods
+    begin_transaction()
+    try:
+        _sync_schema_model(runtime, model_cls, set())
+    except Exception:
+        try:
+            rollback_transaction()
+        except Exception:
+            pass
+        raise
+
+    try:
+        commit_transaction()
+    except Exception:
+        try:
+            rollback_transaction()
+        except Exception:
+            pass
+        raise

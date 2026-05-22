@@ -1,5 +1,7 @@
+import pytest
+
 import iris_persistence.schema as schema_module
-from iris_persistence import Field
+from iris_persistence import Field, Model
 from iris_persistence.schema import _map_python_type_to_iris
 from tests.fixtures.python.schema_mapping_fixtures import (
     ClassMetadataFixture,
@@ -115,6 +117,9 @@ class _RecordingRuntime:
     def is_ok(self, status):
         return bool(status)
 
+    def format_status(self, status):
+        return str(status)
+
     def extract_python_value(self, val):
         return val
 
@@ -145,6 +150,52 @@ class _ExistingClassRuntime(_RecordingRuntime):
         if class_name == "%Dictionary.ClassDefinition":
             return self.class_definition
         raise AssertionError(f"unexpected get_object({class_name!r}, {obj_id!r})")
+
+
+class _ExistingUserClassRuntime(_RecordingRuntime):
+    def __init__(self, classname):
+        super().__init__()
+        self.existing_classname = classname
+        self.class_definition = _RecordingObject("%Dictionary.ClassDefinition")
+        self.class_definition.Name = classname
+
+    def call_classmethod(self, class_name, method_name, *args):
+        self.calls.append((class_name, method_name, args))
+        if class_name == "%Dictionary.ClassDefinition" and method_name == "_ExistsId":
+            return args[0] == self.existing_classname
+        return 1
+
+    def create_object(self, class_name):
+        obj = _RecordingObject(class_name)
+        self.created.append((class_name, obj))
+        return obj
+
+    def get_object(self, class_name, obj_id):
+        if class_name == "%Dictionary.ClassDefinition" and obj_id == self.existing_classname:
+            return self.class_definition
+        raise AssertionError(f"unexpected get_object({class_name!r}, {obj_id!r})")
+
+
+class _TransactionalRuntime(_RecordingRuntime):
+    def __init__(self, fail_save_for=None):
+        super().__init__()
+        self.fail_save_for = fail_save_for
+        self.transaction_events = []
+
+    def begin_transaction(self):
+        self.transaction_events.append("begin")
+
+    def commit_transaction(self):
+        self.transaction_events.append("commit")
+
+    def rollback_transaction(self):
+        self.transaction_events.append("rollback")
+
+    def save_object(self, obj):
+        self.saved.append(obj)
+        if getattr(obj, "Name", None) == self.fail_save_for:
+            return 0
+        return 1
 
 
 def test_sync_schema_writes_extended_metadata(monkeypatch):
@@ -341,6 +392,93 @@ def test_sync_schema_extend_adds_missing_indexes_without_duplication(monkeypatch
     new_index = indices[1]
     assert new_index.Properties == "Payload"
     assert new_index.Unique == 1
+
+
+def test_sync_schema_creates_unqualified_class_in_user_package(monkeypatch):
+    class NewUnqualifiedSchemaFixture(Model, serial=True):
+        Payload: str | None = None
+
+    runtime = _RecordingRuntime()
+    monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
+
+    NewUnqualifiedSchemaFixture.sync_schema()
+
+    assert runtime.class_definition.Name == "User.NewUnqualifiedSchemaFixture"
+    prop = runtime.class_definition.Properties.items[0]
+    assert prop.Name == "Payload"
+    assert prop.parent == "User.NewUnqualifiedSchemaFixture"
+    assert (
+        "%SYSTEM.OBJ",
+        "Compile",
+        ("User.NewUnqualifiedSchemaFixture", "fc /display=none"),
+    ) in runtime.calls
+
+
+def test_sync_schema_extend_opens_existing_user_class_for_unqualified_model(monkeypatch):
+    class ExistingUnqualifiedSchemaFixture(Model, serial=True):
+        Payload: str | None = None
+
+    runtime = _ExistingUserClassRuntime("User.ExistingUnqualifiedSchemaFixture")
+    monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
+
+    ExistingUnqualifiedSchemaFixture.sync_schema()
+
+    assert "%Dictionary.ClassDefinition" not in [
+        class_name for class_name, _obj in runtime.created
+    ]
+    prop = runtime.class_definition.Properties.items[0]
+    assert prop.Name == "Payload"
+    assert prop.parent == "User.ExistingUnqualifiedSchemaFixture"
+    assert (
+        "%SYSTEM.OBJ",
+        "Compile",
+        ("User.ExistingUnqualifiedSchemaFixture", "fc /display=none"),
+    ) in runtime.calls
+
+
+def test_sync_schema_commits_top_level_transaction(monkeypatch):
+    runtime = _TransactionalRuntime()
+    monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
+
+    ParameterFixture.sync_schema()
+
+    assert runtime.transaction_events == ["begin", "commit"]
+
+
+def test_sync_schema_rolls_back_recursive_sync_on_failure(monkeypatch):
+    class SchemaRollbackChild(Model, serial=True):
+        Payload: str | None = None
+
+        class Meta:
+            classname = "Demo.SchemaRollbackChild"
+
+    class SchemaRollbackParent(Model, persistent=True):
+        Child: SchemaRollbackChild | None = None
+
+        class Meta:
+            classname = "Demo.SchemaRollbackParent"
+
+    runtime = _TransactionalRuntime(fail_save_for="Demo.SchemaRollbackParent")
+    monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
+
+    with pytest.raises(RuntimeError, match="Schema save failed for Demo.SchemaRollbackParent"):
+        SchemaRollbackParent.sync_schema()
+
+    assert runtime.transaction_events == ["begin", "rollback"]
+    assert [obj.Name for obj in runtime.saved] == [
+        "Demo.SchemaRollbackChild",
+        "Demo.SchemaRollbackParent",
+    ]
+    assert (
+        "%SYSTEM.OBJ",
+        "Compile",
+        ("Demo.SchemaRollbackChild", "fc /display=none"),
+    ) in runtime.calls
+    assert (
+        "%SYSTEM.OBJ",
+        "Compile",
+        ("Demo.SchemaRollbackParent", "fc /display=none"),
+    ) not in runtime.calls
 
 
 def test_diff_schema_reports_planned_changes_without_writing(monkeypatch):

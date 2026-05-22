@@ -14,6 +14,9 @@ class RuntimeAdapter(Protocol):
     def get_object(self, class_name: str, obj_id: str) -> Any: ...
     def delete_object(self, class_name: str, obj_id: str) -> bool: ...
     def get_dbapi_connection(self) -> Any: ...
+    def begin_transaction(self) -> None: ...
+    def commit_transaction(self) -> None: ...
+    def rollback_transaction(self) -> None: ...
 
     def set_property(self, obj: Any, prop_name: str, value: Any) -> None: ...
     def get_property(self, obj: Any, prop_name: str) -> Any: ...
@@ -180,6 +183,25 @@ class IRISRuntimeAdapter(IRISValueAdapterMixin):
 
     def save_object(self, obj: Any) -> Any:
         return obj._Save()
+
+    def begin_transaction(self) -> None:
+        import iris
+
+        iris.tstart()
+
+    def commit_transaction(self) -> None:
+        import iris
+
+        iris.tcommit()
+
+    def rollback_transaction(self) -> None:
+        import iris
+
+        rollback_one = getattr(iris, "trollbackone", None)
+        if callable(rollback_one):
+            rollback_one()
+        else:
+            iris.trollback()
 
     def format_status(self, status: Any) -> str:
         try:

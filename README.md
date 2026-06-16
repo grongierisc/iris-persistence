@@ -63,6 +63,40 @@ rows = Product.where(name="Widget").order_by("name").all()
 and saving clears that IRIS property. Fields that are absent from a partially
 constructed model are not written, so existing IRIS values are left unchanged.
 
+## Schema Migrations
+
+For production-controlled schemas, use the migration API or CLI instead of ad hoc
+`auto_sync` writes:
+
+```python
+from iris_persistence.migrations import apply_plan, create_plan, rollback_backup, verify_plan
+
+plan = create_plan([Product], target_revision="001_add_product")
+plan.save("plan.json")
+
+result = apply_plan(plan, backup_dir=".iris_persistence/backups")
+verify_plan(plan)
+
+# If the reviewed change must be reverted:
+rollback_backup(result.backup_dir, allow_destructive=True)
+```
+
+The console script exposes the same workflow:
+
+```bash
+iris-persistence plan myapp.models:Product --to 001_add_product --out plan.json
+iris-persistence review-plan plan.json
+iris-persistence apply-plan plan.json --backup-dir .iris_persistence/backups
+iris-persistence verify-plan plan.json
+iris-persistence rollback-backup .iris_persistence/backups/<backup-id> --allow-destructive
+```
+
+Migration plans include structured operations, safety classification, and
+live-schema fingerprints so stale plans are rejected before writes. Apply writes
+a pre-change backup before any IRIS mutation. Rollback restores classes from
+`schema_states.json`; hand-written downgrade functions are not part of this
+workflow.
+
 ## Model Inheritance And DTOs
 
 Use `Model` inheritance for shared persistence fields:

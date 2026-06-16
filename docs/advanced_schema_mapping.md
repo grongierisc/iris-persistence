@@ -444,6 +444,39 @@ Important caveats when reading `iris_persistence` metadata as SQL schema:
 - `%Persistent` and `Ens.Request` classes project persistent storage and SQL tables.
 - `sql_field_name` is the explicit Python-side way to control the IRIS projected SQL column name.
 
+## Migration Workflow
+
+`iris_persistence.migrations` adds an explicit `plan -> apply -> verify -> rollback-backup`
+workflow for production schemas.
+
+- `create_plan([...])` compares live `%Dictionary` metadata with Python model metadata and returns
+  deterministic structured operations plus the legacy human diff.
+- `plan.save("plan.json")` writes the review artifact that should be applied later.
+- `apply_plan(plan, backup_dir=...)` rechecks live schema fingerprints before writing and creates
+  a pre-apply backup directory containing `plan.json`, `metadata.json`, and `schema_states.json`.
+- destructive or manual-review operations, including storage replacement, are blocked unless
+  `allow_destructive=True` or CLI `--allow-destructive` is supplied.
+- `verify_plan(plan)` checks whether the live schema converged to the plan target.
+- `rollback_backup(path, allow_destructive=True)` restores classes from `schema_states.json` and
+  deletes classes that did not exist before apply; rollback does not require or use a hand-written
+  downgrade function.
+- `check_drift([...])` uses the same schema normalizer as planning, so drift reports and plan
+  output compare the same metadata surface.
+
+Recommended production flow:
+
+```bash
+iris-persistence plan myapp.models:Product --to 001_add_product --out plan.json
+iris-persistence review-plan plan.json
+iris-persistence apply-plan plan.json --backup-dir .iris_persistence/backups
+iris-persistence verify-plan plan.json
+iris-persistence rollback-backup .iris_persistence/backups/<backup-id> --allow-destructive
+```
+
+For migration-managed classes, keep `Meta.auto_sync = False` in production paths. `auto_sync`
+is still useful for demos and local development, but it bypasses reviewed migration plans and
+pre-apply backups.
+
 ## Current Coverage
 
 The current codebase round-trips:

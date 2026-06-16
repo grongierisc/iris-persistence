@@ -141,6 +141,10 @@
               <ul class="nav flex-column">
               </ul>
             </li>
+            <li class="nav-item" data-bs-level="2"><a href="#migration-workflow" class="nav-link">Migration Workflow</a>
+              <ul class="nav flex-column">
+              </ul>
+            </li>
             <li class="nav-item" data-bs-level="2"><a href="#current-coverage" class="nav-link">Current Coverage</a>
               <ul class="nav flex-column">
               </ul>
@@ -194,12 +198,12 @@ It writes IRIS class metadata, and IRIS projects that metadata into SQL schema.<
 <tr>
 <td><code>mode</code></td>
 <td>no direct dictionary field</td>
-<td>Controls ownership behavior in <code>iris_persistence</code>: <code>extend</code>, <code>replace</code>, <code>observe</code></td>
+<td>Controls ownership behavior in <code>iris_persistence</code>: <code>managed</code>, <code>extend</code>, <code>replace</code>, <code>observe</code>; default is <code>managed</code></td>
 </tr>
 <tr>
 <td><code>auto_sync</code></td>
 <td>no direct dictionary field</td>
-<td>When <code>True</code>, <code>save()</code> runs <code>sync_schema()</code> automatically before writing, but only in non-destructive <code>extend</code> mode</td>
+<td>When <code>True</code>, <code>save()</code> runs <code>sync_schema()</code> automatically before writing; blocked for <code>observe</code> and <code>replace</code></td>
 </tr>
 <tr>
 <td><code>superclasses</code></td>
@@ -239,14 +243,19 @@ It writes IRIS class metadata, and IRIS projects that metadata into SQL schema.<
 </thead>
 <tbody>
 <tr>
+<td><code>managed</code></td>
+<td>Adds/updates Python-declared members and removes omitted Python-owned parameters, properties, and indexes</td>
+<td>Migration-controlled production classes</td>
+</tr>
+<tr>
 <td><code>extend</code></td>
 <td>Adds/updates Python-declared members, keeps unrelated IRIS metadata</td>
-<td>Brownfield classes</td>
+<td>Brownfield classes and auto-sync demos</td>
 </tr>
 <tr>
 <td><code>replace</code></td>
 <td>Rebuilds the class from Python metadata</td>
-<td>Python-owned schema</td>
+<td>Python-owned destructive rebuilds</td>
 </tr>
 <tr>
 <td><code>observe</code></td>
@@ -263,6 +272,9 @@ It only affects <code>save()</code>.</p>
 <li><code>auto_sync=False</code>:
   <code>save()</code> never writes schema implicitly. If the IRIS class is missing, save fails with a
   runtime error that points you to <code>Model.sync_schema()</code>.</li>
+<li>default <code>mode="managed", auto_sync=True</code>:
+  <code>save()</code> calls <code>Model.sync_schema()</code> before writing the row. This can add, update, or delete
+  Python-owned schema members, so use it only where implicit schema ownership is acceptable.</li>
 <li><code>mode="extend", auto_sync=True</code>:
   <code>save()</code> calls <code>Model.sync_schema()</code> before writing the row. This will create the class if
   needed and add missing Python-declared fields and indexes non-destructively.</li>
@@ -275,7 +287,10 @@ It only affects <code>save()</code>.</p>
 <p>Recommended user experience:</p>
 <ul>
 <li>demos and first-run developer workflows:
-  <code>mode="extend", auto_sync=True</code></li>
+  default <code>mode="managed", auto_sync=True</code> for Python-owned schemas, or <code>mode="extend", auto_sync=True</code>
+  when IRIS-only members must be preserved</li>
+<li>migration-controlled production classes:
+  default <code>mode="managed"</code> with reviewed <code>plan -&gt; apply -&gt; verify</code></li>
 <li>existing production classes:
   <code>mode="observe"</code> or explicit <code>sync_schema()</code></li>
 <li>Python-owned destructive rebuilds:
@@ -330,8 +345,9 @@ It only affects <code>save()</code>.</p>
 </table>
 <p>Notes:</p>
 <ul>
-<li><code>ClassMetadata</code> is optional; if absent, <code>iris_persistence</code> leaves those class-level flags alone in <code>extend</code> mode.</li>
+<li><code>ClassMetadata</code> is optional; if absent, <code>iris_persistence</code> leaves those class-level flags alone in <code>managed</code> and <code>extend</code> modes.</li>
 <li>The scaffold only emits non-default class metadata fields.</li>
+<li><code>managed</code> mode removes Python-owned properties, indexes, and parameters that disappear from the model without rebuilding the class.</li>
 <li><code>replace</code> mode clears omitted class metadata naturally because the class is recreated.</li>
 <li><code>Internal</code> and <code>SqlViewName</code> are intentionally not modeled yet because they are exposed by compiled metadata but are not writable reliably through <code>%Dictionary.ClassDefinition</code> in this environment.</li>
 </ul>
@@ -1144,6 +1160,36 @@ does not normally appear in the UDL/XML storage block.</p>
 <li><code>%Persistent</code> and <code>Ens.Request</code> classes project persistent storage and SQL tables.</li>
 <li><code>sql_field_name</code> is the explicit Python-side way to control the IRIS projected SQL column name.</li>
 </ul>
+<h2 id="migration-workflow">Migration Workflow</h2>
+<p><code>iris_persistence.migrations</code> adds an explicit <code>plan -&gt; apply -&gt; verify -&gt; rollback-backup</code>
+workflow for production schemas.</p>
+<ul>
+<li><code>create_plan([...])</code> compares live <code>%Dictionary</code> metadata with Python model metadata and returns
+  deterministic structured operations plus the legacy human diff.</li>
+<li><code>plan.save("plan.json")</code> writes the review artifact that should be applied later.</li>
+<li><code>apply_plan(plan, backup_dir=...)</code> rechecks live schema fingerprints before writing and creates
+  a pre-apply backup directory containing <code>plan.json</code>, <code>metadata.json</code>, and <code>schema_states.json</code>.</li>
+<li>managed-mode property, index, and parameter removals/updates are shown as <code>managed-delete</code>
+  or <code>managed-update</code> operations and are allowed by default.</li>
+<li>destructive or manual-review operations outside managed member removals, including storage
+  replacement, are blocked unless <code>allow_destructive=True</code> or CLI <code>--allow-destructive</code> is supplied.</li>
+<li><code>verify_plan(plan)</code> checks whether the live schema converged to the plan target.</li>
+<li><code>rollback_backup(path, allow_destructive=True)</code> restores classes from <code>schema_states.json</code> and
+  deletes classes that did not exist before apply; rollback does not require or use a hand-written
+  downgrade function.</li>
+<li><code>check_drift([...])</code> uses the same schema normalizer as planning, so drift reports and plan
+  output compare the same metadata surface.</li>
+</ul>
+<p>Recommended production flow:</p>
+<pre><code class="language-bash">iris-persistence plan myapp.models:Product --to 001_add_product --out plan.json
+iris-persistence review-plan plan.json
+iris-persistence apply-plan plan.json --backup-dir .iris_persistence/backups
+iris-persistence verify-plan plan.json
+iris-persistence rollback-backup .iris_persistence/backups/&lt;backup-id&gt; --allow-destructive
+</code></pre>
+<p>For migration-managed classes, keep the default <code>mode="managed"</code> and <code>Meta.auto_sync = False</code>
+in production paths. <code>auto_sync</code> is still useful for demos and local development, but it bypasses
+reviewed migration plans and pre-apply backups.</p>
 <h2 id="current-coverage">Current Coverage</h2>
 <p>The current codebase round-trips:</p>
 <ul>

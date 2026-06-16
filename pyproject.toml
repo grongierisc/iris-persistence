@@ -44,6 +44,9 @@ dev = [
     "mypy>=1.8,<2",
 ]
 
+[project.scripts]
+iris-persistence = "iris_persistence.cli:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["iris_persistence"]
 

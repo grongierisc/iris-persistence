@@ -11,7 +11,7 @@
 - `class Meta` for model configuration
 - `persistent=True` and `serial=True` class flags
 - field-level index synthesis via `Field(index=True|unique=True|primary_key=True)`
-- `extend`, `replace`, and `observe` schema sync modes
+- `managed`, `extend`, `replace`, and `observe` schema sync modes
 - scaffold from live IRIS
 - recursive references between `%Persistent` and `%SerialObject` models
 - native `Model` inheritance
@@ -95,7 +95,11 @@ Migration plans include structured operations, safety classification, and
 live-schema fingerprints so stale plans are rejected before writes. Apply writes
 a pre-change backup before any IRIS mutation. Rollback restores classes from
 `schema_states.json`; hand-written downgrade functions are not part of this
-workflow.
+workflow. The default `managed` mode is intended for migration-controlled classes where the
+Python model should own removals of properties, indexes, and parameters.
+Managed member removals are shown in the plan and apply without
+`allow_destructive=True`; storage replacement and heavier destructive changes
+still require explicit approval.
 
 ## Model Inheritance And DTOs
 
@@ -161,7 +165,7 @@ Model configuration lives in an optional inner `Meta` class:
 ```python
 class Meta:
     classname = "Demo.Article"
-    mode = "extend"             # "extend" | "replace" | "observe" (default: "extend")
+    mode = "managed"            # "managed" | "extend" | "replace" | "observe" (default: "managed")
     storage = StorageDefinition(data_location="^Demo.ArticleD")
     indexes = [Index("TitleIdx", properties="Title", unique=True)]
     parameters = {"DEFAULTGLOBAL": "^Demo.ArticleD"}
@@ -174,9 +178,10 @@ When scaffolding with `extract_meta=True`, `iris_persistence` reads parameters f
 
 ## Ownership Modes
 
-### extend (default)
+### managed (default)
 
-Python and IRIS share ownership. Safe starting point for brownfield classes.
+Python owns the modeled schema members, without rebuilding the whole class. This
+is the recommended mode for migration-controlled production classes.
 
 ```python
 class Product(Model, persistent=True):
@@ -184,14 +189,37 @@ class Product(Model, persistent=True):
 
     class Meta:
         classname = "Demo.Product"
-        # mode = "extend"  ← default, can be omitted
+        # mode = "managed"  # default, can be omitted
+```
+
+Behavior:
+
+- removing a Python field plans/removes the matching IRIS property
+- removing `Meta.indexes` or `Meta.parameters` entries plans/removes matching IRIS members
+- the class itself is not deleted and recreated
+- inherited and system dictionary members are preserved
+- storage is replaced only when `Meta.storage` is explicitly present
+- `auto_sync=True` runs managed sync before each save and can delete omitted members
+
+### extend
+
+Python and IRIS share ownership. Use it for brownfield classes and implicit
+`auto_sync` workflows where Python should only add/update declared members.
+
+```python
+class Product(Model, persistent=True):
+    name: str = Field(required=True)
+
+    class Meta:
+        classname = "Demo.Product"
+        mode = "extend"
 ```
 
 Behavior:
 
 - Python adds missing properties, indexes, parameters, and storage metadata
 - existing IRIS-only members are kept
-- Python-declared fields overwrite IRIS fields with the same name
+- Python-declared fields do not remove or replace existing same-name IRIS members
 - schema changes happen when `Model.sync_schema()` is called
 
 ### replace

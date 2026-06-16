@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from difflib import unified_diff
+from types import SimpleNamespace
 from typing import Any, Type, get_args, get_origin
 
 import iris_persistence.models
@@ -69,6 +72,99 @@ STORAGE_PROPERTY_KEYS = (
     "bias_queries_as_outlier",
     "stream_location",
 )
+STORAGE_DATA_KEYS = ("structure", "attribute", "subscript")
+STORAGE_INDEX_KEYS = ("location", "small_chunk_size")
+STORAGE_SQL_MAP_KEYS = (
+    "block_count",
+    "condition",
+    "condition_fields",
+    "conditional_with_host_vars",
+    "global_name",
+    "population_pct",
+    "population_type",
+    "row_reference",
+    "structure",
+    "type",
+)
+STORAGE_SQL_MAP_DATA_KEYS = ("node", "piece", "delimiter", "retrieval_code")
+STORAGE_SQL_MAP_ROW_ID_SPEC_KEYS = ("field", "expression")
+STORAGE_SQL_MAP_SUB_KEYS = (
+    "access_type",
+    "data_access",
+    "delimiter",
+    "expression",
+    "loop_init_value",
+    "next_code",
+    "null_marker",
+    "start_value",
+    "stop_expression",
+    "stop_value",
+)
+STORAGE_SQL_MAP_SUB_ACCESS_VAR_KEYS = ("variable", "code")
+STORAGE_SQL_MAP_SUB_INVALID_CONDITION_KEYS = ("expression",)
+
+
+@dataclass(frozen=True)
+class SchemaOperation:
+    classname: str
+    op_type: str
+    path: str
+    before: Any = None
+    after: Any = None
+    safety: str = "safe"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "classname": self.classname,
+            "op_type": self.op_type,
+            "path": self.path,
+            "before": self.before,
+            "after": self.after,
+            "safety": self.safety,
+        }
+
+
+@dataclass(frozen=True)
+class SchemaState:
+    classname: str
+    superclasses: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    parameters: dict[str, Any] = field(default_factory=dict)
+    properties: dict[str, dict[str, Any]] = field(default_factory=dict)
+    indexes: dict[str, dict[str, Any]] = field(default_factory=dict)
+    storage: dict[str, Any] | None = None
+
+    @classmethod
+    def from_dict(cls, state: dict[str, Any]) -> "SchemaState":
+        return cls(
+            classname=str(state["classname"]),
+            superclasses=state.get("super"),
+            metadata=deepcopy(state.get("metadata", {})),
+            parameters=deepcopy(state.get("parameters", {})),
+            properties=deepcopy(state.get("properties", {})),
+            indexes=deepcopy(state.get("indexes", {})),
+            storage=deepcopy(state.get("storage")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "classname": self.classname,
+            "super": self.superclasses,
+            "metadata": deepcopy(self.metadata),
+            "parameters": deepcopy(self.parameters),
+            "properties": deepcopy(self.properties),
+            "indexes": deepcopy(self.indexes),
+            "storage": deepcopy(self.storage),
+        }
+
+    def fingerprint(self) -> str:
+        payload = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"), default=str)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def __getitem__(self, key: str) -> Any:
+        if key == "super":
+            return self.superclasses
+        return getattr(self, key)
 
 
 @dataclass(frozen=True)
@@ -76,6 +172,9 @@ class SchemaDiff:
     classname: str
     before: tuple[str, ...]
     after: tuple[str, ...]
+    before_state: SchemaState | None = None
+    after_state: SchemaState | None = None
+    operations: tuple[SchemaOperation, ...] = ()
 
     @property
     def has_changes(self) -> bool:
@@ -153,6 +252,20 @@ def _compact_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
     return compact
 
 
+def _sort_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
+    return {str(key): mapping[key] for key in sorted(mapping, key=str)}
+
+
+def _normalize_values_mapping(mapping: dict[Any, Any] | None) -> dict[str, str]:
+    if not mapping:
+        return {}
+    return {str(key): str(mapping[key]) for key in sorted(mapping, key=lambda item: str(item))}
+
+
+def _state_to_dict(state: SchemaState | dict[str, Any]) -> dict[str, Any]:
+    return state.to_dict() if isinstance(state, SchemaState) else deepcopy(state)
+
+
 def _render_attribute_parts(keys: tuple[str, ...], mapping: dict[str, Any]) -> str:
     parts = []
     for key in keys:
@@ -172,6 +285,17 @@ def _empty_schema_state(classname: str) -> dict[str, Any]:
         "properties": {},
         "indexes": {},
         "storage": None,
+    }
+
+
+def _empty_storage_state() -> dict[str, Any]:
+    return {
+        "name": None,
+        "attrs": {},
+        "data": {},
+        "indices": {},
+        "properties": {},
+        "sql_maps": {},
     }
 
 
@@ -208,7 +332,7 @@ def _field_initial_expression(field_meta: FieldInfo) -> str | None:
     return str(default)
 
 
-def _collect_model_schema_state(model_cls: Type[Any]) -> dict[str, Any]:
+def _collect_model_schema_state(model_cls: Type[Any]) -> SchemaState:
     classname = _schema_classname_for_save(getattr(model_cls, "_classname", model_cls.__name__))
     state = _empty_schema_state(classname)
     state["super"] = getattr(model_cls, "_superclasses", "%Persistent")
@@ -276,26 +400,125 @@ def _collect_model_schema_state(model_cls: Type[Any]) -> dict[str, Any]:
 
     storage_meta = getattr(model_cls, "_storage", None)
     if storage_meta is not None:
-        state["storage"] = {
-            "attrs": _compact_mapping(
-                {key: getattr(storage_meta, key, None) for key in STORAGE_KEYS}
-            ),
-            "properties": {
+        storage_state = _empty_storage_state()
+        storage_state["name"] = "CustomStorage"
+        storage_state["attrs"] = _compact_mapping(
+            {key: getattr(storage_meta, key, None) for key in STORAGE_KEYS}
+        )
+        storage_state["data"] = _sort_mapping(
+            {
+                item.name: _compact_mapping(
+                    {
+                        "structure": getattr(item, "structure", None),
+                        "attribute": getattr(item, "attribute", None),
+                        "subscript": getattr(item, "subscript", None),
+                        "values": _normalize_values_mapping(getattr(item, "values", None)),
+                    }
+                )
+                for item in getattr(storage_meta, "data", ()) or ()
+            }
+        )
+        storage_state["indices"] = _sort_mapping(
+            {
+                item.name: _compact_mapping(
+                    {key: getattr(item, key, None) for key in STORAGE_INDEX_KEYS}
+                )
+                for item in getattr(storage_meta, "indices", ()) or ()
+            }
+        )
+        storage_state["properties"] = _sort_mapping(
+            {
                 item.name: _compact_mapping(
                     {key: getattr(item, key, None) for key in STORAGE_PROPERTY_KEYS}
                 )
                 for item in getattr(storage_meta, "properties", ()) or ()
-            },
-        }
+            }
+        )
+        storage_state["sql_maps"] = _sort_mapping(
+            {
+                item.name: _compact_mapping(
+                    {
+                        **{key: getattr(item, key, None) for key in STORAGE_SQL_MAP_KEYS},
+                        "data": _sort_mapping(
+                            {
+                                child.name: _compact_mapping(
+                                    {
+                                        key: getattr(child, key, None)
+                                        for key in STORAGE_SQL_MAP_DATA_KEYS
+                                    }
+                                )
+                                for child in (getattr(item, "data", None) or ())
+                            }
+                        ),
+                        "row_id_specs": _sort_mapping(
+                            {
+                                child.name: _compact_mapping(
+                                    {
+                                        key: getattr(child, key, None)
+                                        for key in STORAGE_SQL_MAP_ROW_ID_SPEC_KEYS
+                                    }
+                                )
+                                for child in getattr(item, "row_id_specs", ()) or ()
+                            }
+                        ),
+                        "subscripts": _sort_mapping(
+                            {
+                                child.name: _compact_mapping(
+                                    {
+                                        **{
+                                            key: getattr(child, key, None)
+                                            for key in STORAGE_SQL_MAP_SUB_KEYS
+                                        },
+                                        "access_vars": _sort_mapping(
+                                            {
+                                                nested.name: _compact_mapping(
+                                                    {
+                                                        key: getattr(nested, key, None)
+                                                        for key in (
+                                                            STORAGE_SQL_MAP_SUB_ACCESS_VAR_KEYS
+                                                        )
+                                                    }
+                                                )
+                                                for nested in (
+                                                    getattr(child, "access_vars", ()) or ()
+                                                )
+                                            }
+                                        ),
+                                        "invalid_conditions": _sort_mapping(
+                                            {
+                                                nested.name: _compact_mapping(
+                                                    {
+                                                        key: getattr(nested, key, None)
+                                                        for key in (
+                                                            STORAGE_SQL_MAP_SUB_INVALID_CONDITION_KEYS
+                                                        )
+                                                    }
+                                                )
+                                                for nested in (
+                                                    getattr(child, "invalid_conditions", ()) or ()
+                                                )
+                                            }
+                                        ),
+                                    }
+                                )
+                                for child in getattr(item, "subscripts", ()) or ()
+                            }
+                        ),
+                    }
+                )
+                for item in getattr(storage_meta, "sql_maps", ()) or ()
+            }
+        )
+        state["storage"] = storage_state
 
-    return state
+    return SchemaState.from_dict(state)
 
 
-def _collect_live_schema_state(runtime: Any, classname: str) -> dict[str, Any]:
+def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
     state = _empty_schema_state(_schema_classname_for_save(classname))
     existing_classname = _find_existing_classname(runtime, classname)
     if existing_classname is None:
-        return state
+        return SchemaState.from_dict(state)
 
     state["classname"] = existing_classname
     class_def = runtime.get_object("%Dictionary.ClassDefinition", existing_classname)
@@ -394,25 +617,59 @@ def _collect_live_schema_state(runtime: Any, classname: str) -> dict[str, Any]:
         selected_storage = storages[0]
 
     if selected_storage is not None:
-        state["storage"] = {
-            "attrs": _compact_mapping(
+        storage_state = _empty_storage_state()
+        storage_state["name"] = _safe_get_property(runtime, selected_storage, "Name")
+        storage_state["attrs"] = _compact_mapping(
+            {
+                key: _safe_get_property(
+                    runtime,
+                    selected_storage,
+                    "".join(part.capitalize() for part in key.split("_")),
+                )
+                for key in STORAGE_KEYS
+            }
+        )
+        storage_data = _safe_get_property(runtime, selected_storage, "Data")
+        for item in _iter_runtime_list(runtime, storage_data):
+            name = _safe_get_property(runtime, item, "Name")
+            if not name:
+                continue
+            values = {}
+            value_items = _safe_get_property(runtime, item, "Values")
+            for value_item in _iter_runtime_list(runtime, value_items):
+                value_name = _safe_get_property(runtime, value_item, "Name")
+                if value_name in (None, ""):
+                    continue
+                values[str(value_name)] = str(_safe_get_property(runtime, value_item, "Value"))
+            storage_state["data"][str(name)] = _compact_mapping(
                 {
-                    key: _safe_get_property(
-                        runtime,
-                        selected_storage,
-                        "".join(part.capitalize() for part in key.split("_")),
-                    )
-                    for key in STORAGE_KEYS
+                    "structure": _safe_get_property(runtime, item, "Structure"),
+                    "attribute": _safe_get_property(runtime, item, "Attribute"),
+                    "subscript": _safe_get_property(runtime, item, "Subscript"),
+                    "values": _normalize_values_mapping(values),
                 }
-            ),
-            "properties": {},
-        }
+            )
+        storage_state["data"] = _sort_mapping(storage_state["data"])
+
+        storage_indices = _safe_get_property(runtime, selected_storage, "Indices")
+        for item in _iter_runtime_list(runtime, storage_indices):
+            name = _safe_get_property(runtime, item, "Name")
+            if not name:
+                continue
+            storage_state["indices"][str(name)] = _compact_mapping(
+                {
+                    "location": _safe_get_property(runtime, item, "Location"),
+                    "small_chunk_size": _safe_get_property(runtime, item, "SmallChunkSize"),
+                }
+            )
+        storage_state["indices"] = _sort_mapping(storage_state["indices"])
+
         storage_properties = _safe_get_property(runtime, selected_storage, "Properties")
         for item in _iter_runtime_list(runtime, storage_properties):
             name = _safe_get_property(runtime, item, "Name")
             if not name:
                 continue
-            state["storage"]["properties"][str(name)] = _compact_mapping(
+            storage_state["properties"][str(name)] = _compact_mapping(
                 {
                     "average_field_size": _safe_get_property(runtime, item, "AverageFieldSize"),
                     "selectivity": _safe_get_property(runtime, item, "Selectivity"),
@@ -428,36 +685,144 @@ def _collect_live_schema_state(runtime: Any, classname: str) -> dict[str, Any]:
                     "stream_location": _safe_get_property(runtime, item, "StreamLocation"),
                 }
             )
+        storage_state["properties"] = _sort_mapping(storage_state["properties"])
 
-    return state
+        storage_sql_maps = _safe_get_property(runtime, selected_storage, "SQLMaps")
+        for item in _iter_runtime_list(runtime, storage_sql_maps):
+            name = _safe_get_property(runtime, item, "Name")
+            if not name:
+                continue
+            map_state = _compact_mapping(
+                {
+                    "block_count": _safe_get_property(runtime, item, "BlockCount"),
+                    "condition": _safe_get_property(runtime, item, "Condition"),
+                    "condition_fields": _safe_get_property(runtime, item, "ConditionFields"),
+                    "conditional_with_host_vars": _coerce_bool(
+                        _safe_get_property(runtime, item, "ConditionalWithHostVars")
+                    ),
+                    "global_name": _safe_get_property(runtime, item, "Global"),
+                    "population_pct": _safe_get_property(runtime, item, "PopulationPct"),
+                    "population_type": _safe_get_property(runtime, item, "PopulationType"),
+                    "row_reference": _safe_get_property(runtime, item, "RowReference"),
+                    "structure": _safe_get_property(runtime, item, "Structure"),
+                    "type": _safe_get_property(runtime, item, "Type"),
+                    "data": {},
+                    "row_id_specs": {},
+                    "subscripts": {},
+                }
+            )
+            data_items = _safe_get_property(runtime, item, "Data")
+            for data_item in _iter_runtime_list(runtime, data_items):
+                data_name = _safe_get_property(runtime, data_item, "Name")
+                if not data_name:
+                    continue
+                map_state["data"][str(data_name)] = _compact_mapping(
+                    {
+                        "node": _safe_get_property(runtime, data_item, "Node"),
+                        "piece": _safe_get_property(runtime, data_item, "Piece"),
+                        "delimiter": _safe_get_property(runtime, data_item, "Delimiter"),
+                        "retrieval_code": _safe_get_property(runtime, data_item, "RetrievalCode"),
+                    }
+                )
+            map_state["data"] = _sort_mapping(map_state["data"])
+
+            row_id_spec_items = _safe_get_property(runtime, item, "RowIdSpecs")
+            for spec_item in _iter_runtime_list(runtime, row_id_spec_items):
+                spec_name = _safe_get_property(runtime, spec_item, "Name")
+                if not spec_name:
+                    continue
+                map_state["row_id_specs"][str(spec_name)] = _compact_mapping(
+                    {
+                        "field": _safe_get_property(runtime, spec_item, "Field"),
+                        "expression": _safe_get_property(runtime, spec_item, "Expression"),
+                    }
+                )
+            map_state["row_id_specs"] = _sort_mapping(map_state["row_id_specs"])
+
+            subscript_items = _safe_get_property(runtime, item, "Subscripts")
+            for sub_item in _iter_runtime_list(runtime, subscript_items):
+                sub_name = _safe_get_property(runtime, sub_item, "Name")
+                if not sub_name:
+                    continue
+                sub_state = _compact_mapping(
+                    {
+                        "access_type": _safe_get_property(runtime, sub_item, "AccessType"),
+                        "data_access": _safe_get_property(runtime, sub_item, "DataAccess"),
+                        "delimiter": _safe_get_property(runtime, sub_item, "Delimiter"),
+                        "expression": _safe_get_property(runtime, sub_item, "Expression"),
+                        "loop_init_value": _safe_get_property(runtime, sub_item, "LoopInitValue"),
+                        "next_code": _safe_get_property(runtime, sub_item, "NextCode"),
+                        "null_marker": _safe_get_property(runtime, sub_item, "NullMarker"),
+                        "start_value": _safe_get_property(runtime, sub_item, "StartValue"),
+                        "stop_expression": _safe_get_property(runtime, sub_item, "StopExpression"),
+                        "stop_value": _safe_get_property(runtime, sub_item, "StopValue"),
+                        "access_vars": {},
+                        "invalid_conditions": {},
+                    }
+                )
+                access_var_items = _safe_get_property(runtime, sub_item, "Accessvars")
+                for access_item in _iter_runtime_list(runtime, access_var_items):
+                    access_name = _safe_get_property(runtime, access_item, "Name")
+                    if not access_name:
+                        continue
+                    sub_state["access_vars"][str(access_name)] = _compact_mapping(
+                        {
+                            "variable": _safe_get_property(runtime, access_item, "Variable"),
+                            "code": _safe_get_property(runtime, access_item, "Code"),
+                        }
+                    )
+                sub_state["access_vars"] = _sort_mapping(sub_state["access_vars"])
+                invalid_items = _safe_get_property(runtime, sub_item, "Invalidconditions")
+                for invalid_item in _iter_runtime_list(runtime, invalid_items):
+                    invalid_name = _safe_get_property(runtime, invalid_item, "Name")
+                    if not invalid_name:
+                        continue
+                    sub_state["invalid_conditions"][str(invalid_name)] = _compact_mapping(
+                        {
+                            "expression": _safe_get_property(runtime, invalid_item, "Expression"),
+                        }
+                    )
+                sub_state["invalid_conditions"] = _sort_mapping(
+                    sub_state["invalid_conditions"]
+                )
+                map_state["subscripts"][str(sub_name)] = sub_state
+            map_state["subscripts"] = _sort_mapping(map_state["subscripts"])
+            storage_state["sql_maps"][str(name)] = map_state
+        storage_state["sql_maps"] = _sort_mapping(storage_state["sql_maps"])
+        state["storage"] = storage_state
+
+    return SchemaState.from_dict(state)
 
 
 def _merge_schema_state_for_sync(
     *,
     mode: str,
-    live_state: dict[str, Any],
-    desired_state: dict[str, Any],
-) -> dict[str, Any]:
+    live_state: SchemaState | dict[str, Any],
+    desired_state: SchemaState | dict[str, Any],
+) -> SchemaState:
+    live_mapping = _state_to_dict(live_state)
+    desired_mapping = _state_to_dict(desired_state)
     if mode == "observe":
-        return live_state
-    if not live_state["super"] or mode == "replace":
-        return desired_state
+        return SchemaState.from_dict(live_mapping)
+    if not live_mapping["super"] or mode == "replace":
+        return SchemaState.from_dict(desired_mapping)
 
-    planned = deepcopy(live_state)
-    planned["super"] = desired_state["super"]
-    for key, value in desired_state["metadata"].items():
+    planned = deepcopy(live_mapping)
+    planned["super"] = desired_mapping["super"]
+    for key, value in desired_mapping["metadata"].items():
         if value not in (None, "", False):
             planned["metadata"][key] = value
-    for key, value in desired_state["parameters"].items():
+    for key, value in desired_mapping["parameters"].items():
         planned["parameters"].setdefault(key, value)
-    for key, value in desired_state["properties"].items():
+    for key, value in desired_mapping["properties"].items():
         planned["properties"].setdefault(key, value)
-    for key, value in desired_state["indexes"].items():
+    for key, value in desired_mapping["indexes"].items():
         planned["indexes"].setdefault(key, value)
-    return planned
+    return SchemaState.from_dict(planned)
 
 
-def _render_schema_state(state: dict[str, Any]) -> tuple[str, ...]:
+def _render_schema_state(state: SchemaState | dict[str, Any]) -> tuple[str, ...]:
+    state = _state_to_dict(state)
     lines = [f"class {state['classname']}"]
     if state["super"]:
         lines.append(f"super {state['super']}")
@@ -481,9 +846,69 @@ def _render_schema_state(state: dict[str, Any]) -> tuple[str, ...]:
             if value in (None, "", False):
                 continue
             lines.append(f"storage {key}={_format_value(value)}")
+        for name in sorted(storage.get("data", {})):
+            item = storage["data"][name]
+            parts = _render_attribute_parts(STORAGE_DATA_KEYS, item)
+            lines.append(f"storage_data {name}" + (f" {parts}" if parts else ""))
+            values = item.get("values") or {}
+            for value_key in sorted(values, key=str):
+                lines.append(
+                    f"storage_data_value {name}.{value_key}={_format_value(values[value_key])}"
+                )
+        for name in sorted(storage.get("indices", {})):
+            parts = _render_attribute_parts(STORAGE_INDEX_KEYS, storage["indices"][name])
+            lines.append(f"storage_index {name}" + (f" {parts}" if parts else ""))
         for name in sorted(storage["properties"]):
             parts = _render_attribute_parts(STORAGE_PROPERTY_KEYS, storage["properties"][name])
             lines.append(f"storage_property {name}" + (f" {parts}" if parts else ""))
+        for name in sorted(storage.get("sql_maps", {})):
+            item = storage["sql_maps"][name]
+            parts = _render_attribute_parts(STORAGE_SQL_MAP_KEYS, item)
+            lines.append(f"storage_sql_map {name}" + (f" {parts}" if parts else ""))
+            for data_name in sorted(item.get("data", {})):
+                parts = _render_attribute_parts(
+                    STORAGE_SQL_MAP_DATA_KEYS,
+                    item["data"][data_name],
+                )
+                lines.append(
+                    f"storage_sql_map_data {name}.{data_name}"
+                    + (f" {parts}" if parts else "")
+                )
+            for spec_name in sorted(item.get("row_id_specs", {})):
+                parts = _render_attribute_parts(
+                    STORAGE_SQL_MAP_ROW_ID_SPEC_KEYS,
+                    item["row_id_specs"][spec_name],
+                )
+                lines.append(
+                    f"storage_sql_map_row_id_spec {name}.{spec_name}"
+                    + (f" {parts}" if parts else "")
+                )
+            for sub_name in sorted(item.get("subscripts", {})):
+                subscript = item["subscripts"][sub_name]
+                parts = _render_attribute_parts(STORAGE_SQL_MAP_SUB_KEYS, subscript)
+                lines.append(
+                    f"storage_sql_map_subscript {name}.{sub_name}"
+                    + (f" {parts}" if parts else "")
+                )
+                for access_name in sorted(subscript.get("access_vars", {})):
+                    parts = _render_attribute_parts(
+                        STORAGE_SQL_MAP_SUB_ACCESS_VAR_KEYS,
+                        subscript["access_vars"][access_name],
+                    )
+                    lines.append(
+                        f"storage_sql_map_sub_access_var {name}.{sub_name}.{access_name}"
+                        + (f" {parts}" if parts else "")
+                    )
+                for invalid_name in sorted(subscript.get("invalid_conditions", {})):
+                    parts = _render_attribute_parts(
+                        STORAGE_SQL_MAP_SUB_INVALID_CONDITION_KEYS,
+                        subscript["invalid_conditions"][invalid_name],
+                    )
+                    lines.append(
+                        f"storage_sql_map_sub_invalid_condition "
+                        f"{name}.{sub_name}.{invalid_name}"
+                        + (f" {parts}" if parts else "")
+                    )
     return tuple(lines)
 
 
@@ -535,6 +960,175 @@ def _map_python_type_to_iris(py_type: Any, field_meta: FieldInfo) -> str:
     return "%Library.String"
 
 
+def _operation_safety(op_type: str, before: Any, after: Any) -> str:
+    if op_type in {"delete_parameter", "delete_property", "delete_index", "delete_storage"}:
+        return "destructive"
+    if op_type in {"add_storage", "replace_storage"}:
+        return "manual-review"
+    if before in (None, {}, []) and after not in (None, {}, []):
+        return "safe"
+    if op_type in {"update_property", "update_index", "update_super"}:
+        return "manual-review"
+    if before not in (None, {}, []) and after not in (None, {}, []) and before != after:
+        return "manual-review"
+    return "safe"
+
+
+def _operation_type(path: str, before: Any, after: Any) -> str:
+    if path == "class":
+        return "create_class" if before in (None, {}, []) else "update_class"
+    if path == "super":
+        return "update_super"
+    if path.startswith("metadata."):
+        return "update_class_metadata"
+    if path.startswith("parameters."):
+        if before in (None, {}, []):
+            return "add_parameter"
+        if after in (None, {}, []):
+            return "delete_parameter"
+        return "update_parameter"
+    if path.startswith("properties."):
+        if before in (None, {}, []):
+            return "add_property"
+        if after in (None, {}, []):
+            return "delete_property"
+        return "update_property"
+    if path.startswith("indexes."):
+        if before in (None, {}, []):
+            return "add_index"
+        if after in (None, {}, []):
+            return "delete_index"
+        return "update_index"
+    if path == "storage" or path.startswith("storage."):
+        if before in (None, {}, []):
+            return "add_storage"
+        if after in (None, {}, []):
+            return "delete_storage"
+        return "replace_storage"
+    return "update_schema"
+
+
+def _append_operation(
+    operations: list[SchemaOperation],
+    *,
+    classname: str,
+    path: str,
+    before: Any,
+    after: Any,
+) -> None:
+    if before == after:
+        return
+    op_type = _operation_type(path, before, after)
+    operations.append(
+        SchemaOperation(
+            classname=classname,
+            op_type=op_type,
+            path=path,
+            before=deepcopy(before),
+            after=deepcopy(after),
+            safety=_operation_safety(op_type, before, after),
+        )
+    )
+
+
+def _diff_mapping_items(
+    operations: list[SchemaOperation],
+    *,
+    classname: str,
+    prefix: str,
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> None:
+    for key in sorted(set(before) | set(after), key=str):
+        _append_operation(
+            operations,
+            classname=classname,
+            path=f"{prefix}.{key}",
+            before=before.get(key),
+            after=after.get(key),
+        )
+
+
+def diff_schema_operations(
+    before_state: SchemaState | dict[str, Any],
+    after_state: SchemaState | dict[str, Any],
+) -> tuple[SchemaOperation, ...]:
+    before = _state_to_dict(before_state)
+    after = _state_to_dict(after_state)
+    classname = str(after["classname"])
+    operations: list[SchemaOperation] = []
+
+    if not before.get("super") and after.get("super"):
+        _append_operation(
+            operations,
+            classname=classname,
+            path="class",
+            before=None,
+            after={"classname": after["classname"], "super": after["super"]},
+        )
+    elif before.get("classname") != after.get("classname"):
+        _append_operation(
+            operations,
+            classname=classname,
+            path="class",
+            before=before.get("classname"),
+            after=after.get("classname"),
+        )
+
+    _append_operation(
+        operations,
+        classname=classname,
+        path="super",
+        before=before.get("super"),
+        after=after.get("super"),
+    )
+    _diff_mapping_items(
+        operations,
+        classname=classname,
+        prefix="metadata",
+        before=before.get("metadata", {}),
+        after=after.get("metadata", {}),
+    )
+    _diff_mapping_items(
+        operations,
+        classname=classname,
+        prefix="parameters",
+        before=before.get("parameters", {}),
+        after=after.get("parameters", {}),
+    )
+    _diff_mapping_items(
+        operations,
+        classname=classname,
+        prefix="properties",
+        before=before.get("properties", {}),
+        after=after.get("properties", {}),
+    )
+    _diff_mapping_items(
+        operations,
+        classname=classname,
+        prefix="indexes",
+        before=before.get("indexes", {}),
+        after=after.get("indexes", {}),
+    )
+    _append_operation(
+        operations,
+        classname=classname,
+        path="storage",
+        before=before.get("storage"),
+        after=after.get("storage"),
+    )
+    if operations:
+        operations.append(
+            SchemaOperation(
+                classname=classname,
+                op_type="compile_class",
+                path="compile",
+                safety="safe",
+            )
+        )
+    return tuple(operations)
+
+
 def diff_schema(model_cls: Type[Any]) -> SchemaDiff:
     runtime = get_runtime()
     classname = getattr(model_cls, "_classname", model_cls.__name__)
@@ -549,6 +1143,9 @@ def diff_schema(model_cls: Type[Any]) -> SchemaDiff:
         classname=planned_state["classname"],
         before=_render_schema_state(live_state),
         after=_render_schema_state(planned_state),
+        before_state=live_state,
+        after_state=planned_state,
+        operations=diff_schema_operations(live_state, planned_state),
     )
 
 
@@ -569,6 +1166,12 @@ def _set_runtime_property_if_not_none(
 def _set_runtime_flag_if_true(runtime: Any, obj: Any, prop_name: str, enabled: Any) -> None:
     if enabled:
         runtime.set_property(obj, prop_name, 1)
+
+
+def _mapping_or_attr_value(source: Any, name: str) -> Any:
+    if isinstance(source, dict):
+        return source.get(name)
+    return getattr(source, name, None)
 
 
 def _ensure_class_definition(
@@ -610,31 +1213,31 @@ def _apply_class_definition(
         runtime,
         class_definition,
         "Description",
-        getattr(class_metadata, "description", None),
+        _mapping_or_attr_value(class_metadata, "description"),
     )
     _set_runtime_flag_if_true(
         runtime,
         class_definition,
         "Deprecated",
-        getattr(class_metadata, "deprecated", False),
+        _mapping_or_attr_value(class_metadata, "deprecated"),
     )
     _set_runtime_flag_if_true(
         runtime,
         class_definition,
         "Final",
-        getattr(class_metadata, "final", False),
+        _mapping_or_attr_value(class_metadata, "final"),
     )
     _set_runtime_property_if_not_none(
         runtime,
         class_definition,
         "SqlTableName",
-        getattr(class_metadata, "sql_table_name", None),
+        _mapping_or_attr_value(class_metadata, "sql_table_name"),
     )
     _set_runtime_flag_if_true(
         runtime,
         class_definition,
         "ProcedureBlock",
-        getattr(class_metadata, "procedure_block", False),
+        _mapping_or_attr_value(class_metadata, "procedure_block"),
     )
 
 
@@ -787,6 +1390,68 @@ def _build_property_definition(
     return prop
 
 
+def _build_property_definition_from_state(
+    runtime: Any,
+    classname: str,
+    field_name: str,
+    property_state: dict[str, Any],
+) -> Any:
+    prop = runtime.create_object("%Dictionary.PropertyDefinition")
+    runtime.set_property(prop, "Name", field_name)
+    runtime.set_property(prop, "parent", classname)
+    _set_runtime_property_if_not_none(runtime, prop, "Type", property_state.get("type"))
+    _set_runtime_flag_if_true(runtime, prop, "Required", property_state.get("required"))
+    _set_runtime_flag_if_true(runtime, prop, "ReadOnly", property_state.get("readonly"))
+    _set_runtime_property_if_not_none(runtime, prop, "Collection", property_state.get("collection"))
+    _set_runtime_property_if_not_none(
+        runtime, prop, "SqlFieldName", property_state.get("sql_field_name")
+    )
+    _set_runtime_flag_if_true(runtime, prop, "Identity", property_state.get("identity"))
+    _set_runtime_property_if_not_none(
+        runtime, prop, "Relationship", property_state.get("relationship")
+    )
+    _set_runtime_property_if_not_none(runtime, prop, "OnDelete", property_state.get("on_delete"))
+    _set_runtime_property_if_not_none(runtime, prop, "Inverse", property_state.get("inverse"))
+    _set_runtime_flag_if_true(runtime, prop, "Transient", property_state.get("transient"))
+    if property_state.get("storable") is False:
+        runtime.set_property(prop, "Storable", 0)
+    _set_runtime_flag_if_true(
+        runtime,
+        prop,
+        "MultiDimensional",
+        property_state.get("multi_dimensional"),
+    )
+    _set_runtime_property_if_not_none(
+        runtime, prop, "SqlListDelimiter", property_state.get("sql_list_delimiter")
+    )
+    _set_runtime_property_if_not_none(
+        runtime, prop, "SqlListType", property_state.get("sql_list_type")
+    )
+    _set_runtime_property_if_not_none(
+        runtime, prop, "SqlComputeCode", property_state.get("sql_compute_code")
+    )
+    _set_runtime_property_if_not_none(
+        runtime,
+        prop,
+        "SqlComputeOnChange",
+        property_state.get("sql_compute_on_change"),
+    )
+    _set_runtime_flag_if_true(runtime, prop, "SqlComputed", property_state.get("sql_computed"))
+    _set_runtime_property_if_not_none(
+        runtime,
+        prop,
+        "InitialExpression",
+        property_state.get("initial_expression"),
+    )
+
+    max_length = property_state.get("max_length")
+    if max_length is not None:
+        params = runtime.get_property(prop, "Parameters")
+        if params is not None:
+            runtime.invoke_method(params, "SetAt", str(max_length), "MAXLEN")
+    return prop
+
+
 def _sync_properties(
     runtime: Any,
     class_definition: Any,
@@ -804,6 +1469,23 @@ def _sync_properties(
         if mode == "extend" and field_name in existing_props:
             continue
         prop = _build_property_definition(runtime, classname, field_name, model_field)
+        runtime.invoke_method(props_oref_list, "Insert", prop)
+
+
+def _sync_properties_from_state(
+    runtime: Any,
+    class_definition: Any,
+    classname: str,
+    properties: dict[str, dict[str, Any]],
+) -> None:
+    props_oref_list = runtime.get_property(class_definition, "Properties")
+    for field_name, property_state in sorted(properties.items(), key=lambda item: item[0]):
+        prop = _build_property_definition_from_state(
+            runtime,
+            classname,
+            field_name,
+            property_state,
+        )
         runtime.invoke_method(props_oref_list, "Insert", prop)
 
 
@@ -845,6 +1527,34 @@ def _sync_indexes(
             idx_def,
             "PrimaryKey",
             getattr(index_meta, "primary_key", False),
+        )
+        runtime.invoke_method(index_list, "Insert", idx_def)
+
+
+def _sync_indexes_from_state(
+    runtime: Any,
+    class_definition: Any,
+    classname: str,
+    indexes: dict[str, dict[str, Any]],
+) -> None:
+    index_list = runtime.get_property(class_definition, "Indices")
+    if index_list is None:
+        return
+
+    for index_name, index_state in sorted(indexes.items(), key=lambda item: item[0]):
+        idx_def = runtime.create_object("%Dictionary.IndexDefinition")
+        runtime.set_property(idx_def, "Name", index_name)
+        runtime.set_property(idx_def, "parent", classname)
+        _set_runtime_property_if_not_none(
+            runtime, idx_def, "Properties", index_state.get("properties")
+        )
+        _set_runtime_flag_if_true(runtime, idx_def, "Unique", index_state.get("unique"))
+        _set_runtime_property_if_not_none(runtime, idx_def, "Type", index_state.get("type"))
+        _set_runtime_flag_if_true(
+            runtime,
+            idx_def,
+            "PrimaryKey",
+            index_state.get("primary_key"),
         )
         runtime.invoke_method(index_list, "Insert", idx_def)
 
@@ -1212,7 +1922,7 @@ def _sync_storage(
 
     storage_list = runtime.get_property(class_definition, "Storages")
     storage_definition = runtime.create_object("%Dictionary.StorageDefinition")
-    storage_name = "CustomStorage"
+    storage_name = getattr(storage_meta, "name", None) or "CustomStorage"
     runtime.set_property(storage_definition, "Name", storage_name)
     runtime.set_property(storage_definition, "parent", classname)
     runtime.set_property(class_definition, "StorageStrategy", storage_name)
@@ -1224,6 +1934,91 @@ def _sync_storage(
     _insert_storage_sql_maps(runtime, storage_definition, classname, storage_name, storage_meta)
 
     runtime.invoke_method(storage_list, "Insert", storage_definition)
+
+
+def _namespace_items(mapping: dict[str, dict[str, Any]]) -> tuple[Any, ...]:
+    return tuple(
+        SimpleNamespace(name=name, **deepcopy(values))
+        for name, values in sorted(mapping.items(), key=lambda item: item[0])
+    )
+
+
+def _storage_meta_from_state(storage_state: dict[str, Any] | None) -> Any:
+    if storage_state is None:
+        return None
+
+    attrs = deepcopy(storage_state.get("attrs", {}))
+    data = _namespace_items(storage_state.get("data", {}))
+    indices = _namespace_items(storage_state.get("indices", {}))
+    properties = _namespace_items(storage_state.get("properties", {}))
+    sql_maps = []
+    for map_name, map_state in sorted(
+        (storage_state.get("sql_maps") or {}).items(),
+        key=lambda item: item[0],
+    ):
+        map_attrs = deepcopy(map_state)
+        map_attrs["data"] = _namespace_items(map_attrs.pop("data", {}))
+        map_attrs["row_id_specs"] = _namespace_items(map_attrs.pop("row_id_specs", {}))
+        subscripts = []
+        for sub_name, sub_state in sorted(
+            (map_attrs.pop("subscripts", {}) or {}).items(),
+            key=lambda item: item[0],
+        ):
+            sub_attrs = deepcopy(sub_state)
+            sub_attrs["access_vars"] = _namespace_items(sub_attrs.pop("access_vars", {}))
+            sub_attrs["invalid_conditions"] = _namespace_items(
+                sub_attrs.pop("invalid_conditions", {})
+            )
+            subscripts.append(SimpleNamespace(name=sub_name, **sub_attrs))
+        map_attrs["subscripts"] = tuple(subscripts)
+        sql_maps.append(SimpleNamespace(name=map_name, **map_attrs))
+
+    return SimpleNamespace(
+        name=storage_state.get("name"),
+        **attrs,
+        data=data,
+        indices=indices,
+        properties=properties,
+        sql_maps=tuple(sql_maps),
+    )
+
+
+def _save_and_compile_schema_class(
+    runtime: Any,
+    class_definition: Any,
+    schema_classname: str,
+) -> None:
+    st = runtime.save_object(class_definition)
+    if not runtime.is_ok(st):
+        raise RuntimeError(
+            f"Schema save failed for {schema_classname}: {runtime.format_status(st)}"
+        )
+
+    compile_status = runtime.call_classmethod(
+        "%SYSTEM.OBJ",
+        "Compile",
+        schema_classname,
+        "fc /display=none",
+    )
+    if not runtime.is_ok(compile_status):
+        raise RuntimeError(
+            f"Schema compile failed for {schema_classname}: "
+            f"{runtime.format_status(compile_status)}"
+        )
+
+
+def _sync_schema_state(runtime: Any, state: SchemaState | dict[str, Any]) -> None:
+    state = SchemaState.from_dict(_state_to_dict(state))
+    if not state.superclasses:
+        return
+
+    cd, _exists, schema_classname = _ensure_class_definition(runtime, state.classname, "replace")
+    _apply_class_definition(runtime, cd, schema_classname, state.superclasses, state.metadata)
+    _sync_parameters(runtime, cd, schema_classname, state.parameters, "replace")
+    _sync_properties_from_state(runtime, cd, schema_classname, state.properties)
+    _sync_indexes_from_state(runtime, cd, schema_classname, state.indexes)
+    _sync_storage(runtime, cd, schema_classname, _storage_meta_from_state(state.storage), "replace")
+    _save_and_compile_schema_class(runtime, cd, schema_classname)
 
 
 def _schema_transaction_methods(runtime: Any) -> tuple[Any, Any, Any] | None:
@@ -1271,14 +2066,7 @@ def _sync_schema_model(
 
     storage_meta = getattr(model_cls, "_storage", None)
     _sync_storage(runtime, cd, schema_classname, storage_meta, mode)
-
-    st = runtime.save_object(cd)
-    if not runtime.is_ok(st):
-        raise RuntimeError(
-            f"Schema save failed for {schema_classname}: {runtime.format_status(st)}"
-        )
-
-    runtime.call_classmethod("%SYSTEM.OBJ", "Compile", schema_classname, "fc /display=none")
+    _save_and_compile_schema_class(runtime, cd, schema_classname)
 
 
 def sync_schema(model_cls: Type[Any], _seen: set[str] | None = None) -> None:

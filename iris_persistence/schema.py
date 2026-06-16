@@ -224,6 +224,134 @@ def _iter_runtime_list(runtime: Any, list_obj: Any) -> list[Any]:
     return items
 
 
+def _iter_runtime_list_with_indices(runtime: Any, list_obj: Any) -> list[tuple[int, Any]]:
+    if list_obj is None:
+        return []
+    try:
+        count = runtime.invoke_method(list_obj, "Count")
+    except Exception:
+        return []
+    items = []
+    for index in range(1, count + 1):
+        try:
+            items.append((index, runtime.invoke_method(list_obj, "GetAt", index)))
+        except Exception:
+            continue
+    return items
+
+
+def _remove_runtime_list_indices(
+    runtime: Any,
+    list_obj: Any,
+    indices: list[int],
+    *,
+    context: str,
+) -> None:
+    for index in sorted(indices, reverse=True):
+        last_error: Exception | None = None
+        for method_name in ("RemoveAt", "DeleteAt", "Remove"):
+            try:
+                runtime.invoke_method(list_obj, method_name, index)
+                break
+            except Exception as exc:
+                last_error = exc
+        else:
+            raise RuntimeError(f"Could not remove schema member from {context}") from last_error
+
+
+def _owned_schema_member_indices(
+    runtime: Any,
+    list_obj: Any,
+    classname: str,
+    *,
+    skip_system_names: bool = True,
+) -> tuple[list[int], set[str]]:
+    indices: list[int] = []
+    names: set[str] = set()
+    for index, item in _iter_runtime_list_with_indices(runtime, list_obj):
+        name = _safe_get_property(runtime, item, "Name")
+        if not name:
+            continue
+        name = str(name)
+        if skip_system_names and (name.startswith("%") or name == "GUID"):
+            continue
+        if not _item_belongs_to_class(runtime, item, classname):
+            continue
+        indices.append(index)
+        names.add(name)
+    return indices, names
+
+
+def _owned_schema_member_entries(
+    runtime: Any,
+    list_obj: Any,
+    classname: str,
+    *,
+    dictionary_class_name: str | None = None,
+    skip_system_names: bool = True,
+) -> dict[str, tuple[int, Any, str | None]]:
+    entries: dict[str, tuple[int, Any, str | None]] = {}
+    for index, item in _iter_runtime_list_with_indices(runtime, list_obj):
+        name = _safe_get_property(runtime, item, "Name")
+        if not name:
+            continue
+        name = str(name)
+        if skip_system_names and (name.startswith("%") or name == "GUID"):
+            continue
+        if not _item_belongs_to_class(runtime, item, classname):
+            continue
+        entries[name] = (index, item, None)
+    if dictionary_class_name is None:
+        return entries
+
+    rows = _dictionary_rows(
+        runtime,
+        f"SELECT %ID, Name FROM {dictionary_class_name} WHERE parent = ?",
+        (classname,),
+    )
+    for row in rows:
+        name = _row_value(row, "Name")
+        object_id = _row_value(row, "%ID")
+        if not name or not object_id:
+            continue
+        name = str(name)
+        if skip_system_names and (name.startswith("%") or name == "GUID"):
+            continue
+        try:
+            obj = runtime.get_object(dictionary_class_name, str(object_id))
+        except Exception:
+            continue
+        existing = entries.get(name)
+        if existing is None:
+            entries[name] = (0, obj, str(object_id))
+        else:
+            entries[name] = (existing[0], existing[1], str(object_id))
+    return entries
+
+
+def _remove_owned_schema_member_entries(
+    runtime: Any,
+    list_obj: Any,
+    entries: list[tuple[int, Any, str | None]],
+    *,
+    dictionary_class_name: str,
+    context: str,
+) -> None:
+    _remove_runtime_list_indices(
+        runtime,
+        list_obj,
+        [index for index, _item, _object_id in entries if index > 0],
+        context=context,
+    )
+    for _index, _item, object_id in entries:
+        if object_id is None:
+            continue
+        try:
+            runtime.delete_object(dictionary_class_name, object_id)
+        except Exception:
+            pass
+
+
 def _item_belongs_to_class(runtime: Any, item: Any, classname: str) -> bool:
     inherited = _safe_get_property(runtime, item, "Inherited")
     if inherited is not None:
@@ -233,6 +361,9 @@ def _item_belongs_to_class(runtime: Any, item: Any, classname: str) -> bool:
         owner = _safe_get_property(runtime, item, attr_name)
         if owner in (None, ""):
             continue
+        owner_name = _safe_get_property(runtime, owner, "Name")
+        if owner_name not in (None, ""):
+            return str(owner_name) == classname
         return str(owner) == classname
     return True
 
@@ -260,6 +391,25 @@ def _normalize_values_mapping(mapping: dict[Any, Any] | None) -> dict[str, str]:
     if not mapping:
         return {}
     return {str(key): str(mapping[key]) for key in sorted(mapping, key=lambda item: str(item))}
+
+
+def _row_value(row: dict[str, Any], name: str) -> Any:
+    for key, value in row.items():
+        if key.lower() == name.lower():
+            return value
+        if name == "%ID" and key.lower() == "id":
+            return value
+    return None
+
+
+def _dictionary_rows(runtime: Any, sql: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
+    try:
+        cursor = runtime.get_dbapi_connection().cursor()
+        cursor.execute(sql, params)
+        columns = [str(column[0]) for column in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    except Exception:
+        return []
 
 
 def _state_to_dict(state: SchemaState | dict[str, Any]) -> dict[str, Any]:
@@ -332,6 +482,36 @@ def _field_initial_expression(field_meta: FieldInfo) -> str | None:
     return str(default)
 
 
+def _collect_model_schema_state_for_field(field_name: str, model_field: Any) -> dict[str, Any]:
+    field_meta = model_field.field_info
+    return _compact_mapping(
+        {
+            "type": _map_python_type_to_iris(
+                _resolve_model_type(model_field.declared_type),
+                field_meta,
+            ),
+            "required": getattr(field_meta, "required", False),
+            "readonly": getattr(field_meta, "readonly", False),
+            "collection": getattr(field_meta, "collection", None),
+            "sql_field_name": getattr(field_meta, "sql_field_name", None),
+            "identity": getattr(field_meta, "identity", False),
+            "relationship": getattr(field_meta, "relationship", None),
+            "on_delete": getattr(field_meta, "on_delete", None),
+            "inverse": getattr(field_meta, "inverse", None),
+            "transient": getattr(field_meta, "transient", False),
+            "storable": (False if getattr(field_meta, "storable", True) is False else None),
+            "multi_dimensional": getattr(field_meta, "multi_dimensional", False),
+            "sql_list_delimiter": getattr(field_meta, "sql_list_delimiter", None),
+            "sql_list_type": getattr(field_meta, "sql_list_type", None),
+            "sql_compute_code": getattr(field_meta, "sql_compute_code", None),
+            "sql_compute_on_change": getattr(field_meta, "sql_compute_on_change", None),
+            "sql_computed": getattr(field_meta, "sql_computed", False),
+            "initial_expression": _field_initial_expression(field_meta),
+            "max_length": getattr(field_meta, "max_length", None),
+        }
+    )
+
+
 def _collect_model_schema_state(model_cls: Type[Any]) -> SchemaState:
     classname = _schema_classname_for_save(getattr(model_cls, "_classname", model_cls.__name__))
     state = _empty_schema_state(classname)
@@ -354,36 +534,7 @@ def _collect_model_schema_state(model_cls: Type[Any]) -> SchemaState:
 
     properties = {}
     for field_name, model_field in getattr(model_cls, "__model_fields__", {}).items():
-        field_meta = model_field.field_info
-        property_state = _compact_mapping(
-            {
-                "type": _map_python_type_to_iris(
-                    _resolve_model_type(model_field.declared_type),
-                    field_meta,
-                ),
-                "required": getattr(field_meta, "required", False),
-                "readonly": getattr(field_meta, "readonly", False),
-                "collection": getattr(field_meta, "collection", None),
-                "sql_field_name": getattr(field_meta, "sql_field_name", None),
-                "identity": getattr(field_meta, "identity", False),
-                "relationship": getattr(field_meta, "relationship", None),
-                "on_delete": getattr(field_meta, "on_delete", None),
-                "inverse": getattr(field_meta, "inverse", None),
-                "transient": getattr(field_meta, "transient", False),
-                "storable": (
-                    False if getattr(field_meta, "storable", True) is False else None
-                ),
-                "multi_dimensional": getattr(field_meta, "multi_dimensional", False),
-                "sql_list_delimiter": getattr(field_meta, "sql_list_delimiter", None),
-                "sql_list_type": getattr(field_meta, "sql_list_type", None),
-                "sql_compute_code": getattr(field_meta, "sql_compute_code", None),
-                "sql_compute_on_change": getattr(field_meta, "sql_compute_on_change", None),
-                "sql_computed": getattr(field_meta, "sql_computed", False),
-                "initial_expression": _field_initial_expression(field_meta),
-                "max_length": getattr(field_meta, "max_length", None),
-            }
-        )
-        properties[field_name] = property_state
+        properties[field_name] = _collect_model_schema_state_for_field(field_name, model_field)
     state["properties"] = properties
 
     indexes = {}
@@ -514,6 +665,81 @@ def _collect_model_schema_state(model_cls: Type[Any]) -> SchemaState:
     return SchemaState.from_dict(state)
 
 
+def _collect_live_parameters_from_sql(runtime: Any, classname: str) -> dict[str, Any]:
+    rows = _dictionary_rows(
+        runtime,
+        "SELECT Name, Default FROM %Dictionary.ParameterDefinition WHERE parent = ?",
+        (classname,),
+    )
+    parameters = {}
+    for row in rows:
+        name = _row_value(row, "Name")
+        if not name or str(name).startswith("%") or str(name) == "GUID":
+            continue
+        parameters[str(name)] = str(_row_value(row, "Default"))
+    return parameters
+
+
+def _collect_live_properties_from_sql(runtime: Any, classname: str) -> dict[str, dict[str, Any]]:
+    rows = _dictionary_rows(
+        runtime,
+        "SELECT * FROM %Dictionary.PropertyDefinition WHERE parent = ?",
+        (classname,),
+    )
+    properties = {}
+    for row in rows:
+        name = _row_value(row, "Name")
+        if not name or str(name).startswith("%"):
+            continue
+        max_length = _row_value(row, "MAXLEN")
+        properties[str(name)] = _compact_mapping(
+            {
+                "type": _row_value(row, "Type"),
+                "required": _coerce_bool(_row_value(row, "Required")),
+                "readonly": _coerce_bool(_row_value(row, "ReadOnly")),
+                "collection": _row_value(row, "Collection"),
+                "sql_field_name": _row_value(row, "SqlFieldName"),
+                "identity": _coerce_bool(_row_value(row, "Identity")),
+                "relationship": _row_value(row, "Relationship"),
+                "on_delete": _row_value(row, "OnDelete"),
+                "inverse": _row_value(row, "Inverse"),
+                "transient": _coerce_bool(_row_value(row, "Transient")),
+                "storable": False if _row_value(row, "Storable") in (0, "0", False) else None,
+                "multi_dimensional": _coerce_bool(_row_value(row, "MultiDimensional")),
+                "sql_list_delimiter": _row_value(row, "SqlListDelimiter"),
+                "sql_list_type": _row_value(row, "SqlListType"),
+                "sql_compute_code": _row_value(row, "SqlComputeCode"),
+                "sql_compute_on_change": _row_value(row, "SqlComputeOnChange"),
+                "sql_computed": _coerce_bool(_row_value(row, "SqlComputed")),
+                "initial_expression": _row_value(row, "InitialExpression"),
+                "max_length": str(max_length) if max_length not in (None, "") else None,
+            }
+        )
+    return properties
+
+
+def _collect_live_indexes_from_sql(runtime: Any, classname: str) -> dict[str, dict[str, Any]]:
+    rows = _dictionary_rows(
+        runtime,
+        "SELECT * FROM %Dictionary.IndexDefinition WHERE parent = ?",
+        (classname,),
+    )
+    indexes = {}
+    for row in rows:
+        name = _row_value(row, "Name")
+        if not name:
+            continue
+        indexes[str(name)] = _compact_mapping(
+            {
+                "properties": _row_value(row, "Properties"),
+                "unique": _coerce_bool(_row_value(row, "Unique")),
+                "type": _row_value(row, "Type"),
+                "primary_key": _coerce_bool(_row_value(row, "PrimaryKey")),
+            }
+        )
+    return indexes
+
+
 def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
     state = _empty_schema_state(_schema_classname_for_save(classname))
     existing_classname = _find_existing_classname(runtime, classname)
@@ -544,11 +770,15 @@ def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
             continue
         parameters[str(name)] = str(_safe_get_property(runtime, item, "Default"))
     state["parameters"] = parameters
+    for name, parameter in _collect_live_parameters_from_sql(runtime, existing_classname).items():
+        state["parameters"].setdefault(name, parameter)
 
     properties = {}
     for item in _iter_runtime_list(runtime, _safe_get_property(runtime, class_def, "Properties")):
         name = _safe_get_property(runtime, item, "Name")
         if not name or str(name).startswith("%"):
+            continue
+        if not _item_belongs_to_class(runtime, item, existing_classname):
             continue
         max_length = None
         params = _safe_get_property(runtime, item, "Parameters")
@@ -589,11 +819,18 @@ def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
             }
         )
     state["properties"] = properties
+    for name, property_state in _collect_live_properties_from_sql(
+        runtime,
+        existing_classname,
+    ).items():
+        state["properties"].setdefault(name, property_state)
 
     indexes = {}
     for item in _iter_runtime_list(runtime, _safe_get_property(runtime, class_def, "Indices")):
         name = _safe_get_property(runtime, item, "Name")
         if not name:
+            continue
+        if not _item_belongs_to_class(runtime, item, existing_classname):
             continue
         indexes[str(name)] = _compact_mapping(
             {
@@ -604,6 +841,8 @@ def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
             }
         )
     state["indexes"] = indexes
+    for name, index_state in _collect_live_indexes_from_sql(runtime, existing_classname).items():
+        state["indexes"].setdefault(name, index_state)
 
     storage_strategy = _safe_get_property(runtime, class_def, "StorageStrategy")
     storages = _iter_runtime_list(runtime, _safe_get_property(runtime, class_def, "Storages"))
@@ -806,6 +1045,18 @@ def _merge_schema_state_for_sync(
         return SchemaState.from_dict(live_mapping)
     if not live_mapping["super"] or mode == "replace":
         return SchemaState.from_dict(desired_mapping)
+    if mode == "managed":
+        planned = deepcopy(live_mapping)
+        planned["super"] = desired_mapping["super"]
+        for key, value in desired_mapping["metadata"].items():
+            if value not in (None, "", False):
+                planned["metadata"][key] = value
+        planned["parameters"] = deepcopy(desired_mapping["parameters"])
+        planned["properties"] = deepcopy(desired_mapping["properties"])
+        planned["indexes"] = deepcopy(desired_mapping["indexes"])
+        if desired_mapping["storage"] is not None:
+            planned["storage"] = deepcopy(desired_mapping["storage"])
+        return SchemaState.from_dict(planned)
 
     planned = deepcopy(live_mapping)
     planned["super"] = desired_mapping["super"]
@@ -960,7 +1211,19 @@ def _map_python_type_to_iris(py_type: Any, field_meta: FieldInfo) -> str:
     return "%Library.String"
 
 
-def _operation_safety(op_type: str, before: Any, after: Any) -> str:
+def _operation_safety(op_type: str, before: Any, after: Any, mode: str) -> str:
+    if mode == "managed" and op_type in {
+        "delete_parameter",
+        "delete_property",
+        "delete_index",
+    }:
+        return "managed-delete"
+    if mode == "managed" and op_type in {
+        "update_parameter",
+        "update_property",
+        "update_index",
+    }:
+        return "managed-update"
     if op_type in {"delete_parameter", "delete_property", "delete_index", "delete_storage"}:
         return "destructive"
     if op_type in {"add_storage", "replace_storage"}:
@@ -1015,6 +1278,7 @@ def _append_operation(
     path: str,
     before: Any,
     after: Any,
+    mode: str,
 ) -> None:
     if before == after:
         return
@@ -1026,7 +1290,7 @@ def _append_operation(
             path=path,
             before=deepcopy(before),
             after=deepcopy(after),
-            safety=_operation_safety(op_type, before, after),
+            safety=_operation_safety(op_type, before, after, mode),
         )
     )
 
@@ -1038,6 +1302,7 @@ def _diff_mapping_items(
     prefix: str,
     before: dict[str, Any],
     after: dict[str, Any],
+    mode: str,
 ) -> None:
     for key in sorted(set(before) | set(after), key=str):
         _append_operation(
@@ -1046,12 +1311,15 @@ def _diff_mapping_items(
             path=f"{prefix}.{key}",
             before=before.get(key),
             after=after.get(key),
+            mode=mode,
         )
 
 
 def diff_schema_operations(
     before_state: SchemaState | dict[str, Any],
     after_state: SchemaState | dict[str, Any],
+    *,
+    mode: str = iris_persistence.models.DEFAULT_SYNC_MODE,
 ) -> tuple[SchemaOperation, ...]:
     before = _state_to_dict(before_state)
     after = _state_to_dict(after_state)
@@ -1065,6 +1333,7 @@ def diff_schema_operations(
             path="class",
             before=None,
             after={"classname": after["classname"], "super": after["super"]},
+            mode=mode,
         )
     elif before.get("classname") != after.get("classname"):
         _append_operation(
@@ -1073,6 +1342,7 @@ def diff_schema_operations(
             path="class",
             before=before.get("classname"),
             after=after.get("classname"),
+            mode=mode,
         )
 
     _append_operation(
@@ -1081,6 +1351,7 @@ def diff_schema_operations(
         path="super",
         before=before.get("super"),
         after=after.get("super"),
+        mode=mode,
     )
     _diff_mapping_items(
         operations,
@@ -1088,6 +1359,7 @@ def diff_schema_operations(
         prefix="metadata",
         before=before.get("metadata", {}),
         after=after.get("metadata", {}),
+        mode=mode,
     )
     _diff_mapping_items(
         operations,
@@ -1095,6 +1367,7 @@ def diff_schema_operations(
         prefix="parameters",
         before=before.get("parameters", {}),
         after=after.get("parameters", {}),
+        mode=mode,
     )
     _diff_mapping_items(
         operations,
@@ -1102,6 +1375,7 @@ def diff_schema_operations(
         prefix="properties",
         before=before.get("properties", {}),
         after=after.get("properties", {}),
+        mode=mode,
     )
     _diff_mapping_items(
         operations,
@@ -1109,6 +1383,7 @@ def diff_schema_operations(
         prefix="indexes",
         before=before.get("indexes", {}),
         after=after.get("indexes", {}),
+        mode=mode,
     )
     _append_operation(
         operations,
@@ -1116,6 +1391,7 @@ def diff_schema_operations(
         path="storage",
         before=before.get("storage"),
         after=after.get("storage"),
+        mode=mode,
     )
     if operations:
         operations.append(
@@ -1132,10 +1408,11 @@ def diff_schema_operations(
 def diff_schema(model_cls: Type[Any]) -> SchemaDiff:
     runtime = get_runtime()
     classname = getattr(model_cls, "_classname", model_cls.__name__)
+    mode = getattr(model_cls, "_sync_mode", iris_persistence.models.DEFAULT_SYNC_MODE)
     live_state = _collect_live_schema_state(runtime, classname)
     desired_state = _collect_model_schema_state(model_cls)
     planned_state = _merge_schema_state_for_sync(
-        mode=getattr(model_cls, "_sync_mode", "extend"),
+        mode=mode,
         live_state=live_state,
         desired_state=desired_state,
     )
@@ -1145,7 +1422,7 @@ def diff_schema(model_cls: Type[Any]) -> SchemaDiff:
         after=_render_schema_state(planned_state),
         before_state=live_state,
         after_state=planned_state,
-        operations=diff_schema_operations(live_state, planned_state),
+        operations=diff_schema_operations(live_state, planned_state, mode=mode),
     )
 
 
@@ -1248,20 +1525,42 @@ def _sync_parameters(
     parameters: dict[str, Any],
     mode: str,
 ) -> None:
-    if mode not in {"extend", "replace"} or not isinstance(parameters, dict):
+    if mode not in {"extend", "managed", "replace"} or not isinstance(parameters, dict):
         return
 
     parameter_list = runtime.get_property(class_definition, "Parameters")
     existing_parameters: set[str] = set()
-    if mode == "extend" and parameter_list is not None:
-        for parameter in _iter_runtime_list(runtime, parameter_list):
-            existing_parameters.add(runtime.get_property(parameter, "Name"))
-
     if parameter_list is None:
         return
+    owned_entries = _owned_schema_member_entries(
+        runtime,
+        parameter_list,
+        classname,
+        dictionary_class_name="%Dictionary.ParameterDefinition",
+    )
+    owned_names = set(owned_entries)
+    if mode == "managed":
+        desired_names = set(parameters)
+        removed_entries = [
+            entry
+            for name, entry in owned_entries.items()
+            if name not in desired_names
+        ]
+        _remove_owned_schema_member_entries(
+            runtime,
+            parameter_list,
+            removed_entries,
+            dictionary_class_name="%Dictionary.ParameterDefinition",
+            context=f"{classname}.Parameters",
+        )
+    elif mode == "extend":
+        existing_parameters = owned_names
 
     for param_name, param_default in parameters.items():
         if mode == "extend" and param_name in existing_parameters:
+            continue
+        if mode == "managed" and param_name in owned_entries:
+            runtime.set_property(owned_entries[param_name][1], "Default", str(param_default))
             continue
         param_def = runtime.create_object("%Dictionary.ParameterDefinition")
         runtime.set_property(param_def, "Name", param_name)
@@ -1452,6 +1751,68 @@ def _build_property_definition_from_state(
     return prop
 
 
+def _apply_property_definition_from_state(
+    runtime: Any,
+    prop: Any,
+    property_state: dict[str, Any],
+) -> None:
+    _set_runtime_property_if_not_none(runtime, prop, "Type", property_state.get("type"))
+    if "required" in property_state:
+        runtime.set_property(prop, "Required", 1 if property_state.get("required") else 0)
+    if "readonly" in property_state:
+        runtime.set_property(prop, "ReadOnly", 1 if property_state.get("readonly") else 0)
+    _set_runtime_property_if_not_none(runtime, prop, "Collection", property_state.get("collection"))
+    _set_runtime_property_if_not_none(
+        runtime, prop, "SqlFieldName", property_state.get("sql_field_name")
+    )
+    if "identity" in property_state:
+        runtime.set_property(prop, "Identity", 1 if property_state.get("identity") else 0)
+    _set_runtime_property_if_not_none(
+        runtime, prop, "Relationship", property_state.get("relationship")
+    )
+    _set_runtime_property_if_not_none(runtime, prop, "OnDelete", property_state.get("on_delete"))
+    _set_runtime_property_if_not_none(runtime, prop, "Inverse", property_state.get("inverse"))
+    if "transient" in property_state:
+        runtime.set_property(prop, "Transient", 1 if property_state.get("transient") else 0)
+    if "storable" in property_state:
+        runtime.set_property(prop, "Storable", 1 if property_state.get("storable") else 0)
+    if "multi_dimensional" in property_state:
+        runtime.set_property(
+            prop,
+            "MultiDimensional",
+            1 if property_state.get("multi_dimensional") else 0,
+        )
+    _set_runtime_property_if_not_none(
+        runtime, prop, "SqlListDelimiter", property_state.get("sql_list_delimiter")
+    )
+    _set_runtime_property_if_not_none(
+        runtime, prop, "SqlListType", property_state.get("sql_list_type")
+    )
+    _set_runtime_property_if_not_none(
+        runtime, prop, "SqlComputeCode", property_state.get("sql_compute_code")
+    )
+    _set_runtime_property_if_not_none(
+        runtime,
+        prop,
+        "SqlComputeOnChange",
+        property_state.get("sql_compute_on_change"),
+    )
+    if "sql_computed" in property_state:
+        runtime.set_property(prop, "SqlComputed", 1 if property_state.get("sql_computed") else 0)
+    _set_runtime_property_if_not_none(
+        runtime,
+        prop,
+        "InitialExpression",
+        property_state.get("initial_expression"),
+    )
+
+    max_length = property_state.get("max_length")
+    if max_length is not None:
+        params = runtime.get_property(prop, "Parameters")
+        if params is not None:
+            runtime.invoke_method(params, "SetAt", str(max_length), "MAXLEN")
+
+
 def _sync_properties(
     runtime: Any,
     class_definition: Any,
@@ -1460,13 +1821,40 @@ def _sync_properties(
     mode: str,
 ) -> None:
     props_oref_list = runtime.get_property(class_definition, "Properties")
-    existing_props = {
-        runtime.get_property(prop, "Name"): prop
-        for prop in _iter_runtime_list(runtime, props_oref_list)
-    }
+    if props_oref_list is None:
+        return
+    owned_entries = _owned_schema_member_entries(
+        runtime,
+        props_oref_list,
+        classname,
+        dictionary_class_name="%Dictionary.PropertyDefinition",
+    )
+    existing_props = set(owned_entries)
+    if mode == "managed":
+        desired_names = set(model_fields)
+        removed_entries = [
+            entry
+            for name, entry in owned_entries.items()
+            if name not in desired_names
+        ]
+        _remove_owned_schema_member_entries(
+            runtime,
+            props_oref_list,
+            removed_entries,
+            dictionary_class_name="%Dictionary.PropertyDefinition",
+            context=f"{classname}.Properties",
+        )
 
     for field_name, model_field in model_fields.items():
         if mode == "extend" and field_name in existing_props:
+            continue
+        if mode == "managed" and field_name in owned_entries:
+            state = _collect_model_schema_state_for_field(field_name, model_field)
+            _apply_property_definition_from_state(
+                runtime,
+                owned_entries[field_name][1],
+                state,
+            )
             continue
         prop = _build_property_definition(runtime, classname, field_name, model_field)
         runtime.invoke_method(props_oref_list, "Insert", prop)
@@ -1496,20 +1884,59 @@ def _sync_indexes(
     indexes: list[Any],
     mode: str,
 ) -> None:
-    if mode not in {"extend", "replace"} or not isinstance(indexes, list):
+    if mode not in {"extend", "managed", "replace"} or not isinstance(indexes, list):
         return
 
     index_list = runtime.get_property(class_definition, "Indices")
     existing_indexes: set[str] = set()
-    if mode == "extend" and index_list is not None:
-        for index in _iter_runtime_list(runtime, index_list):
-            existing_indexes.add(runtime.get_property(index, "Name"))
-
     if index_list is None:
         return
+    owned_entries = _owned_schema_member_entries(
+        runtime,
+        index_list,
+        classname,
+        dictionary_class_name="%Dictionary.IndexDefinition",
+    )
+    owned_names = set(owned_entries)
+    if mode == "managed":
+        desired_names = {index_meta.name for index_meta in indexes}
+        removed_entries = [
+            entry
+            for name, entry in owned_entries.items()
+            if name not in desired_names
+        ]
+        _remove_owned_schema_member_entries(
+            runtime,
+            index_list,
+            removed_entries,
+            dictionary_class_name="%Dictionary.IndexDefinition",
+            context=f"{classname}.Indices",
+        )
+    elif mode == "extend":
+        existing_indexes = owned_names
 
     for index_meta in indexes:
         if mode == "extend" and index_meta.name in existing_indexes:
+            continue
+        if mode == "managed" and index_meta.name in owned_entries:
+            idx_def = owned_entries[index_meta.name][1]
+            runtime.set_property(idx_def, "Properties", index_meta.properties)
+            runtime.set_property(
+                idx_def,
+                "Unique",
+                1 if getattr(index_meta, "unique", False) else 0,
+            )
+            _set_runtime_property_if_not_none(
+                runtime,
+                idx_def,
+                "Type",
+                getattr(index_meta, "type", None),
+            )
+            runtime.set_property(
+                idx_def,
+                "PrimaryKey",
+                1 if getattr(index_meta, "primary_key", False) else 0,
+            )
             continue
         idx_def = runtime.create_object("%Dictionary.IndexDefinition")
         runtime.set_property(idx_def, "Name", index_meta.name)
@@ -1917,10 +2344,25 @@ def _sync_storage(
     storage_meta: Any,
     mode: str,
 ) -> None:
-    if not storage_meta or mode != "replace":
+    if not storage_meta or mode not in {"managed", "replace"}:
         return
 
     storage_list = runtime.get_property(class_definition, "Storages")
+    if storage_list is None:
+        return
+    if mode == "managed":
+        owned_indices, _owned_names = _owned_schema_member_indices(
+            runtime,
+            storage_list,
+            classname,
+            skip_system_names=False,
+        )
+        _remove_runtime_list_indices(
+            runtime,
+            storage_list,
+            owned_indices,
+            context=f"{classname}.Storages",
+        )
     storage_definition = runtime.create_object("%Dictionary.StorageDefinition")
     storage_name = getattr(storage_meta, "name", None) or "CustomStorage"
     runtime.set_property(storage_definition, "Name", storage_name)
@@ -2035,7 +2477,7 @@ def _sync_schema_model(
     model_cls: Type[Any],
     seen: set[str],
 ) -> None:
-    mode = getattr(model_cls, "_sync_mode", "extend")
+    mode = getattr(model_cls, "_sync_mode", iris_persistence.models.DEFAULT_SYNC_MODE)
     if mode == "observe":
         return
 
@@ -2070,7 +2512,7 @@ def _sync_schema_model(
 
 
 def sync_schema(model_cls: Type[Any], _seen: set[str] | None = None) -> None:
-    if getattr(model_cls, "_sync_mode", "extend") == "observe":
+    if getattr(model_cls, "_sync_mode", iris_persistence.models.DEFAULT_SYNC_MODE) == "observe":
         return
 
     runtime = get_runtime()

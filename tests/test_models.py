@@ -11,6 +11,7 @@ from tests.fixtures.python.model_behavior_fixtures import (
     AutoSyncModel,
     ClassMetadataModel,
     FailingSaveModel,
+    ManagedAutoSyncModel,
     ObserveAutoSyncModel,
     Product,
     QueryAliasModel,
@@ -177,6 +178,13 @@ def test_model_meta_sets_auto_sync_flag():
     assert Product._auto_sync is False
 
 
+def test_model_meta_defaults_to_managed_sync_mode():
+    class DefaultModeModel(Model):
+        pass
+
+    assert DefaultModeModel._sync_mode == "managed"
+
+
 def test_model_meta_sets_class_metadata():
     assert ClassMetadataModel._class_metadata == ClassMetadata(
         description="class-level description",
@@ -229,6 +237,24 @@ def test_auto_sync_rejects_observe_mode():
 def test_auto_sync_rejects_replace_mode():
     with pytest.raises(RuntimeError, match="mode='replace'"):
         ReplaceAutoSyncModel(Name="demo").save()
+
+
+def test_auto_sync_allows_managed_mode_without_process_cache(monkeypatch):
+    calls = []
+
+    def fake_sync_schema(cls):
+        calls.append(cls)
+
+    monkeypatch.setattr(ManagedAutoSyncModel, "sync_schema", classmethod(fake_sync_schema))
+
+    first = ManagedAutoSyncModel(Name="first")
+    second = ManagedAutoSyncModel(Name="second")
+    first.save()
+    second.save()
+
+    assert calls == [ManagedAutoSyncModel, ManagedAutoSyncModel]
+    assert first.pk is not None
+    assert second.pk is not None
 
 
 def test_save_failure_uses_formatted_status_message(monkeypatch):

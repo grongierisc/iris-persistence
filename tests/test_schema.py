@@ -1,7 +1,7 @@
 import pytest
 
 import iris_persistence.schema as schema_module
-from iris_persistence import Field, Model
+from iris_persistence import Field, Index, Model
 from iris_persistence.schema import _map_python_type_to_iris
 from tests.fixtures.python.schema_mapping_fixtures import (
     ClassMetadataFixture,
@@ -41,6 +41,15 @@ class _ListWrapper:
 
     def SetAt(self, value, key):
         setattr(self, str(key), value)
+
+    def RemoveAt(self, index):
+        del self.items[index - 1]
+
+    def DeleteAt(self, index):
+        self.RemoveAt(index)
+
+    def Remove(self, index):
+        self.RemoveAt(index)
 
 
 class _RecordingObject:
@@ -406,6 +415,103 @@ def test_sync_schema_extend_adds_missing_indexes_without_duplication(monkeypatch
     new_index = indices[1]
     assert new_index.Properties == "Payload"
     assert new_index.Unique == 1
+
+
+class ManagedSchemaFixture(Model, persistent=True):
+    NewName: str | None = None
+
+    class Meta:
+        classname = "Demo.ManagedSchemaFixture"
+        mode = "managed"
+        parameters = {"NEWPARAM": "new"}
+        indexes = [Index("NewNameIdx", properties="NewName")]
+
+
+def _managed_existing_runtime():
+    runtime = _ExistingClassRuntime()
+    runtime.class_definition.Name = "Demo.ManagedSchemaFixture"
+    runtime.class_definition.Super = "%Persistent"
+
+    old_parameter = _RecordingObject("%Dictionary.ParameterDefinition")
+    old_parameter.Name = "OLDPARAM"
+    old_parameter.Default = "old"
+    runtime.class_definition.Parameters.Insert(old_parameter)
+
+    old_property = _RecordingObject("%Dictionary.PropertyDefinition")
+    old_property.Name = "OldName"
+    old_property.Type = "%Library.String"
+    runtime.class_definition.Properties.Insert(old_property)
+
+    existing_property = _RecordingObject("%Dictionary.PropertyDefinition")
+    existing_property.Name = "NewName"
+    existing_property.Type = "%Library.Integer"
+    runtime.class_definition.Properties.Insert(existing_property)
+
+    inherited_property = _RecordingObject("%Dictionary.PropertyDefinition")
+    inherited_property.Name = "InheritedName"
+    inherited_property.Type = "%Library.String"
+    inherited_property.Inherited = 1
+    runtime.class_definition.Properties.Insert(inherited_property)
+
+    old_index = _RecordingObject("%Dictionary.IndexDefinition")
+    old_index.Name = "OldIdx"
+    old_index.Properties = "OldName"
+    runtime.class_definition.Indices.Insert(old_index)
+    return runtime
+
+
+def test_diff_schema_managed_plans_targeted_member_deletes(monkeypatch):
+    runtime = _managed_existing_runtime()
+    monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
+
+    diff = schema_module.diff_schema(ManagedSchemaFixture)
+
+    managed_delete_ops = {
+        (operation.op_type, operation.path, operation.safety)
+        for operation in diff.operations
+        if operation.safety == "managed-delete"
+    }
+    assert ("delete_parameter", "parameters.OLDPARAM", "managed-delete") in managed_delete_ops
+    assert ("delete_property", "properties.OldName", "managed-delete") in managed_delete_ops
+    assert ("delete_index", "indexes.OldIdx", "managed-delete") in managed_delete_ops
+    assert ("update_property", "properties.NewName", "managed-update") in {
+        (operation.op_type, operation.path, operation.safety)
+        for operation in diff.operations
+        if operation.safety == "managed-update"
+    }
+    assert all(operation.path != "properties.InheritedName" for operation in diff.operations)
+
+
+def test_sync_schema_managed_removes_owned_members_without_rebuilding_class(monkeypatch):
+    runtime = _managed_existing_runtime()
+    monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
+
+    ManagedSchemaFixture.sync_schema()
+
+    assert [
+        parameter.Name for parameter in runtime.class_definition.Parameters.items
+    ] == ["NEWPARAM"]
+    existing_new_name = next(
+        prop
+        for prop in runtime.class_definition.Properties.items
+        if prop.Name == "NewName"
+    )
+    assert [prop.Name for prop in runtime.class_definition.Properties.items] == [
+        "NewName",
+        "InheritedName",
+    ]
+    assert existing_new_name.Type == "%Library.String"
+    assert [index.Name for index in runtime.class_definition.Indices.items] == ["NewNameIdx"]
+    assert (
+        "%SYSTEM.OBJ",
+        "Delete",
+        ("Demo.ManagedSchemaFixture", "-d"),
+    ) not in runtime.calls
+    assert (
+        "%SYSTEM.OBJ",
+        "Compile",
+        ("Demo.ManagedSchemaFixture", "fc /display=none"),
+    ) in runtime.calls
 
 
 def test_sync_schema_creates_unqualified_class_in_user_package(monkeypatch):

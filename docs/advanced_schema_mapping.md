@@ -31,8 +31,8 @@ In practice:
 | Python `Meta` attribute | IRIS metadata target | SQL / runtime effect |
 | --- | --- | --- |
 | `classname` | `%Dictionary.ClassDefinition.Name` | Defines the IRIS class name; SQL table naming is derived by IRIS from the class unless separately customized in IRIS |
-| `mode` | no direct dictionary field | Controls ownership behavior in `iris_persistence`: `extend`, `replace`, `observe` |
-| `auto_sync` | no direct dictionary field | When `True`, `save()` runs `sync_schema()` automatically before writing, but only in non-destructive `extend` mode |
+| `mode` | no direct dictionary field | Controls ownership behavior in `iris_persistence`: `managed`, `extend`, `replace`, `observe`; default is `managed` |
+| `auto_sync` | no direct dictionary field | When `True`, `save()` runs `sync_schema()` automatically before writing; blocked for `observe` and `replace` |
 | `superclasses` | `%Dictionary.ClassDefinition.Super` | Controls whether the class is `%Persistent`, `%SerialObject`, `Ens.Request`, etc., which changes table projection and object behavior |
 | `metadata=ClassMetadata(...)` | `%Dictionary.ClassDefinition` scalar flags | Class-level descriptive, compiler-facing, and SQL projection metadata |
 | `parameters` | `%Dictionary.ParameterDefinition` and `%Dictionary.ClassDefinition.Parameters` | IRIS class parameters; some may affect SQL/storage behavior depending on IRIS semantics |
@@ -43,8 +43,9 @@ In practice:
 
 | Mode | IRIS write behavior | Use case |
 | --- | --- | --- |
-| `extend` | Adds/updates Python-declared members, keeps unrelated IRIS metadata | Brownfield classes |
-| `replace` | Rebuilds the class from Python metadata | Python-owned schema |
+| `managed` | Adds/updates Python-declared members and removes omitted Python-owned parameters, properties, and indexes | Migration-controlled production classes |
+| `extend` | Adds/updates Python-declared members, keeps unrelated IRIS metadata | Brownfield classes and auto-sync demos |
+| `replace` | Rebuilds the class from Python metadata | Python-owned destructive rebuilds |
 | `observe` | Never writes schema | Bind to existing IRIS classes |
 
 ## Auto Sync Semantics
@@ -57,6 +58,9 @@ Behavior:
 - `auto_sync=False`:
   `save()` never writes schema implicitly. If the IRIS class is missing, save fails with a
   runtime error that points you to `Model.sync_schema()`.
+- default `mode="managed", auto_sync=True`:
+  `save()` calls `Model.sync_schema()` before writing the row. This can add, update, or delete
+  Python-owned schema members, so use it only where implicit schema ownership is acceptable.
 - `mode="extend", auto_sync=True`:
   `save()` calls `Model.sync_schema()` before writing the row. This will create the class if
   needed and add missing Python-declared fields and indexes non-destructively.
@@ -69,7 +73,10 @@ Behavior:
 Recommended user experience:
 
 - demos and first-run developer workflows:
-  `mode="extend", auto_sync=True`
+  default `mode="managed", auto_sync=True` for Python-owned schemas, or `mode="extend", auto_sync=True`
+  when IRIS-only members must be preserved
+- migration-controlled production classes:
+  default `mode="managed"` with reviewed `plan -> apply -> verify`
 - existing production classes:
   `mode="observe"` or explicit `sync_schema()`
 - Python-owned destructive rebuilds:
@@ -101,8 +108,9 @@ class Demo(Model, persistent=True):
 
 Notes:
 
-- `ClassMetadata` is optional; if absent, `iris_persistence` leaves those class-level flags alone in `extend` mode.
+- `ClassMetadata` is optional; if absent, `iris_persistence` leaves those class-level flags alone in `managed` and `extend` modes.
 - The scaffold only emits non-default class metadata fields.
+- `managed` mode removes Python-owned properties, indexes, and parameters that disappear from the model without rebuilding the class.
 - `replace` mode clears omitted class metadata naturally because the class is recreated.
 - `Internal` and `SqlViewName` are intentionally not modeled yet because they are exposed by compiled metadata but are not writable reliably through `%Dictionary.ClassDefinition` in this environment.
 
@@ -454,8 +462,10 @@ workflow for production schemas.
 - `plan.save("plan.json")` writes the review artifact that should be applied later.
 - `apply_plan(plan, backup_dir=...)` rechecks live schema fingerprints before writing and creates
   a pre-apply backup directory containing `plan.json`, `metadata.json`, and `schema_states.json`.
-- destructive or manual-review operations, including storage replacement, are blocked unless
-  `allow_destructive=True` or CLI `--allow-destructive` is supplied.
+- managed-mode property, index, and parameter removals/updates are shown as `managed-delete`
+  or `managed-update` operations and are allowed by default.
+- destructive or manual-review operations outside managed member removals, including storage
+  replacement, are blocked unless `allow_destructive=True` or CLI `--allow-destructive` is supplied.
 - `verify_plan(plan)` checks whether the live schema converged to the plan target.
 - `rollback_backup(path, allow_destructive=True)` restores classes from `schema_states.json` and
   deletes classes that did not exist before apply; rollback does not require or use a hand-written
@@ -473,9 +483,9 @@ iris-persistence verify-plan plan.json
 iris-persistence rollback-backup .iris_persistence/backups/<backup-id> --allow-destructive
 ```
 
-For migration-managed classes, keep `Meta.auto_sync = False` in production paths. `auto_sync`
-is still useful for demos and local development, but it bypasses reviewed migration plans and
-pre-apply backups.
+For migration-managed classes, keep the default `mode="managed"` and `Meta.auto_sync = False`
+in production paths. `auto_sync` is still useful for demos and local development, but it bypasses
+reviewed migration plans and pre-apply backups.
 
 ## Current Coverage
 

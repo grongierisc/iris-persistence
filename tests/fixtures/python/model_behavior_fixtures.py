@@ -59,6 +59,15 @@ class ReplaceAutoSyncModel(Model, persistent=True):
         auto_sync = True
 
 
+class ManagedAutoSyncModel(Model, persistent=True):
+    Name: str | None = None
+
+    class Meta:
+        classname = "Demo.ManagedAutoSyncModel"
+        mode = "managed"
+        auto_sync = True
+
+
 class FailingSaveModel(Model):
     Name: str | None = None
 

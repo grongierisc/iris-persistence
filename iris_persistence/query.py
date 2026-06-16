@@ -332,7 +332,7 @@ def _maybe_auto_sync_schema(model_cls: Type[TModel]) -> None:
     if not getattr(model_cls, "_auto_sync", False):
         return
 
-    mode = getattr(model_cls, "_sync_mode", "extend")
+    mode = getattr(model_cls, "_sync_mode", iris_persistence.models.DEFAULT_SYNC_MODE)
     if mode == "observe":
         raise RuntimeError(
             f"{model_cls.__name__} enables `Meta.auto_sync`, but mode='observe' "

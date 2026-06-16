@@ -39,6 +39,7 @@ class _FactoryDefault:
 
 FACTORY_DEFAULT = _FactoryDefault()
 RESERVED_FIELD_NAMES = frozenset({"pk", "_pk", "_iris_obj"})
+DEFAULT_SYNC_MODE = "managed"
 
 
 def _is_empty_class_metadata(metadata: ClassMetadata | None) -> bool:
@@ -747,7 +748,7 @@ class ModelMeta(type):
             delattr(cls, "_declared_model_options__")
         superclasses = _resolve_model_superclasses(meta_inner, declared_model_options)
         setattr(cls, "_classname", getattr(meta_inner, "classname", name))
-        setattr(cls, "_sync_mode", getattr(meta_inner, "mode", "extend"))
+        setattr(cls, "_sync_mode", getattr(meta_inner, "mode", DEFAULT_SYNC_MODE))
         setattr(cls, "_auto_sync", getattr(meta_inner, "auto_sync", False))
         validate_on_init = getattr(meta_inner, "validate_on_init", True)
         setattr(cls, "_validate_on_init", validate_on_init)

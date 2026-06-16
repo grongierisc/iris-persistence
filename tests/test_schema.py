@@ -177,10 +177,24 @@ class _ExistingUserClassRuntime(_RecordingRuntime):
 
 
 class _TransactionalRuntime(_RecordingRuntime):
-    def __init__(self, fail_save_for=None):
+    def __init__(self, fail_save_for=None, fail_compile_for=None):
         super().__init__()
         self.fail_save_for = fail_save_for
+        self.fail_compile_for = fail_compile_for
         self.transaction_events = []
+
+    def call_classmethod(self, class_name, method_name, *args):
+        self.calls.append((class_name, method_name, args))
+        if class_name == "%Dictionary.ClassDefinition" and method_name == "_ExistsId":
+            return False
+        if (
+            class_name == "%SYSTEM.OBJ"
+            and method_name == "Compile"
+            and args
+            and args[0] == self.fail_compile_for
+        ):
+            return 0
+        return 1
 
     def begin_transaction(self):
         self.transaction_events.append("begin")
@@ -193,7 +207,7 @@ class _TransactionalRuntime(_RecordingRuntime):
 
     def save_object(self, obj):
         self.saved.append(obj)
-        if getattr(obj, "Name", None) == self.fail_save_for:
+        if self.fail_save_for is not None and getattr(obj, "Name", None) == self.fail_save_for:
             return 0
         return 1
 
@@ -481,6 +495,16 @@ def test_sync_schema_rolls_back_recursive_sync_on_failure(monkeypatch):
     ) not in runtime.calls
 
 
+def test_sync_schema_rolls_back_compile_failure(monkeypatch):
+    runtime = _TransactionalRuntime(fail_compile_for="Demo.ParameterFixture")
+    monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
+
+    with pytest.raises(RuntimeError, match="Schema compile failed for Demo.ParameterFixture"):
+        ParameterFixture.sync_schema()
+
+    assert runtime.transaction_events == ["begin", "rollback"]
+
+
 def test_diff_schema_reports_planned_changes_without_writing(monkeypatch):
     runtime = _RecordingRuntime()
     monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
@@ -506,5 +530,38 @@ def test_diff_schema_includes_storage_property_metadata(monkeypatch):
 
     rendered = diff.to_unified_diff()
     assert "+storage data_location='^Demo.SchemaMetadataFixtureD'" in rendered
+    assert "+storage_data SchemaMetadataFixtureDefaultData" in rendered
+    assert "+storage_data_value SchemaMetadataFixtureDefaultData.1='Payload'" in rendered
+    assert "+storage_index PayloadStorageIdx" in rendered
     assert "+storage_property Payload average_field_size='10'" in rendered
+    assert "+storage_sql_map PayloadMap" in rendered
+    assert "+storage_sql_map_data PayloadMap.PayloadData" in rendered
+    assert "+storage_sql_map_row_id_spec PayloadMap.1" in rendered
+    assert "+storage_sql_map_subscript PayloadMap.1" in rendered
+    assert "+storage_sql_map_sub_access_var PayloadMap.1.1" in rendered
+    assert "+storage_sql_map_sub_invalid_condition PayloadMap.1.1" in rendered
     assert "selectivity='0.001%'" in rendered
+
+
+def test_diff_schema_exposes_structured_operations(monkeypatch):
+    runtime = _RecordingRuntime()
+    monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
+
+    diff = ParameterFixture.diff_schema()
+
+    assert diff.before_state is not None
+    assert diff.after_state is not None
+    assert [operation.op_type for operation in diff.operations] == [
+        "create_class",
+        "update_super",
+        "add_parameter",
+        "add_property",
+        "compile_class",
+    ]
+    assert [operation.path for operation in diff.operations] == [
+        "class",
+        "super",
+        "parameters.TITI",
+        "properties.Payload",
+        "compile",
+    ]

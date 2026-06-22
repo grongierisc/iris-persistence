@@ -185,6 +185,17 @@ def test_model_meta_defaults_to_managed_sync_mode():
     assert DefaultModeModel._sync_mode == "managed"
 
 
+def test_plain_collection_annotations_infer_schema_collection():
+    class CollectionAnnotationModel(Model):
+        Tags: list[str] = Field(default_factory=list)
+        Lookup: dict[str, str] = Field(default_factory=dict)
+        PackedTags: list[str] = Field(default_factory=list, iris_type="%List")
+
+    assert CollectionAnnotationModel._fields["Tags"].collection == "list"
+    assert CollectionAnnotationModel._fields["Lookup"].collection == "array"
+    assert CollectionAnnotationModel._fields["PackedTags"].collection is None
+
+
 def test_model_meta_sets_class_metadata():
     assert ClassMetadataModel._class_metadata == ClassMetadata(
         description="class-level description",

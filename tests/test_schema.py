@@ -419,6 +419,7 @@ def test_sync_schema_extend_adds_missing_indexes_without_duplication(monkeypatch
 
 class ManagedSchemaFixture(Model, persistent=True):
     NewName: str | None = None
+    Items: list[str] = Field(default_factory=list)
 
     class Meta:
         classname = "Demo.ManagedSchemaFixture"
@@ -446,6 +447,14 @@ def _managed_existing_runtime():
     existing_property.Name = "NewName"
     existing_property.Type = "%Library.Integer"
     runtime.class_definition.Properties.Insert(existing_property)
+
+    existing_collection_property = _RecordingObject("%Dictionary.PropertyDefinition")
+    existing_collection_property.Name = "Items"
+    existing_collection_property.Type = "%Library.String"
+    existing_collection_property.Required = 1
+    existing_collection_property.InitialExpression = '"old"'
+    existing_collection_property.Parameters.SetAt("10", "MAXLEN")
+    runtime.class_definition.Properties.Insert(existing_collection_property)
 
     inherited_property = _RecordingObject("%Dictionary.PropertyDefinition")
     inherited_property.Name = "InheritedName"
@@ -479,6 +488,17 @@ def test_diff_schema_managed_plans_targeted_member_deletes(monkeypatch):
         for operation in diff.operations
         if operation.safety == "managed-update"
     }
+    assert ("update_property", "properties.Items", "managed-update") in {
+        (operation.op_type, operation.path, operation.safety)
+        for operation in diff.operations
+        if operation.safety == "managed-update"
+    }
+    items_operation = next(
+        operation
+        for operation in diff.operations
+        if operation.op_type == "update_property" and operation.path == "properties.Items"
+    )
+    assert items_operation.after["collection"] == "list"
     assert all(operation.path != "properties.InheritedName" for operation in diff.operations)
 
 
@@ -498,9 +518,20 @@ def test_sync_schema_managed_removes_owned_members_without_rebuilding_class(monk
     )
     assert [prop.Name for prop in runtime.class_definition.Properties.items] == [
         "NewName",
+        "Items",
         "InheritedName",
     ]
     assert existing_new_name.Type == "%Library.String"
+    existing_items = next(
+        prop
+        for prop in runtime.class_definition.Properties.items
+        if prop.Name == "Items"
+    )
+    assert existing_items.Type == "%Library.String"
+    assert existing_items.Collection == "list"
+    assert existing_items.Required == 0
+    assert existing_items.InitialExpression == ""
+    assert existing_items.Parameters.MAXLEN == ""
     assert [index.Name for index in runtime.class_definition.Indices.items] == ["NewNameIdx"]
     assert (
         "%SYSTEM.OBJ",

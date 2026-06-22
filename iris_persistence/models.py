@@ -40,6 +40,16 @@ class _FactoryDefault:
 FACTORY_DEFAULT = _FactoryDefault()
 RESERVED_FIELD_NAMES = frozenset({"pk", "_pk", "_iris_obj"})
 DEFAULT_SYNC_MODE = "managed"
+SCALAR_COLLECTION_IRIS_TYPES = frozenset(
+    {
+        "%ArrayOfDataTypes",
+        "%ArrayOfObjects",
+        "%Library.List",
+        "%List",
+        "%ListOfDataTypes",
+        "%ListOfObjects",
+    }
+)
 
 
 def _is_empty_class_metadata(metadata: ClassMetadata | None) -> bool:
@@ -147,6 +157,12 @@ def _build_model_field(
     is_percent_list = _is_percent_list_field(field_info)
     is_scalar_string = _is_scalar_string_field(field_info)
     collection_kind, element_type = _collection_value_type(resolved_type)
+    if (
+        field_info.collection is None
+        and collection_kind is not None
+        and field_info.iris_type not in SCALAR_COLLECTION_IRIS_TYPES
+    ):
+        field_info.collection = collection_kind
     is_model_field = _is_model_type(resolved_type)
 
     return ModelField(

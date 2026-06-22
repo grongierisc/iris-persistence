@@ -1440,6 +1440,43 @@ def _set_runtime_property_if_not_none(
         runtime.set_property(obj, prop_name, value)
 
 
+def _set_runtime_property_exact(
+    runtime: Any,
+    obj: Any,
+    prop_name: str,
+    value: Any,
+) -> None:
+    try:
+        runtime.set_property(obj, prop_name, "" if value is None else value)
+    except AttributeError:
+        pass
+
+
+def _set_runtime_flag_exact(
+    runtime: Any,
+    obj: Any,
+    prop_name: str,
+    enabled: Any,
+) -> None:
+    try:
+        runtime.set_property(obj, prop_name, 1 if enabled else 0)
+    except AttributeError:
+        pass
+
+
+def _remove_runtime_parameter(runtime: Any, params: Any, key: str) -> None:
+    for method_name in ("RemoveAt", "DeleteAt", "Remove"):
+        try:
+            runtime.invoke_method(params, method_name, key)
+            return
+        except Exception:
+            continue
+    try:
+        runtime.invoke_method(params, "SetAt", "", key)
+    except Exception:
+        pass
+
+
 def _set_runtime_flag_if_true(runtime: Any, obj: Any, prop_name: str, enabled: Any) -> None:
     if enabled:
         runtime.set_property(obj, prop_name, 1)
@@ -1757,49 +1794,48 @@ def _apply_property_definition_from_state(
     property_state: dict[str, Any],
 ) -> None:
     _set_runtime_property_if_not_none(runtime, prop, "Type", property_state.get("type"))
-    if "required" in property_state:
-        runtime.set_property(prop, "Required", 1 if property_state.get("required") else 0)
-    if "readonly" in property_state:
-        runtime.set_property(prop, "ReadOnly", 1 if property_state.get("readonly") else 0)
-    _set_runtime_property_if_not_none(runtime, prop, "Collection", property_state.get("collection"))
-    _set_runtime_property_if_not_none(
+    _set_runtime_flag_exact(runtime, prop, "Required", property_state.get("required"))
+    _set_runtime_flag_exact(runtime, prop, "ReadOnly", property_state.get("readonly"))
+    _set_runtime_property_exact(runtime, prop, "Collection", property_state.get("collection"))
+    _set_runtime_property_exact(
         runtime, prop, "SqlFieldName", property_state.get("sql_field_name")
     )
-    if "identity" in property_state:
-        runtime.set_property(prop, "Identity", 1 if property_state.get("identity") else 0)
-    _set_runtime_property_if_not_none(
+    _set_runtime_flag_exact(runtime, prop, "Identity", property_state.get("identity"))
+    _set_runtime_property_exact(
         runtime, prop, "Relationship", property_state.get("relationship")
     )
-    _set_runtime_property_if_not_none(runtime, prop, "OnDelete", property_state.get("on_delete"))
-    _set_runtime_property_if_not_none(runtime, prop, "Inverse", property_state.get("inverse"))
-    if "transient" in property_state:
-        runtime.set_property(prop, "Transient", 1 if property_state.get("transient") else 0)
-    if "storable" in property_state:
-        runtime.set_property(prop, "Storable", 1 if property_state.get("storable") else 0)
-    if "multi_dimensional" in property_state:
-        runtime.set_property(
-            prop,
-            "MultiDimensional",
-            1 if property_state.get("multi_dimensional") else 0,
-        )
-    _set_runtime_property_if_not_none(
+    _set_runtime_property_exact(runtime, prop, "OnDelete", property_state.get("on_delete"))
+    _set_runtime_property_exact(runtime, prop, "Inverse", property_state.get("inverse"))
+    _set_runtime_flag_exact(runtime, prop, "Transient", property_state.get("transient"))
+    _set_runtime_flag_exact(
+        runtime,
+        prop,
+        "Storable",
+        property_state.get("storable") is not False,
+    )
+    _set_runtime_flag_exact(
+        runtime,
+        prop,
+        "MultiDimensional",
+        property_state.get("multi_dimensional"),
+    )
+    _set_runtime_property_exact(
         runtime, prop, "SqlListDelimiter", property_state.get("sql_list_delimiter")
     )
-    _set_runtime_property_if_not_none(
+    _set_runtime_property_exact(
         runtime, prop, "SqlListType", property_state.get("sql_list_type")
     )
-    _set_runtime_property_if_not_none(
+    _set_runtime_property_exact(
         runtime, prop, "SqlComputeCode", property_state.get("sql_compute_code")
     )
-    _set_runtime_property_if_not_none(
+    _set_runtime_property_exact(
         runtime,
         prop,
         "SqlComputeOnChange",
         property_state.get("sql_compute_on_change"),
     )
-    if "sql_computed" in property_state:
-        runtime.set_property(prop, "SqlComputed", 1 if property_state.get("sql_computed") else 0)
-    _set_runtime_property_if_not_none(
+    _set_runtime_flag_exact(runtime, prop, "SqlComputed", property_state.get("sql_computed"))
+    _set_runtime_property_exact(
         runtime,
         prop,
         "InitialExpression",
@@ -1807,10 +1843,12 @@ def _apply_property_definition_from_state(
     )
 
     max_length = property_state.get("max_length")
-    if max_length is not None:
-        params = runtime.get_property(prop, "Parameters")
-        if params is not None:
+    params = runtime.get_property(prop, "Parameters")
+    if params is not None:
+        if max_length is not None:
             runtime.invoke_method(params, "SetAt", str(max_length), "MAXLEN")
+        else:
+            _remove_runtime_parameter(runtime, params, "MAXLEN")
 
 
 def _sync_properties(

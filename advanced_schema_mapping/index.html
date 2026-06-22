@@ -490,6 +490,9 @@ class definition object but do not appear through the SQL dictionary views.</p>
 <ul>
 <li><code>Field.default</code> is written as an IRIS initial expression.</li>
 <li><code>Field.sql_type</code> is accepted as an alias for <code>Field.iris_type</code>.</li>
+<li>Plain <code>list[T]</code> and <code>dict[str, T]</code> annotations infer <code>Collection="list"</code> and
+  <code>Collection="array"</code> respectively when no scalar collection <code>iris_type</code> such as <code>%List</code>,
+  <code>%ListOfDataTypes</code>, or <code>%ArrayOfDataTypes</code> is supplied.</li>
 <li><code>Field.storable</code> defaults to <code>True</code>; the scaffold only emits <code>storable=False</code> when IRIS marks the property as non-storable.</li>
 <li>The scaffold only emits non-default field flags, so <code>identity=False</code>, <code>transient=False</code>, and <code>multi_dimensional=False</code> are omitted.</li>
 <li>SQL-projection field metadata is scaffolded only when the compiled property exposes non-empty values for it.</li>
@@ -527,12 +530,20 @@ class definition object but do not appear through the SQL dictionary views.</p>
 <td><code>%Stream.GlobalBinary</code></td>
 </tr>
 <tr>
-<td><code>dict</code></td>
+<td>unparameterized <code>dict</code></td>
 <td><code>%Library.DynamicObject</code></td>
 </tr>
 <tr>
-<td><code>list</code></td>
+<td>unparameterized <code>list</code></td>
 <td><code>%Library.DynamicArray</code></td>
+</tr>
+<tr>
+<td><code>dict[str, T]</code></td>
+<td><code>T</code> with <code>Collection="array"</code> unless <code>iris_type</code> forces a scalar collection type</td>
+</tr>
+<tr>
+<td><code>list[T]</code></td>
+<td><code>T</code> with <code>Collection="list"</code> unless <code>iris_type</code> forces a scalar collection type</td>
 </tr>
 <tr>
 <td><code>datetime.date</code></td>

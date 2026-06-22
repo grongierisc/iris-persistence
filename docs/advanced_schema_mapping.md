@@ -170,6 +170,9 @@ Notes:
 
 - `Field.default` is written as an IRIS initial expression.
 - `Field.sql_type` is accepted as an alias for `Field.iris_type`.
+- Plain `list[T]` and `dict[str, T]` annotations infer `Collection="list"` and
+  `Collection="array"` respectively when no scalar collection `iris_type` such as `%List`,
+  `%ListOfDataTypes`, or `%ArrayOfDataTypes` is supplied.
 - `Field.storable` defaults to `True`; the scaffold only emits `storable=False` when IRIS marks the property as non-storable.
 - The scaffold only emits non-default field flags, so `identity=False`, `transient=False`, and `multi_dimensional=False` are omitted.
 - SQL-projection field metadata is scaffolded only when the compiled property exposes non-empty values for it.
@@ -187,8 +190,10 @@ Default Python-to-IRIS mapping:
 | `float` | `%Library.Float` |
 | `bool` | `%Library.Boolean` |
 | `bytes` / `bytearray` | `%Stream.GlobalBinary` |
-| `dict` | `%Library.DynamicObject` |
-| `list` | `%Library.DynamicArray` |
+| unparameterized `dict` | `%Library.DynamicObject` |
+| unparameterized `list` | `%Library.DynamicArray` |
+| `dict[str, T]` | `T` with `Collection="array"` unless `iris_type` forces a scalar collection type |
+| `list[T]` | `T` with `Collection="list"` unless `iris_type` forces a scalar collection type |
 | `datetime.date` | `%Library.Date` |
 | `datetime.time` | `%Library.Time` |
 | `datetime.datetime` | `%Library.TimeStamp` |

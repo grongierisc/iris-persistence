@@ -160,6 +160,21 @@ class Event(Model, persistent=True):
     created_at: str = Field(iris_type="%Library.TimeStamp")
 ```
 
+Default scalar type mapping:
+
+| Python type | IRIS type |
+| --- | --- |
+| `str` | `%Library.String` |
+| `int` | `%Library.Integer` |
+| `float` | `%Library.Double` |
+| `decimal.Decimal` | `%Library.Decimal` |
+| `bool` | `%Library.Boolean` |
+| `bytes` / `bytearray` | `%Stream.GlobalBinary` |
+
+`%Library.Float` is deprecated in IRIS, so Python `float` maps to `%Library.Double`.
+Use `decimal.Decimal` for Decimal storage, or force it explicitly with
+`Field(iris_type="%Library.Decimal")` when needed.
+
 Model configuration lives in an optional inner `Meta` class:
 
 ```python

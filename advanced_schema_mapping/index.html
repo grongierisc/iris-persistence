@@ -410,6 +410,11 @@ class definition object but do not appear through the SQL dictionary views.</p>
 <td>Affects string length projection and validation</td>
 </tr>
 <tr>
+<td><code>decimal.Decimal</code> or explicit <code>%Library.Decimal</code></td>
+<td>property parameter <code>SCALE=18</code></td>
+<td>Preserves fractional values with the non-deprecated decimal type</td>
+</tr>
+<tr>
 <td><code>readonly=True</code></td>
 <td><code>ReadOnly=1</code></td>
 <td>Marks the IRIS property as read-only</td>
@@ -519,7 +524,11 @@ class definition object but do not appear through the SQL dictionary views.</p>
 </tr>
 <tr>
 <td><code>float</code></td>
-<td><code>%Library.Float</code></td>
+<td><code>%Library.Double</code></td>
+</tr>
+<tr>
+<td><code>decimal.Decimal</code></td>
+<td><code>%Library.Decimal</code></td>
 </tr>
 <tr>
 <td><code>bool</code></td>

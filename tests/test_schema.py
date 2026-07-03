@@ -1,3 +1,5 @@
+import decimal
+
 import pytest
 
 import iris_persistence.schema as schema_module
@@ -24,6 +26,16 @@ def test_field_sql_type_alias_maps_to_iris_type():
 
     assert field.iris_type == "%Library.Currency"
     assert _map_python_type_to_iris(float, field) == "%Library.Currency"
+
+
+@pytest.mark.parametrize("py_type", [float, float | None])
+def test_float_maps_to_double(py_type):
+    assert _map_python_type_to_iris(py_type, Field()) == "%Library.Double"
+
+
+@pytest.mark.parametrize("py_type", [decimal.Decimal, decimal.Decimal | None])
+def test_decimal_maps_to_decimal(py_type):
+    assert _map_python_type_to_iris(py_type, Field()) == "%Library.Decimal"
 
 
 class _ListWrapper:
@@ -219,6 +231,44 @@ class _TransactionalRuntime(_RecordingRuntime):
         if self.fail_save_for is not None and getattr(obj, "Name", None) == self.fail_save_for:
             return 0
         return 1
+
+
+def test_sync_schema_writes_decimal_scale_for_decimal(monkeypatch):
+    class DecimalScaleModel(Model):
+        Price: decimal.Decimal | None = None
+
+        class Meta:
+            classname = "Demo.DecimalScaleModel"
+            mode = "replace"
+
+    runtime = _RecordingRuntime()
+    monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
+
+    DecimalScaleModel.sync_schema()
+
+    prop = runtime.class_definition.Properties.items[0]
+    assert prop.Name == "Price"
+    assert prop.Type == "%Library.Decimal"
+    assert prop.Parameters.SCALE == "18"
+
+
+def test_sync_schema_writes_decimal_scale_for_explicit_float_decimal(monkeypatch):
+    class ExplicitFloatDecimalScaleModel(Model):
+        Price: float | None = Field(default=None, iris_type="%Library.Decimal")
+
+        class Meta:
+            classname = "Demo.ExplicitFloatDecimalScaleModel"
+            mode = "replace"
+
+    runtime = _RecordingRuntime()
+    monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
+
+    ExplicitFloatDecimalScaleModel.sync_schema()
+
+    prop = runtime.class_definition.Properties.items[0]
+    assert prop.Name == "Price"
+    assert prop.Type == "%Library.Decimal"
+    assert prop.Parameters.SCALE == "18"
 
 
 def test_sync_schema_writes_extended_metadata(monkeypatch):

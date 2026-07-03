@@ -150,6 +150,7 @@ Field metadata is written to `%Dictionary.PropertyDefinition` and then projected
 | `required=True` | `Required=1` | IRIS projects required/non-nullable semantics for the property |
 | `default=...` | `InitialExpression` | Object/property default; this is not the same as issuing raw SQL `DEFAULT` DDL yourself |
 | `max_length=...` / `maxlen=...` | property parameter `MAXLEN` | Affects string length projection and validation |
+| `decimal.Decimal` or explicit `%Library.Decimal` | property parameter `SCALE=18` | Preserves fractional values with the non-deprecated decimal type |
 | `readonly=True` | `ReadOnly=1` | Marks the IRIS property as read-only |
 | `collection="list"` / `"array"` | `Collection` | Changes collection semantics and SQL/storage projection behavior |
 | `sql_field_name="..."` | `SqlFieldName` | Overrides the projected SQL column name |
@@ -187,7 +188,8 @@ Default Python-to-IRIS mapping:
 | --- | --- |
 | `str` | `%Library.String` |
 | `int` | `%Library.Integer` |
-| `float` | `%Library.Float` |
+| `float` | `%Library.Double` |
+| `decimal.Decimal` | `%Library.Decimal` |
 | `bool` | `%Library.Boolean` |
 | `bytes` / `bytearray` | `%Stream.GlobalBinary` |
 | unparameterized `dict` | `%Library.DynamicObject` |

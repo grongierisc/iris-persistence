@@ -135,6 +135,21 @@ class IRISValueAdapterMixin:
         current_prop.Clear()
         return True
 
+    def _set_null_property_value(self, obj: Any, field_name: str) -> bool:
+        native_handles = self._native_handles(obj)
+        if native_handles is None:
+            return False
+
+        try:
+            oref, db, use_core_methods = native_handles
+            if use_core_methods:
+                oref.set(field_name, "")
+            else:
+                db.set(oref, field_name, "")
+            return True
+        except Exception:
+            return False
+
     def _write_stream_property(self, obj: Any, field_name: str, val: bytes | bytearray) -> bool:
         native_handles = self._native_handles(obj)
         if native_handles is not None:
@@ -318,6 +333,8 @@ class IRISValueAdapterMixin:
     ) -> None:
         if val is None:
             if self._clear_property_value(obj, field_name):
+                return
+            if self._set_null_property_value(obj, field_name):
                 return
             self.set_property(obj, field_name, val)
         elif isinstance(val, (bytes, bytearray)):

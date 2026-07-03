@@ -68,6 +68,16 @@ def _is_empty_scalar_null(value: Any) -> bool:
     return value in ("", None)
 
 
+def _is_null_object_reference(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value == ""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value == 0
+    return False
+
+
 def _coerce_collection_for_load(
     collection_kind: str,
     element_type: Any,
@@ -92,7 +102,7 @@ def _build_model_from_iris_obj(
     iris_obj: Any,
     known_pk: Optional[str] = None,
 ) -> Optional[TModel]:
-    if iris_obj is None:
+    if _is_null_object_reference(iris_obj):
         return None
 
     # Use the per-class code-gen loader when available (direct LOAD_ATTR, 2-3× faster

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import decimal
 import hashlib
 import json
 from copy import deepcopy
@@ -39,7 +40,9 @@ PROPERTY_KEYS = (
     "sql_computed",
     "initial_expression",
     "max_length",
+    "scale",
 )
+DEFAULT_DECIMAL_SCALE = "18"
 INDEX_KEYS = ("properties", "unique", "type", "primary_key")
 STORAGE_KEYS = (
     "type",
@@ -482,14 +485,19 @@ def _field_initial_expression(field_meta: FieldInfo) -> str | None:
     return str(default)
 
 
+def _decimal_scale_for_field(py_type: Any, iris_type: str) -> str | None:
+    if py_type in (float, decimal.Decimal) and iris_type == "%Library.Decimal":
+        return DEFAULT_DECIMAL_SCALE
+    return None
+
+
 def _collect_model_schema_state_for_field(field_name: str, model_field: Any) -> dict[str, Any]:
     field_meta = model_field.field_info
+    py_type = _resolve_model_type(model_field.declared_type)
+    iris_type = _map_python_type_to_iris(py_type, field_meta)
     return _compact_mapping(
         {
-            "type": _map_python_type_to_iris(
-                _resolve_model_type(model_field.declared_type),
-                field_meta,
-            ),
+            "type": iris_type,
             "required": getattr(field_meta, "required", False),
             "readonly": getattr(field_meta, "readonly", False),
             "collection": getattr(field_meta, "collection", None),
@@ -508,6 +516,7 @@ def _collect_model_schema_state_for_field(field_name: str, model_field: Any) -> 
             "sql_computed": getattr(field_meta, "sql_computed", False),
             "initial_expression": _field_initial_expression(field_meta),
             "max_length": getattr(field_meta, "max_length", None),
+            "scale": _decimal_scale_for_field(py_type, iris_type),
         }
     )
 
@@ -692,6 +701,7 @@ def _collect_live_properties_from_sql(runtime: Any, classname: str) -> dict[str,
         if not name or str(name).startswith("%"):
             continue
         max_length = _row_value(row, "MAXLEN")
+        scale = _row_value(row, "SCALE")
         properties[str(name)] = _compact_mapping(
             {
                 "type": _row_value(row, "Type"),
@@ -713,6 +723,7 @@ def _collect_live_properties_from_sql(runtime: Any, classname: str) -> dict[str,
                 "sql_computed": _coerce_bool(_row_value(row, "SqlComputed")),
                 "initial_expression": _row_value(row, "InitialExpression"),
                 "max_length": str(max_length) if max_length not in (None, "") else None,
+                "scale": str(scale) if scale not in (None, "") else None,
             }
         )
     return properties
@@ -781,12 +792,17 @@ def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
         if not _item_belongs_to_class(runtime, item, existing_classname):
             continue
         max_length = None
+        scale = None
         params = _safe_get_property(runtime, item, "Parameters")
         if params is not None:
             try:
                 max_length = runtime.invoke_method(params, "GetAt", "MAXLEN")
             except Exception:
                 max_length = None
+            try:
+                scale = runtime.invoke_method(params, "GetAt", "SCALE")
+            except Exception:
+                scale = None
         properties[str(name)] = _compact_mapping(
             {
                 "type": _safe_get_property(runtime, item, "Type"),
@@ -816,6 +832,7 @@ def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
                 "sql_computed": _coerce_bool(_safe_get_property(runtime, item, "SqlComputed")),
                 "initial_expression": _safe_get_property(runtime, item, "InitialExpression"),
                 "max_length": str(max_length) if max_length not in (None, "") else None,
+                "scale": str(scale) if scale not in (None, "") else None,
             }
         )
     state["properties"] = properties
@@ -1190,7 +1207,9 @@ def _map_python_type_to_iris(py_type: Any, field_meta: FieldInfo) -> str:
     if py_type is int:
         return "%Library.Integer"
     if py_type is float:
-        return "%Library.Float"
+        return "%Library.Double"
+    if py_type is decimal.Decimal:
+        return "%Library.Decimal"
     if py_type is bool:
         return "%Library.Boolean"
     if py_type is bytes or py_type is bytearray:
@@ -1477,6 +1496,19 @@ def _remove_runtime_parameter(runtime: Any, params: Any, key: str) -> None:
         pass
 
 
+def _set_property_parameter_if_not_none(
+    runtime: Any,
+    prop: Any,
+    key: str,
+    value: Any,
+) -> None:
+    if value is None:
+        return
+    params = runtime.get_property(prop, "Parameters")
+    if params is not None:
+        runtime.invoke_method(params, "SetAt", str(value), key)
+
+
 def _set_runtime_flag_if_true(runtime: Any, obj: Any, prop_name: str, enabled: Any) -> None:
     if enabled:
         runtime.set_property(obj, prop_name, 1)
@@ -1718,11 +1750,20 @@ def _build_property_definition(
         _property_initial_expression(field_meta),
     )
 
-    max_length = getattr(field_meta, "max_length", None)
-    if max_length is not None:
-        params = runtime.get_property(prop, "Parameters")
-        if params is not None:
-            runtime.invoke_method(params, "SetAt", str(max_length), "MAXLEN")
+    py_type = _resolve_model_type(model_field.declared_type)
+    iris_type = _map_python_type_to_iris(py_type, field_meta)
+    _set_property_parameter_if_not_none(
+        runtime,
+        prop,
+        "MAXLEN",
+        getattr(field_meta, "max_length", None),
+    )
+    _set_property_parameter_if_not_none(
+        runtime,
+        prop,
+        "SCALE",
+        _decimal_scale_for_field(py_type, iris_type),
+    )
     return prop
 
 
@@ -1780,11 +1821,8 @@ def _build_property_definition_from_state(
         property_state.get("initial_expression"),
     )
 
-    max_length = property_state.get("max_length")
-    if max_length is not None:
-        params = runtime.get_property(prop, "Parameters")
-        if params is not None:
-            runtime.invoke_method(params, "SetAt", str(max_length), "MAXLEN")
+    _set_property_parameter_if_not_none(runtime, prop, "MAXLEN", property_state.get("max_length"))
+    _set_property_parameter_if_not_none(runtime, prop, "SCALE", property_state.get("scale"))
     return prop
 
 
@@ -1843,12 +1881,17 @@ def _apply_property_definition_from_state(
     )
 
     max_length = property_state.get("max_length")
+    scale = property_state.get("scale")
     params = runtime.get_property(prop, "Parameters")
     if params is not None:
         if max_length is not None:
             runtime.invoke_method(params, "SetAt", str(max_length), "MAXLEN")
         else:
             _remove_runtime_parameter(runtime, params, "MAXLEN")
+        if scale is not None:
+            runtime.invoke_method(params, "SetAt", str(scale), "SCALE")
+        else:
+            _remove_runtime_parameter(runtime, params, "SCALE")
 
 
 def _sync_properties(

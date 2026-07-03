@@ -73,6 +73,13 @@ class TestIRISRuntimeAdapter(unittest.TestCase):
         )
         self.assertEqual(plain_obj.MyList, "dyn-array")
 
+    def test_inject_none_with_native_handles_sets_empty_string_when_clear_unavailable(self):
+        self.mock_oref.get.return_value = SimpleNamespace()
+
+        self.adapter.inject_iris_value(self.mock_obj, "Child", None)
+
+        self.mock_oref.set.assert_called_once_with("Child", "")
+
     def test_inject_collection_class_dict_bypasses_dynamic_object(self):
         field = Field(iris_type="%ArrayOfDataTypes")
         calls = []

@@ -293,6 +293,41 @@ def test_generic_load_casts_iris_empty_string_marker_to_none():
     assert loaded.Name is None
 
 
+@pytest.mark.parametrize("raw_null", ["", 0])
+def test_load_casts_empty_related_object_reference_to_none(raw_null):
+    class NullableRelatedAddress(Model, persistent=True):
+        street: str
+        city: str
+        zip_code: str
+
+    class NullableRelatedPerson(Model, persistent=True):
+        name: str
+        birth_address: NullableRelatedAddress | None = None
+
+    previous_runtime = runtime_module._active_runtime
+    configure_default_runtime(InMemoryAdapter())
+    iris_obj = type(
+        "FakeIRISObject",
+        (),
+        {
+            "name": "John Doe",
+            "birth_address": raw_null,
+        },
+    )()
+
+    try:
+        loaded = _build_model_from_iris_obj(
+            NullableRelatedPerson,
+            iris_obj,
+            known_pk="1",
+        )
+    finally:
+        runtime_module._active_runtime = previous_runtime
+
+    assert loaded is not None
+    assert loaded.birth_address is None
+
+
 def test_materialize_does_not_save_related_persistent_models():
     class MaterializeChild(Model, persistent=True):
         Name: str

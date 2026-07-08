@@ -405,7 +405,7 @@ class definition object but do not appear through the SQL dictionary views.</p>
 <td>Object/property default; this is not the same as issuing raw SQL <code>DEFAULT</code> DDL yourself</td>
 </tr>
 <tr>
-<td><code>max_length=...</code> / <code>maxlen=...</code></td>
+<td><code>max_length=...</code></td>
 <td>property parameter <code>MAXLEN</code></td>
 <td>Affects string length projection and validation</td>
 </tr>
@@ -494,7 +494,6 @@ class definition object but do not appear through the SQL dictionary views.</p>
 <p>Notes:</p>
 <ul>
 <li><code>Field.default</code> is written as an IRIS initial expression.</li>
-<li><code>Field.sql_type</code> is accepted as an alias for <code>Field.iris_type</code>.</li>
 <li>Plain <code>list[T]</code> and <code>dict[str, T]</code> annotations infer <code>Collection="list"</code> and
   <code>Collection="array"</code> respectively when no scalar collection <code>iris_type</code> such as <code>%List</code>,
   <code>%ListOfDataTypes</code>, or <code>%ArrayOfDataTypes</code> is supplied.</li>
@@ -1213,7 +1212,7 @@ reviewed migration plans and pre-apply backups.</p>
 <h2 id="current-coverage">Current Coverage</h2>
 <p>The current codebase round-trips:</p>
 <ul>
-<li>field type/default/required/maxlen/readonly/collection/sql field name</li>
+<li>field type/default/required/max_length/readonly/collection/sql field name</li>
 <li>index unique/type/primary key metadata</li>
 <li>storage globals, row-id helpers, and SQL storage scalars</li>
 <li>storage data nodes</li>

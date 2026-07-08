@@ -8,18 +8,13 @@ from iris_persistence.migrations import (
     MigrationError,
     MigrationPlan,
     UnsafeMigrationError,
+    _load_model_spec,
     apply_plan,
     check_drift,
     create_plan,
     rollback_backup,
     verify_plan,
 )
-
-
-def _load_model_spec(spec: str) -> type[Any]:
-    from iris_persistence.migrations import _load_model_spec as load
-
-    return load(spec)
 
 
 def _models(specs: list[str]) -> list[type[Any]]:

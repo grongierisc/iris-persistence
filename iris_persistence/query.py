@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import datetime
 import warnings
-from typing import Any, Dict, Generic, List, Optional, Type, TypeVar, get_args, get_origin
+from typing import Any, Dict, Generic, List, Optional, Type, TypeVar
 
 import iris_persistence.models
 from iris_persistence.codecs import (
     coerce_value_for_load,
     coerce_value_for_save,
-    resolve_declared_type,
 )
+from iris_persistence.field_utils import collection_value_type, is_model_type, is_serial_model_type
 from iris_persistence.runtime import get_runtime
 from iris_persistence.types import UNSET
 
@@ -20,43 +20,6 @@ _AUTO_SYNCED: set[type[iris_persistence.models.Model]] = set()
 
 def _clear_auto_sync_cache() -> None:
     _AUTO_SYNCED.clear()
-
-
-def _is_model_type(value: Any) -> bool:
-    return isinstance(value, type) and issubclass(value, iris_persistence.models.Model)
-
-
-def _is_serial_type(model_cls: Type[iris_persistence.models.Model]) -> bool:
-    superclasses = getattr(model_cls, "_superclasses", "") or ""
-    return "SerialObject" in superclasses
-
-
-def _collection_value_type(declared_type: Any) -> tuple[str | None, Any]:
-    origin = get_origin(declared_type)
-    if origin in (list, List):
-        args = get_args(declared_type)
-        element_type = resolve_declared_type(args[0]) if args else Any
-        return ("list", element_type)
-    if origin in (dict, Dict):
-        args = get_args(declared_type)
-        element_type = resolve_declared_type(args[1]) if len(args) == 2 else Any
-        return ("array", element_type)
-    return (None, None)
-
-
-def _is_percent_list_field(field_meta: Any | None) -> bool:
-    return getattr(field_meta, "iris_type", None) in {"%List", "%Library.List"}
-
-
-def _is_scalar_string_field(field_meta: Any | None) -> bool:
-    if field_meta is None or getattr(field_meta, "collection", None):
-        return False
-    return getattr(field_meta, "iris_type", None) in {
-        "%String",
-        "%RawString",
-        "%Library.String",
-        "%Library.RawString",
-    }
 
 
 def _scalar_null_value_for_save(declared_type: Any) -> Any:
@@ -85,11 +48,11 @@ def _coerce_collection_for_load(
     value: Any,
 ) -> Any:
     if collection_kind == "list" and isinstance(value, list):
-        if _is_model_type(element_type):
+        if is_model_type(element_type):
             return [_build_model_from_iris_obj(element_type, item) for item in value]
         return [coerce_value_for_load(element_type, item) for item in value]
     if collection_kind == "array" and isinstance(value, dict):
-        if _is_model_type(element_type):
+        if is_model_type(element_type):
             return {
                 str(key): _build_model_from_iris_obj(element_type, item)
                 for key, item in value.items()
@@ -205,9 +168,9 @@ def _materialize_related_value(
 ) -> Any:
     if value is None:
         return None
-    collection_kind, element_type = _collection_value_type(declared_type)
+    collection_kind, element_type = collection_value_type(declared_type)
     if collection_kind == "list" and isinstance(value, list):
-        if _is_model_type(element_type):
+        if is_model_type(element_type):
             return [
                 _materialize_related_value(
                     runtime,
@@ -221,7 +184,7 @@ def _materialize_related_value(
             ]
         return [coerce_value_for_save(element_type, item) for item in value]
     if collection_kind == "array" and isinstance(value, dict):
-        if _is_model_type(element_type):
+        if is_model_type(element_type):
             return {
                 str(key): _materialize_related_value(
                     runtime,
@@ -234,7 +197,7 @@ def _materialize_related_value(
                 for key, item in value.items()
             }
         return {str(key): coerce_value_for_save(element_type, item) for key, item in value.items()}
-    if not _is_model_type(declared_type):
+    if not is_model_type(declared_type):
         return coerce_value_for_save(declared_type, value)
 
     if not isinstance(value, declared_type):
@@ -242,7 +205,7 @@ def _materialize_related_value(
             f"Expected {declared_type.__name__} for related object, got {type(value).__name__}"
         )
 
-    if _is_serial_type(declared_type):
+    if is_serial_model_type(declared_type):
         return _materialize_model(
             value,
             auto_sync=auto_sync,
@@ -335,7 +298,7 @@ def _clear_nullable_model_reference(
     field_name: str,
     model_field: Any,
 ) -> bool:
-    if not _is_serial_type(model_field.declared_type):
+    if not is_serial_model_type(model_field.declared_type):
         for method_name, value in (
             (f"{field_name}SetObjectId", ""),
             (f"{field_name}SetObjectId", None),

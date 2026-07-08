@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any, Type, get_args, get_origin
 
 import iris_persistence.models
+from iris_persistence.metadata_utils import coerce_bool
 from iris_persistence.runtime import get_runtime
 from iris_persistence.types import UNSET, FieldInfo
 
@@ -200,10 +201,6 @@ class SchemaDiff:
         return self.to_unified_diff() or "No schema changes."
 
 
-def _coerce_bool(value: Any) -> bool:
-    return value == 1 or value == "1" or value is True or str(value).lower() == "true"
-
-
 def _safe_get_property(runtime: Any, obj: Any, prop_name: str) -> Any:
     try:
         return runtime.get_property(obj, prop_name)
@@ -212,19 +209,7 @@ def _safe_get_property(runtime: Any, obj: Any, prop_name: str) -> Any:
 
 
 def _iter_runtime_list(runtime: Any, list_obj: Any) -> list[Any]:
-    if list_obj is None:
-        return []
-    try:
-        count = runtime.invoke_method(list_obj, "Count")
-    except Exception:
-        return []
-    items = []
-    for index in range(1, count + 1):
-        try:
-            items.append(runtime.invoke_method(list_obj, "GetAt", index))
-        except Exception:
-            continue
-    return items
+    return [item for _index, item in _iter_runtime_list_with_indices(runtime, list_obj)]
 
 
 def _iter_runtime_list_with_indices(runtime: Any, list_obj: Any) -> list[tuple[int, Any]]:
@@ -358,7 +343,7 @@ def _remove_owned_schema_member_entries(
 def _item_belongs_to_class(runtime: Any, item: Any, classname: str) -> bool:
     inherited = _safe_get_property(runtime, item, "Inherited")
     if inherited is not None:
-        return not _coerce_bool(inherited)
+        return not coerce_bool(inherited)
 
     for attr_name in ("Origin", "Parent", "parent", "Class"):
         owner = _safe_get_property(runtime, item, attr_name)
@@ -377,13 +362,21 @@ def _format_value(value: Any) -> str:
     return repr(value)
 
 
-def _compact_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
+def _compact_mapping(
+    mapping: dict[str, Any],
+    *,
+    preserve_false_keys: tuple[str, ...] = (),
+) -> dict[str, Any]:
     compact = {}
     for key, value in mapping.items():
-        if value in (None, "", False):
+        if value in (None, "") or (value is False and key not in preserve_false_keys):
             continue
         compact[key] = value
     return compact
+
+
+def _compact_property_state(mapping: dict[str, Any]) -> dict[str, Any]:
+    return _compact_mapping(mapping, preserve_false_keys=("storable",))
 
 
 def _sort_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
@@ -495,7 +488,7 @@ def _collect_model_schema_state_for_field(field_name: str, model_field: Any) -> 
     field_meta = model_field.field_info
     py_type = _resolve_model_type(model_field.declared_type)
     iris_type = _map_python_type_to_iris(py_type, field_meta)
-    return _compact_mapping(
+    return _compact_property_state(
         {
             "type": iris_type,
             "required": getattr(field_meta, "required", False),
@@ -702,25 +695,25 @@ def _collect_live_properties_from_sql(runtime: Any, classname: str) -> dict[str,
             continue
         max_length = _row_value(row, "MAXLEN")
         scale = _row_value(row, "SCALE")
-        properties[str(name)] = _compact_mapping(
+        properties[str(name)] = _compact_property_state(
             {
                 "type": _row_value(row, "Type"),
-                "required": _coerce_bool(_row_value(row, "Required")),
-                "readonly": _coerce_bool(_row_value(row, "ReadOnly")),
+                "required": coerce_bool(_row_value(row, "Required")),
+                "readonly": coerce_bool(_row_value(row, "ReadOnly")),
                 "collection": _row_value(row, "Collection"),
                 "sql_field_name": _row_value(row, "SqlFieldName"),
-                "identity": _coerce_bool(_row_value(row, "Identity")),
+                "identity": coerce_bool(_row_value(row, "Identity")),
                 "relationship": _row_value(row, "Relationship"),
                 "on_delete": _row_value(row, "OnDelete"),
                 "inverse": _row_value(row, "Inverse"),
-                "transient": _coerce_bool(_row_value(row, "Transient")),
+                "transient": coerce_bool(_row_value(row, "Transient")),
                 "storable": False if _row_value(row, "Storable") in (0, "0", False) else None,
-                "multi_dimensional": _coerce_bool(_row_value(row, "MultiDimensional")),
+                "multi_dimensional": coerce_bool(_row_value(row, "MultiDimensional")),
                 "sql_list_delimiter": _row_value(row, "SqlListDelimiter"),
                 "sql_list_type": _row_value(row, "SqlListType"),
                 "sql_compute_code": _row_value(row, "SqlComputeCode"),
                 "sql_compute_on_change": _row_value(row, "SqlComputeOnChange"),
-                "sql_computed": _coerce_bool(_row_value(row, "SqlComputed")),
+                "sql_computed": coerce_bool(_row_value(row, "SqlComputed")),
                 "initial_expression": _row_value(row, "InitialExpression"),
                 "max_length": str(max_length) if max_length not in (None, "") else None,
                 "scale": str(scale) if scale not in (None, "") else None,
@@ -743,9 +736,9 @@ def _collect_live_indexes_from_sql(runtime: Any, classname: str) -> dict[str, di
         indexes[str(name)] = _compact_mapping(
             {
                 "properties": _row_value(row, "Properties"),
-                "unique": _coerce_bool(_row_value(row, "Unique")),
+                "unique": coerce_bool(_row_value(row, "Unique")),
                 "type": _row_value(row, "Type"),
-                "primary_key": _coerce_bool(_row_value(row, "PrimaryKey")),
+                "primary_key": coerce_bool(_row_value(row, "PrimaryKey")),
             }
         )
     return indexes
@@ -763,10 +756,10 @@ def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
     state["metadata"] = _compact_mapping(
         {
             "description": _safe_get_property(runtime, class_def, "Description"),
-            "deprecated": _coerce_bool(_safe_get_property(runtime, class_def, "Deprecated")),
-            "final": _coerce_bool(_safe_get_property(runtime, class_def, "Final")),
+            "deprecated": coerce_bool(_safe_get_property(runtime, class_def, "Deprecated")),
+            "final": coerce_bool(_safe_get_property(runtime, class_def, "Final")),
             "sql_table_name": _safe_get_property(runtime, class_def, "SqlTableName"),
-            "procedure_block": _coerce_bool(
+            "procedure_block": coerce_bool(
                 _safe_get_property(runtime, class_def, "ProcedureBlock")
             ),
         }
@@ -803,24 +796,24 @@ def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
                 scale = runtime.invoke_method(params, "GetAt", "SCALE")
             except Exception:
                 scale = None
-        properties[str(name)] = _compact_mapping(
+        properties[str(name)] = _compact_property_state(
             {
                 "type": _safe_get_property(runtime, item, "Type"),
-                "required": _coerce_bool(_safe_get_property(runtime, item, "Required")),
-                "readonly": _coerce_bool(_safe_get_property(runtime, item, "ReadOnly")),
+                "required": coerce_bool(_safe_get_property(runtime, item, "Required")),
+                "readonly": coerce_bool(_safe_get_property(runtime, item, "ReadOnly")),
                 "collection": _safe_get_property(runtime, item, "Collection"),
                 "sql_field_name": _safe_get_property(runtime, item, "SqlFieldName"),
-                "identity": _coerce_bool(_safe_get_property(runtime, item, "Identity")),
+                "identity": coerce_bool(_safe_get_property(runtime, item, "Identity")),
                 "relationship": _safe_get_property(runtime, item, "Relationship"),
                 "on_delete": _safe_get_property(runtime, item, "OnDelete"),
                 "inverse": _safe_get_property(runtime, item, "Inverse"),
-                "transient": _coerce_bool(_safe_get_property(runtime, item, "Transient")),
+                "transient": coerce_bool(_safe_get_property(runtime, item, "Transient")),
                 "storable": (
                     False
                     if _safe_get_property(runtime, item, "Storable") in (0, "0", False)
                     else None
                 ),
-                "multi_dimensional": _coerce_bool(
+                "multi_dimensional": coerce_bool(
                     _safe_get_property(runtime, item, "MultiDimensional")
                 ),
                 "sql_list_delimiter": _safe_get_property(runtime, item, "SqlListDelimiter"),
@@ -829,7 +822,7 @@ def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
                 "sql_compute_on_change": _safe_get_property(
                     runtime, item, "SqlComputeOnChange"
                 ),
-                "sql_computed": _coerce_bool(_safe_get_property(runtime, item, "SqlComputed")),
+                "sql_computed": coerce_bool(_safe_get_property(runtime, item, "SqlComputed")),
                 "initial_expression": _safe_get_property(runtime, item, "InitialExpression"),
                 "max_length": str(max_length) if max_length not in (None, "") else None,
                 "scale": str(scale) if scale not in (None, "") else None,
@@ -852,9 +845,9 @@ def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
         indexes[str(name)] = _compact_mapping(
             {
                 "properties": _safe_get_property(runtime, item, "Properties"),
-                "unique": _coerce_bool(_safe_get_property(runtime, item, "Unique")),
+                "unique": coerce_bool(_safe_get_property(runtime, item, "Unique")),
                 "type": _safe_get_property(runtime, item, "Type"),
-                "primary_key": _coerce_bool(_safe_get_property(runtime, item, "PrimaryKey")),
+                "primary_key": coerce_bool(_safe_get_property(runtime, item, "PrimaryKey")),
             }
         )
     state["indexes"] = indexes
@@ -935,7 +928,7 @@ def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
                     "histogram": _safe_get_property(runtime, item, "Histogram"),
                     "child_block_count": _safe_get_property(runtime, item, "ChildBlockCount"),
                     "child_extent_size": _safe_get_property(runtime, item, "ChildExtentSize"),
-                    "bias_queries_as_outlier": _coerce_bool(
+                    "bias_queries_as_outlier": coerce_bool(
                         _safe_get_property(runtime, item, "BiasQueriesAsOutlier")
                     ),
                     "stream_location": _safe_get_property(runtime, item, "StreamLocation"),
@@ -953,7 +946,7 @@ def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
                     "block_count": _safe_get_property(runtime, item, "BlockCount"),
                     "condition": _safe_get_property(runtime, item, "Condition"),
                     "condition_fields": _safe_get_property(runtime, item, "ConditionFields"),
-                    "conditional_with_host_vars": _coerce_bool(
+                    "conditional_with_host_vars": coerce_bool(
                         _safe_get_property(runtime, item, "ConditionalWithHostVars")
                     ),
                     "global_name": _safe_get_property(runtime, item, "Global"),
@@ -1445,10 +1438,6 @@ def diff_schema(model_cls: Type[Any]) -> SchemaDiff:
     )
 
 
-def _set_runtime_property(runtime: Any, obj: Any, prop_name: str, value: Any) -> None:
-    runtime.set_property(obj, prop_name, value)
-
-
 def _set_runtime_property_if_not_none(
     runtime: Any,
     obj: Any,
@@ -1494,19 +1483,6 @@ def _remove_runtime_parameter(runtime: Any, params: Any, key: str) -> None:
         runtime.invoke_method(params, "SetAt", "", key)
     except Exception:
         pass
-
-
-def _set_property_parameter_if_not_none(
-    runtime: Any,
-    prop: Any,
-    key: str,
-    value: Any,
-) -> None:
-    if value is None:
-        return
-    params = runtime.get_property(prop, "Parameters")
-    if params is not None:
-        runtime.invoke_method(params, "SetAt", str(value), key)
 
 
 def _set_runtime_flag_if_true(runtime: Any, obj: Any, prop_name: str, enabled: Any) -> None:
@@ -1654,117 +1630,91 @@ def _sync_related_models(
             _sync_schema_model(runtime, resolved, seen)
 
 
-def _property_initial_expression(field_meta: FieldInfo) -> str | None:
-    if getattr(field_meta, "initial_expression", None) is not None:
-        return field_meta.initial_expression
-
-    default = getattr(field_meta, "default", UNSET)
-    if default is UNSET or default is None:
-        return None
-    if isinstance(default, str):
-        return f'"{default}"'
-    if isinstance(default, bool):
-        return "1" if default else "0"
-    return str(default)
-
-
 def _build_property_definition(
     runtime: Any,
     classname: str,
     field_name: str,
     model_field: Any,
 ) -> Any:
-    field_meta = model_field.field_info
-    prop = runtime.create_object("%Dictionary.PropertyDefinition")
-    runtime.set_property(prop, "Name", field_name)
-    runtime.set_property(prop, "parent", classname)
-    runtime.set_property(
-        prop,
-        "Type",
-        _map_python_type_to_iris(
-            _resolve_model_type(model_field.declared_type),
-            field_meta,
-        ),
-    )
-    _set_runtime_flag_if_true(runtime, prop, "Required", getattr(field_meta, "required", False))
-    _set_runtime_flag_if_true(runtime, prop, "ReadOnly", getattr(field_meta, "readonly", False))
-    _set_runtime_property_if_not_none(
-        runtime, prop, "Collection", getattr(field_meta, "collection", None)
-    )
-    _set_runtime_property_if_not_none(
-        runtime, prop, "SqlFieldName", getattr(field_meta, "sql_field_name", None)
-    )
-    _set_runtime_flag_if_true(runtime, prop, "Identity", getattr(field_meta, "identity", False))
-    _set_runtime_property_if_not_none(
-        runtime, prop, "Relationship", getattr(field_meta, "relationship", None)
-    )
-    _set_runtime_property_if_not_none(
-        runtime, prop, "OnDelete", getattr(field_meta, "on_delete", None)
-    )
-    _set_runtime_property_if_not_none(
-        runtime, prop, "Inverse", getattr(field_meta, "inverse", None)
-    )
-    _set_runtime_flag_if_true(runtime, prop, "Transient", getattr(field_meta, "transient", False))
-    if getattr(field_meta, "storable", True) is False:
-        runtime.set_property(prop, "Storable", 0)
-    _set_runtime_flag_if_true(
+    return _build_property_definition_from_state(
         runtime,
-        prop,
-        "MultiDimensional",
-        getattr(field_meta, "multi_dimensional", False),
-    )
-    _set_runtime_property_if_not_none(
-        runtime,
-        prop,
-        "SqlListDelimiter",
-        getattr(field_meta, "sql_list_delimiter", None),
-    )
-    _set_runtime_property_if_not_none(
-        runtime,
-        prop,
-        "SqlListType",
-        getattr(field_meta, "sql_list_type", None),
-    )
-    _set_runtime_property_if_not_none(
-        runtime,
-        prop,
-        "SqlComputeCode",
-        getattr(field_meta, "sql_compute_code", None),
-    )
-    _set_runtime_property_if_not_none(
-        runtime,
-        prop,
-        "SqlComputeOnChange",
-        getattr(field_meta, "sql_compute_on_change", None),
-    )
-    _set_runtime_flag_if_true(
-        runtime,
-        prop,
-        "SqlComputed",
-        getattr(field_meta, "sql_computed", False),
-    )
-    _set_runtime_property_if_not_none(
-        runtime,
-        prop,
-        "InitialExpression",
-        _property_initial_expression(field_meta),
+        classname,
+        field_name,
+        _collect_model_schema_state_for_field(field_name, model_field),
     )
 
-    py_type = _resolve_model_type(model_field.declared_type)
-    iris_type = _map_python_type_to_iris(py_type, field_meta)
-    _set_property_parameter_if_not_none(
-        runtime,
-        prop,
-        "MAXLEN",
-        getattr(field_meta, "max_length", None),
-    )
-    _set_property_parameter_if_not_none(
-        runtime,
-        prop,
-        "SCALE",
-        _decimal_scale_for_field(py_type, iris_type),
-    )
-    return prop
+
+_PROPERTY_FLAG_FIELDS = (
+    ("required", "Required"),
+    ("readonly", "ReadOnly"),
+    ("identity", "Identity"),
+    ("transient", "Transient"),
+    ("multi_dimensional", "MultiDimensional"),
+    ("sql_computed", "SqlComputed"),
+)
+_PROPERTY_VALUE_FIELDS = (
+    ("collection", "Collection"),
+    ("sql_field_name", "SqlFieldName"),
+    ("relationship", "Relationship"),
+    ("on_delete", "OnDelete"),
+    ("inverse", "Inverse"),
+    ("sql_list_delimiter", "SqlListDelimiter"),
+    ("sql_list_type", "SqlListType"),
+    ("sql_compute_code", "SqlComputeCode"),
+    ("sql_compute_on_change", "SqlComputeOnChange"),
+    ("initial_expression", "InitialExpression"),
+)
+
+
+def _apply_property_definition_state(
+    runtime: Any,
+    prop: Any,
+    property_state: dict[str, Any],
+    *,
+    exact: bool,
+) -> None:
+    _set_runtime_property_if_not_none(runtime, prop, "Type", property_state.get("type"))
+
+    for state_key, property_name in _PROPERTY_FLAG_FIELDS:
+        if exact:
+            _set_runtime_flag_exact(runtime, prop, property_name, property_state.get(state_key))
+        else:
+            _set_runtime_flag_if_true(runtime, prop, property_name, property_state.get(state_key))
+
+    for state_key, property_name in _PROPERTY_VALUE_FIELDS:
+        if exact:
+            _set_runtime_property_exact(runtime, prop, property_name, property_state.get(state_key))
+        else:
+            _set_runtime_property_if_not_none(
+                runtime,
+                prop,
+                property_name,
+                property_state.get(state_key),
+            )
+
+    if exact:
+        _set_runtime_flag_exact(
+            runtime,
+            prop,
+            "Storable",
+            property_state.get("storable") is not False,
+        )
+    elif property_state.get("storable") is False:
+        runtime.set_property(prop, "Storable", 0)
+
+    params = runtime.get_property(prop, "Parameters")
+    if params is None:
+        return
+
+    for state_key, parameter_name in (
+        ("max_length", "MAXLEN"),
+        ("scale", "SCALE"),
+    ):
+        value = property_state.get(state_key)
+        if value is not None:
+            runtime.invoke_method(params, "SetAt", str(value), parameter_name)
+        elif exact:
+            _remove_runtime_parameter(runtime, params, parameter_name)
 
 
 def _build_property_definition_from_state(
@@ -1776,53 +1726,7 @@ def _build_property_definition_from_state(
     prop = runtime.create_object("%Dictionary.PropertyDefinition")
     runtime.set_property(prop, "Name", field_name)
     runtime.set_property(prop, "parent", classname)
-    _set_runtime_property_if_not_none(runtime, prop, "Type", property_state.get("type"))
-    _set_runtime_flag_if_true(runtime, prop, "Required", property_state.get("required"))
-    _set_runtime_flag_if_true(runtime, prop, "ReadOnly", property_state.get("readonly"))
-    _set_runtime_property_if_not_none(runtime, prop, "Collection", property_state.get("collection"))
-    _set_runtime_property_if_not_none(
-        runtime, prop, "SqlFieldName", property_state.get("sql_field_name")
-    )
-    _set_runtime_flag_if_true(runtime, prop, "Identity", property_state.get("identity"))
-    _set_runtime_property_if_not_none(
-        runtime, prop, "Relationship", property_state.get("relationship")
-    )
-    _set_runtime_property_if_not_none(runtime, prop, "OnDelete", property_state.get("on_delete"))
-    _set_runtime_property_if_not_none(runtime, prop, "Inverse", property_state.get("inverse"))
-    _set_runtime_flag_if_true(runtime, prop, "Transient", property_state.get("transient"))
-    if property_state.get("storable") is False:
-        runtime.set_property(prop, "Storable", 0)
-    _set_runtime_flag_if_true(
-        runtime,
-        prop,
-        "MultiDimensional",
-        property_state.get("multi_dimensional"),
-    )
-    _set_runtime_property_if_not_none(
-        runtime, prop, "SqlListDelimiter", property_state.get("sql_list_delimiter")
-    )
-    _set_runtime_property_if_not_none(
-        runtime, prop, "SqlListType", property_state.get("sql_list_type")
-    )
-    _set_runtime_property_if_not_none(
-        runtime, prop, "SqlComputeCode", property_state.get("sql_compute_code")
-    )
-    _set_runtime_property_if_not_none(
-        runtime,
-        prop,
-        "SqlComputeOnChange",
-        property_state.get("sql_compute_on_change"),
-    )
-    _set_runtime_flag_if_true(runtime, prop, "SqlComputed", property_state.get("sql_computed"))
-    _set_runtime_property_if_not_none(
-        runtime,
-        prop,
-        "InitialExpression",
-        property_state.get("initial_expression"),
-    )
-
-    _set_property_parameter_if_not_none(runtime, prop, "MAXLEN", property_state.get("max_length"))
-    _set_property_parameter_if_not_none(runtime, prop, "SCALE", property_state.get("scale"))
+    _apply_property_definition_state(runtime, prop, property_state, exact=False)
     return prop
 
 
@@ -1831,67 +1735,7 @@ def _apply_property_definition_from_state(
     prop: Any,
     property_state: dict[str, Any],
 ) -> None:
-    _set_runtime_property_if_not_none(runtime, prop, "Type", property_state.get("type"))
-    _set_runtime_flag_exact(runtime, prop, "Required", property_state.get("required"))
-    _set_runtime_flag_exact(runtime, prop, "ReadOnly", property_state.get("readonly"))
-    _set_runtime_property_exact(runtime, prop, "Collection", property_state.get("collection"))
-    _set_runtime_property_exact(
-        runtime, prop, "SqlFieldName", property_state.get("sql_field_name")
-    )
-    _set_runtime_flag_exact(runtime, prop, "Identity", property_state.get("identity"))
-    _set_runtime_property_exact(
-        runtime, prop, "Relationship", property_state.get("relationship")
-    )
-    _set_runtime_property_exact(runtime, prop, "OnDelete", property_state.get("on_delete"))
-    _set_runtime_property_exact(runtime, prop, "Inverse", property_state.get("inverse"))
-    _set_runtime_flag_exact(runtime, prop, "Transient", property_state.get("transient"))
-    _set_runtime_flag_exact(
-        runtime,
-        prop,
-        "Storable",
-        property_state.get("storable") is not False,
-    )
-    _set_runtime_flag_exact(
-        runtime,
-        prop,
-        "MultiDimensional",
-        property_state.get("multi_dimensional"),
-    )
-    _set_runtime_property_exact(
-        runtime, prop, "SqlListDelimiter", property_state.get("sql_list_delimiter")
-    )
-    _set_runtime_property_exact(
-        runtime, prop, "SqlListType", property_state.get("sql_list_type")
-    )
-    _set_runtime_property_exact(
-        runtime, prop, "SqlComputeCode", property_state.get("sql_compute_code")
-    )
-    _set_runtime_property_exact(
-        runtime,
-        prop,
-        "SqlComputeOnChange",
-        property_state.get("sql_compute_on_change"),
-    )
-    _set_runtime_flag_exact(runtime, prop, "SqlComputed", property_state.get("sql_computed"))
-    _set_runtime_property_exact(
-        runtime,
-        prop,
-        "InitialExpression",
-        property_state.get("initial_expression"),
-    )
-
-    max_length = property_state.get("max_length")
-    scale = property_state.get("scale")
-    params = runtime.get_property(prop, "Parameters")
-    if params is not None:
-        if max_length is not None:
-            runtime.invoke_method(params, "SetAt", str(max_length), "MAXLEN")
-        else:
-            _remove_runtime_parameter(runtime, params, "MAXLEN")
-        if scale is not None:
-            runtime.invoke_method(params, "SetAt", str(scale), "SCALE")
-        else:
-            _remove_runtime_parameter(runtime, params, "SCALE")
+    _apply_property_definition_state(runtime, prop, property_state, exact=True)
 
 
 def _sync_properties(

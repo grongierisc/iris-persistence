@@ -6,6 +6,12 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from iris_persistence.field_utils import (
+    collection_kind_from_iris_type,
+    is_application_iris_class,
+    is_iris_collection_type,
+)
+from iris_persistence.metadata_utils import coerce_bool
 from iris_persistence.runtime import get_runtime
 
 
@@ -34,42 +40,11 @@ def _map_iris_type_to_python(iris_type: str) -> str:
 
     if iris_type in mapping:
         return mapping[iris_type]
-    if iris_type in {
-        "%List",
-        "%ListOfDataTypes",
-        "%ListOfObjects",
-        "%ArrayOfDataTypes",
-        "%ArrayOfObjects",
-        "%Library.List",
-        "%Library.ListOfDataTypes",
-        "%Library.ListOfObjects",
-        "%Library.ArrayOfDataTypes",
-        "%Library.ArrayOfObjects",
-    }:
+    if is_iris_collection_type(iris_type):
         return "Any"
     if iris_type.startswith("%"):
         return "str"
     return "Any"
-
-
-def _collection_from_iris_type(iris_type: str | None) -> str | None:
-    if iris_type in {
-        "%List",
-        "%ListOfDataTypes",
-        "%ListOfObjects",
-        "%Library.List",
-        "%Library.ListOfDataTypes",
-        "%Library.ListOfObjects",
-    }:
-        return "list"
-    if iris_type in {
-        "%ArrayOfDataTypes",
-        "%ArrayOfObjects",
-        "%Library.ArrayOfDataTypes",
-        "%Library.ArrayOfObjects",
-    }:
-        return "array"
-    return None
 
 
 def _parse_iris_list(value: Any) -> list[Any]:
@@ -105,10 +80,6 @@ def _sort_storage_key(item: tuple[str, str]) -> tuple[int, Any]:
     if key.isdigit():
         return (0, int(key))
     return (1, key)
-
-
-def _as_bool(value: Any) -> bool:
-    return value == 1 or value == "1" or str(value).lower() == "true"
 
 
 def _optional_str(value: Any) -> str | None:
@@ -368,7 +339,7 @@ class _CompiledDictionaryReader:
         except Exception:
             inherited_value = None
         if inherited_value is not None:
-            return not _as_bool(inherited_value)
+            return not coerce_bool(inherited_value)
 
         for attr_name in ("Origin", "Parent", "parent", "Class"):
             try:
@@ -416,10 +387,10 @@ class _CompiledDictionaryReader:
             name=classname,
             superclasses=None,
             description=_optional_str(row[0]),
-            deprecated=_as_bool(row[1]),
-            final=_as_bool(row[2]),
+            deprecated=coerce_bool(row[1]),
+            final=coerce_bool(row[2]),
             sql_table_name=_optional_str(row[3]),
-            procedure_block=_as_bool(row[4]),
+            procedure_block=coerce_bool(row[4]),
         )
 
     def list_properties(self, classname: str) -> list[_CompiledProperty]:
@@ -491,32 +462,32 @@ class _CompiledDictionaryReader:
                     name=prop_name,
                     iris_type=prop_type,
                     python_type=_map_iris_type_to_python(prop_type),
-                    required=_as_bool(required),
+                    required=coerce_bool(required),
                     default=init_exp if init_exp != '""' and init_exp else None,
                     maxlen=parsed_params.get("MAXLEN"),
-                    readonly=_as_bool(readonly),
+                    readonly=coerce_bool(readonly),
                     collection=_optional_str(collection),
                     sql_field_name=(
                         None
                         if not sql_field_name or str(sql_field_name) == str(prop_name)
                         else str(sql_field_name)
                     ),
-                    identity=_as_bool(metadata.get("identity")),
+                    identity=coerce_bool(metadata.get("identity")),
                     relationship=_optional_str(metadata.get("relationship")),
                     on_delete=_optional_str(metadata.get("on_delete")),
                     inverse=_optional_str(metadata.get("inverse")),
-                    transient=_as_bool(metadata.get("transient")),
+                    transient=coerce_bool(metadata.get("transient")),
                     storable=(
                         True
                         if metadata.get("storable") is None
-                        else _as_bool(metadata.get("storable"))
+                        else coerce_bool(metadata.get("storable"))
                     ),
-                    multi_dimensional=_as_bool(metadata.get("multi_dimensional")),
+                    multi_dimensional=coerce_bool(metadata.get("multi_dimensional")),
                     sql_list_delimiter=_optional_str(metadata.get("sql_list_delimiter")),
                     sql_list_type=_optional_str(metadata.get("sql_list_type")),
                     sql_compute_code=_optional_str(metadata.get("sql_compute_code")),
                     sql_compute_on_change=_optional_str(metadata.get("sql_compute_on_change")),
-                    sql_computed=_as_bool(metadata.get("sql_computed")),
+                    sql_computed=coerce_bool(metadata.get("sql_computed")),
                 )
             )
         if properties and any(item.maxlen is None for item in properties):
@@ -609,8 +580,8 @@ class _CompiledDictionaryReader:
         for name, properties, is_unique, index_type, primary_key in rows:
             if str(name).startswith("%") or name in ("IDKEY", "$Product"):
                 continue
-            unique = _as_bool(is_unique)
-            is_primary_key = _as_bool(primary_key)
+            unique = coerce_bool(is_unique)
+            is_primary_key = coerce_bool(primary_key)
             indexes.append(
                 _CompiledIndex(
                     name=name,
@@ -776,7 +747,7 @@ class _CompiledDictionaryReader:
             child_block_count_value = _optional_str(child_block_count)
             child_extent_size_value = _optional_str(child_extent_size)
             bias_queries_as_outlier_value = (
-                _as_bool(bias_queries_as_outlier)
+                coerce_bool(bias_queries_as_outlier)
                 if bias_queries_as_outlier is not None and bias_queries_as_outlier != ""
                 else None
             )
@@ -858,7 +829,7 @@ class _CompiledDictionaryReader:
             child_block_count_value = _optional_str(child_block_count)
             child_extent_size_value = _optional_str(child_extent_size)
             bias_queries_as_outlier_value = (
-                _as_bool(bias_queries_as_outlier)
+                coerce_bool(bias_queries_as_outlier)
                 if bias_queries_as_outlier is not None and bias_queries_as_outlier != ""
                 else None
             )
@@ -1041,7 +1012,7 @@ class _CompiledDictionaryReader:
                     block_count=_optional_str(block_count),
                     condition=_optional_str(condition),
                     condition_fields=_optional_str(condition_fields),
-                    conditional_with_host_vars=_as_bool(conditional_with_host_vars),
+                    conditional_with_host_vars=coerce_bool(conditional_with_host_vars),
                     global_name=_optional_str(global_name),
                     population_pct=_optional_str(population_pct),
                     population_type=_optional_str(population_type),
@@ -1072,10 +1043,6 @@ def _python_default_literal(prop: _CompiledProperty) -> tuple[str | None, str | 
         literal = repr(value)
         return (f"default={literal}", literal)
     return (None, None)
-
-
-def _is_custom_iris_class(iris_type: str | None) -> bool:
-    return bool(iris_type) and not str(iris_type).startswith("%")
 
 
 def _safe_identifier_part(part: str) -> str:
@@ -1154,7 +1121,7 @@ def _collect_classes(
         visited.add(classname)
         properties = properties_by_class.setdefault(classname, reader.list_properties(classname))
         for prop in properties:
-            if not _is_custom_iris_class(prop.iris_type):
+            if not is_application_iris_class(prop.iris_type):
                 continue
             if prop.iris_type in classes_by_name:
                 if prop.iris_type not in visited:
@@ -1193,12 +1160,12 @@ def _render_property_type(
 ) -> str:
     if prop.iris_type in python_class_names:
         base_type = python_class_names[prop.iris_type]
-    elif _is_custom_iris_class(prop.iris_type):
+    elif is_application_iris_class(prop.iris_type):
         base_type = "Any"
     else:
         base_type = prop.python_type
 
-    collection = prop.collection or _collection_from_iris_type(prop.iris_type)
+    collection = prop.collection or collection_kind_from_iris_type(prop.iris_type)
     if collection == "list":
         return f"list[{base_type}]"
     if collection == "array":

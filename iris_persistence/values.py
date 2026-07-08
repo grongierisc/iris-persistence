@@ -5,57 +5,16 @@ import io
 import json
 from typing import Any
 
-_SCALAR_PRIMITIVES = (int, str, float, bool, bytes, bytearray)
+from iris_persistence.field_utils import (
+    collection_kind_from_field,
+    is_percent_list_field,
+)
 
-_IRIS_COLLECTION_CLASSES = {
-    "%List",
-    "%ListOfDataTypes",
-    "%ListOfObjects",
-    "%ArrayOfDataTypes",
-    "%ArrayOfObjects",
-    "%Library.List",
-    "%Library.ListOfDataTypes",
-    "%Library.ListOfObjects",
-    "%Library.ArrayOfDataTypes",
-    "%Library.ArrayOfObjects",
-}
+_SCALAR_PRIMITIVES = (int, str, float, bool, bytes, bytearray)
 
 
 def _uses_iris_collection_class(field_meta: Any | None) -> bool:
-    collection = getattr(field_meta, "collection", None)
-    if collection in {"list", "array"}:
-        return True
-    iris_type = getattr(field_meta, "iris_type", None)
-    return iris_type in _IRIS_COLLECTION_CLASSES
-
-
-def _is_percent_list_field(field_meta: Any | None) -> bool:
-    return getattr(field_meta, "iris_type", None) in {"%List", "%Library.List"}
-
-
-def _collection_kind_from_field(field_meta: Any | None) -> str | None:
-    collection = getattr(field_meta, "collection", None)
-    if collection in {"list", "array"}:
-        return collection
-
-    iris_type = getattr(field_meta, "iris_type", None)
-    if iris_type in {
-        "%List",
-        "%ListOfDataTypes",
-        "%ListOfObjects",
-        "%Library.List",
-        "%Library.ListOfDataTypes",
-        "%Library.ListOfObjects",
-    }:
-        return "list"
-    if iris_type in {
-        "%ArrayOfDataTypes",
-        "%ArrayOfObjects",
-        "%Library.ArrayOfDataTypes",
-        "%Library.ArrayOfObjects",
-    }:
-        return "array"
-    return None
+    return collection_kind_from_field(field_meta) is not None
 
 
 class IRISValueAdapterMixin:
@@ -77,7 +36,7 @@ class IRISValueAdapterMixin:
         val: Any,
         field_meta: Any | None = None,
     ) -> bool:
-        collection_kind = _collection_kind_from_field(field_meta)
+        collection_kind = collection_kind_from_field(field_meta)
         if collection_kind is None:
             return False
 
@@ -204,7 +163,7 @@ class IRISValueAdapterMixin:
         if _uses_iris_collection_class(field_meta):
             if self._populate_collection_property(obj, field_name, val, field_meta=field_meta):
                 return
-            if _is_percent_list_field(field_meta):
+            if is_percent_list_field(field_meta):
                 self.set_property(obj, field_name, val)
                 return
         try:
@@ -226,7 +185,7 @@ class IRISValueAdapterMixin:
         val: list[Any],
         field_meta: Any | None = None,
     ) -> None:
-        if _is_percent_list_field(field_meta):
+        if is_percent_list_field(field_meta):
             self.set_property(obj, field_name, self._encode_percent_list(val))
             return
         if _uses_iris_collection_class(field_meta):

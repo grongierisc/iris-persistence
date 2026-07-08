@@ -595,6 +595,121 @@ def test_sync_schema_managed_removes_owned_members_without_rebuilding_class(monk
     ) in runtime.calls
 
 
+def _property_snapshot(prop):
+    params = prop.Parameters
+    return {
+        "Type": getattr(prop, "Type", None),
+        "Required": getattr(prop, "Required", None),
+        "ReadOnly": getattr(prop, "ReadOnly", None),
+        "Collection": getattr(prop, "Collection", None),
+        "SqlFieldName": getattr(prop, "SqlFieldName", None),
+        "Identity": getattr(prop, "Identity", None),
+        "Relationship": getattr(prop, "Relationship", None),
+        "OnDelete": getattr(prop, "OnDelete", None),
+        "Inverse": getattr(prop, "Inverse", None),
+        "Transient": getattr(prop, "Transient", None),
+        "Storable": getattr(prop, "Storable", None),
+        "MultiDimensional": getattr(prop, "MultiDimensional", None),
+        "SqlListDelimiter": getattr(prop, "SqlListDelimiter", None),
+        "SqlListType": getattr(prop, "SqlListType", None),
+        "SqlComputeCode": getattr(prop, "SqlComputeCode", None),
+        "SqlComputeOnChange": getattr(prop, "SqlComputeOnChange", None),
+        "SqlComputed": getattr(prop, "SqlComputed", None),
+        "InitialExpression": getattr(prop, "InitialExpression", None),
+        "MAXLEN": getattr(params, "MAXLEN", None),
+        "SCALE": getattr(params, "SCALE", None),
+    }
+
+
+def test_property_definition_create_and_update_apply_same_state():
+    runtime = _RecordingRuntime()
+    property_state = {
+        "type": "%Library.String",
+        "required": True,
+        "readonly": True,
+        "collection": "list",
+        "sql_field_name": "item_sql",
+        "identity": True,
+        "relationship": "children",
+        "on_delete": "cascade",
+        "inverse": "Parent",
+        "transient": True,
+        "storable": False,
+        "multi_dimensional": True,
+        "sql_list_delimiter": "|",
+        "sql_list_type": "DELIMITED",
+        "sql_compute_code": "Set {*} = {Name}",
+        "sql_compute_on_change": "Name",
+        "sql_computed": True,
+        "initial_expression": '"new"',
+        "max_length": "80",
+        "scale": "2",
+    }
+
+    created = schema_module._build_property_definition_from_state(
+        runtime,
+        "Demo.PropertyParity",
+        "Items",
+        property_state,
+    )
+    updated = _RecordingObject("%Dictionary.PropertyDefinition")
+    schema_module._apply_property_definition_from_state(runtime, updated, property_state)
+
+    assert _property_snapshot(created) == _property_snapshot(updated)
+
+
+def test_property_definition_update_clears_absent_metadata_exactly():
+    runtime = _RecordingRuntime()
+    prop = _RecordingObject("%Dictionary.PropertyDefinition")
+    prop.Type = "%Library.Integer"
+    prop.Required = 1
+    prop.ReadOnly = 1
+    prop.Collection = "list"
+    prop.SqlFieldName = "old_sql"
+    prop.Identity = 1
+    prop.Relationship = "children"
+    prop.OnDelete = "cascade"
+    prop.Inverse = "Parent"
+    prop.Transient = 1
+    prop.Storable = 0
+    prop.MultiDimensional = 1
+    prop.SqlListDelimiter = "|"
+    prop.SqlListType = "DELIMITED"
+    prop.SqlComputeCode = "Set {*} = {Name}"
+    prop.SqlComputeOnChange = "Name"
+    prop.SqlComputed = 1
+    prop.InitialExpression = '"old"'
+    prop.Parameters.SetAt("80", "MAXLEN")
+    prop.Parameters.SetAt("2", "SCALE")
+
+    schema_module._apply_property_definition_from_state(
+        runtime,
+        prop,
+        {"type": "%Library.String"},
+    )
+
+    assert prop.Type == "%Library.String"
+    assert prop.Required == 0
+    assert prop.ReadOnly == 0
+    assert prop.Collection == ""
+    assert prop.SqlFieldName == ""
+    assert prop.Identity == 0
+    assert prop.Relationship == ""
+    assert prop.OnDelete == ""
+    assert prop.Inverse == ""
+    assert prop.Transient == 0
+    assert prop.Storable == 1
+    assert prop.MultiDimensional == 0
+    assert prop.SqlListDelimiter == ""
+    assert prop.SqlListType == ""
+    assert prop.SqlComputeCode == ""
+    assert prop.SqlComputeOnChange == ""
+    assert prop.SqlComputed == 0
+    assert prop.InitialExpression == ""
+    assert prop.Parameters.MAXLEN == ""
+    assert prop.Parameters.SCALE == ""
+
+
 def test_sync_schema_creates_unqualified_class_in_user_package(monkeypatch):
     class NewUnqualifiedSchemaFixture(Model, serial=True):
         Payload: str | None = None

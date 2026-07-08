@@ -8,6 +8,7 @@ from typing import (
     TYPE_CHECKING,
     Annotated,
     Any,
+    Callable,
     Dict,
     List,
     Optional,
@@ -20,6 +21,14 @@ from typing import (
 )
 
 from iris_persistence.codecs import resolve_declared_type
+from iris_persistence.field_utils import (
+    IRIS_COLLECTION_TYPES,
+    collection_value_type,
+    is_application_iris_class,
+    is_model_type,
+    is_percent_list_field,
+    is_scalar_string_field,
+)
 from iris_persistence.types import UNSET, ClassMetadata, FieldInfo, Index, ModelField
 
 # Types that need no coercion before being passed to set_property.
@@ -40,22 +49,6 @@ class _FactoryDefault:
 FACTORY_DEFAULT = _FactoryDefault()
 RESERVED_FIELD_NAMES = frozenset({"pk", "_pk", "_iris_obj"})
 DEFAULT_SYNC_MODE = "managed"
-SCALAR_COLLECTION_IRIS_TYPES = frozenset(
-    {
-        "%ArrayOfDataTypes",
-        "%ArrayOfObjects",
-        "%Library.List",
-        "%List",
-        "%ListOfDataTypes",
-        "%ListOfObjects",
-    }
-)
-
-
-def _is_application_iris_class(iris_type: Any) -> bool:
-    return isinstance(iris_type, str) and iris_type != "" and not iris_type.startswith("%")
-
-
 def _is_empty_class_metadata(metadata: ClassMetadata | None) -> bool:
     if metadata is None:
         return True
@@ -152,22 +145,16 @@ def _build_model_field(
             or not field_info.required
         )
 
-    from iris_persistence.query import (
-        _collection_value_type,
-        _is_model_type,
-        _is_percent_list_field,
-        _is_scalar_string_field,
-    )
-    is_percent_list = _is_percent_list_field(field_info)
-    is_scalar_string = _is_scalar_string_field(field_info)
-    collection_kind, element_type = _collection_value_type(resolved_type)
+    is_percent_list = is_percent_list_field(field_info)
+    is_scalar_string = is_scalar_string_field(field_info)
+    collection_kind, element_type = collection_value_type(resolved_type)
     if (
         field_info.collection is None
         and collection_kind is not None
-        and field_info.iris_type not in SCALAR_COLLECTION_IRIS_TYPES
+        and field_info.iris_type not in IRIS_COLLECTION_TYPES
     ):
         field_info.collection = collection_kind
-    is_model_field = _is_model_type(resolved_type)
+    is_model_field = is_model_type(resolved_type)
 
     return ModelField(
         name=field_name,
@@ -411,7 +398,7 @@ def _is_object_reference_field(model_field: ModelField) -> bool:
         return False
     if getattr(model_field.field_info, "collection", None) is not None:
         return False
-    return _is_application_iris_class(getattr(model_field.field_info, "iris_type", None))
+    return is_application_iris_class(getattr(model_field.field_info, "iris_type", None))
 
 
 def _type_name(value: Any) -> str:
@@ -658,80 +645,63 @@ def _model_value_to_dict(value: Any) -> Any:
     return value
 
 
-def _is_model_class(value: Any) -> bool:
-    return isinstance(value, type) and issubclass(value, Model)
-
-
 def _is_dataclass_type(value: Any) -> bool:
     return isinstance(value, type) and is_dataclass(value)
 
 
-def _convert_mapping_value_to_model(value: Any, declared_type: Any) -> Any:
+def _convert_recursive_value(
+    value: Any,
+    declared_type: Any,
+    convert_leaf: Callable[[Any, Any], Any],
+) -> Any:
     if value is None:
         return None
 
     resolved_type = resolve_declared_type(declared_type)
-    origin = get_origin(resolved_type)
-    if origin in (list, List) and isinstance(value, list):
-        args = get_args(resolved_type)
-        element_type = args[0] if args else Any
-        return [_convert_mapping_value_to_model(item, element_type) for item in value]
-    if origin in (dict, Dict) and isinstance(value, dict):
-        args = get_args(resolved_type)
-        value_type = args[1] if len(args) == 2 else Any
+    collection_kind, element_type = collection_value_type(resolved_type)
+    if collection_kind == "list" and isinstance(value, list):
+        return [
+            _convert_recursive_value(item, element_type, convert_leaf)
+            for item in value
+        ]
+    if collection_kind == "array" and isinstance(value, dict):
         return {
-            key: _convert_mapping_value_to_model(item, value_type)
+            key: _convert_recursive_value(item, element_type, convert_leaf)
             for key, item in value.items()
         }
-    if _is_model_class(resolved_type) and isinstance(value, dict):
+    return convert_leaf(value, resolved_type)
+
+
+def _mapping_value_to_model_leaf(value: Any, resolved_type: Any) -> Any:
+    if is_model_type(resolved_type) and isinstance(value, dict):
         return resolved_type.from_dict(value)
     return value
 
 
-def _convert_dataclass_value_to_model(value: Any, declared_type: Any) -> Any:
-    if value is None:
-        return None
-
-    resolved_type = resolve_declared_type(declared_type)
-    origin = get_origin(resolved_type)
-    if origin in (list, List) and isinstance(value, list):
-        args = get_args(resolved_type)
-        element_type = args[0] if args else Any
-        return [_convert_dataclass_value_to_model(item, element_type) for item in value]
-    if origin in (dict, Dict) and isinstance(value, dict):
-        args = get_args(resolved_type)
-        value_type = args[1] if len(args) == 2 else Any
-        return {
-            key: _convert_dataclass_value_to_model(item, value_type)
-            for key, item in value.items()
-        }
-    if _is_model_class(resolved_type) and is_dataclass(value) and not isinstance(value, type):
+def _dataclass_value_to_model_leaf(value: Any, resolved_type: Any) -> Any:
+    if is_model_type(resolved_type) and is_dataclass(value) and not isinstance(value, type):
         return resolved_type.from_dataclass(value)
     return value
 
 
-def _convert_model_value_to_dataclass(value: Any, target_type: Any) -> Any:
-    if value is None:
-        return None
-
-    resolved_type = resolve_declared_type(target_type)
-    origin = get_origin(resolved_type)
-    if origin in (list, List) and isinstance(value, list):
-        args = get_args(resolved_type)
-        element_type = args[0] if args else Any
-        return [_convert_model_value_to_dataclass(item, element_type) for item in value]
-    if origin in (dict, Dict) and isinstance(value, dict):
-        args = get_args(resolved_type)
-        value_type = args[1] if len(args) == 2 else Any
-        return {
-            key: _convert_model_value_to_dataclass(item, value_type)
-            for key, item in value.items()
-        }
+def _model_value_to_dataclass_leaf(value: Any, resolved_type: Any) -> Any:
     if isinstance(value, Model):
         if _is_dataclass_type(resolved_type):
             return value.to_dataclass(resolved_type)
         return value.to_dict()
     return value
+
+
+def _convert_mapping_value_to_model(value: Any, declared_type: Any) -> Any:
+    return _convert_recursive_value(value, declared_type, _mapping_value_to_model_leaf)
+
+
+def _convert_dataclass_value_to_model(value: Any, declared_type: Any) -> Any:
+    return _convert_recursive_value(value, declared_type, _dataclass_value_to_model_leaf)
+
+
+def _convert_model_value_to_dataclass(value: Any, target_type: Any) -> Any:
+    return _convert_recursive_value(value, target_type, _model_value_to_dataclass_leaf)
 
 
 class ModelMeta(type):

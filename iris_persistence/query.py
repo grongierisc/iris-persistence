@@ -275,21 +275,54 @@ def _nullable_reference_has_no_initial_value(model_field: Any) -> bool:
     )
 
 
+def _set_native_reference_null(runtime: Any, iris_obj: Any, field_name: str) -> tuple[bool, bool]:
+    native_handles = getattr(runtime, "_native_handles", None)
+    if not callable(native_handles):
+        return (False, False)
+
+    handles = native_handles(iris_obj)
+    if handles is None:
+        return (False, False)
+
+    try:
+        oref, db, use_core_methods = handles
+        if use_core_methods:
+            oref.set(field_name, None)
+        else:
+            db.set(oref, field_name, None)
+        return (True, True)
+    except Exception:
+        return (False, True)
+
+
 def _clear_nullable_model_reference(
     runtime: Any,
     iris_obj: Any,
     field_name: str,
     model_field: Any,
 ) -> bool:
-    if _is_serial_type(model_field.declared_type):
-        return False
+    cleared, native_attempted = _set_native_reference_null(runtime, iris_obj, field_name)
+    if cleared:
+        return True
 
-    for method_name in (f"{field_name}SetObjectId", f"{field_name}SetObject"):
+    if not _is_serial_type(model_field.declared_type):
+        for method_name, value in (
+            (f"{field_name}SetObjectId", ""),
+            (f"{field_name}SetObjectId", None),
+            (f"{field_name}SetObject", None),
+        ):
+            try:
+                runtime.invoke_method(iris_obj, method_name, value)
+                return True
+            except Exception:
+                continue
+
+    if not native_attempted:
         try:
-            runtime.invoke_method(iris_obj, method_name, "")
+            runtime.set_property(iris_obj, field_name, None)
             return True
         except Exception:
-            continue
+            pass
     return False
 
 
@@ -543,6 +576,10 @@ def _populate_iris_object(
                                 model_field,
                             ):
                                 continue
+                            raise RuntimeError(
+                                f"Could not clear nullable object reference {field_name!r} "
+                                f"on {cls.__name__}"
+                            )
                         runtime.inject_iris_value(
                             iris_obj,
                             field_name,

@@ -287,6 +287,13 @@ def test_recursive_object_reference_scaffold_e2e(loaded_objectscript_fixtures, t
         assert loaded_parent.Address.ZipCode == "75001"
         assert loaded_parent.Address.Country == "FR"
 
+        loaded_parent.Child = ""
+        loaded_parent.save()
+
+        cleared_parent = SourceRecursiveParent.get(parent.pk)
+        assert cleared_parent is not None
+        assert cleared_parent.Child is None
+
         assert SourceRecursiveParent._fields["Child"].required is False
         assert SourceRecursiveParent._fields["Address"].required is False
         assert SourceRecursiveParent._fields["Child"].iris_type == "Demo.SourceRecursiveChild"

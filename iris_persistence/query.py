@@ -279,7 +279,7 @@ def _is_model_reference_clear_value(value: Any) -> bool:
     return value is None or (isinstance(value, str) and value == "")
 
 
-def _set_native_reference_null(runtime: Any, iris_obj: Any, field_name: str) -> tuple[bool, bool]:
+def _set_native_reference_empty(runtime: Any, iris_obj: Any, field_name: str) -> tuple[bool, bool]:
     native_handles = getattr(runtime, "_native_handles", None)
     if not callable(native_handles):
         return (False, False)
@@ -291,12 +291,42 @@ def _set_native_reference_null(runtime: Any, iris_obj: Any, field_name: str) -> 
     try:
         oref, db, use_core_methods = handles
         if use_core_methods:
-            oref.set(field_name, None)
+            oref.set(field_name, "")
         else:
-            db.set(oref, field_name, None)
+            db.set(oref, field_name, "")
         return (True, True)
     except Exception:
         return (False, True)
+
+
+def _invoke_reference_clear_method(
+    runtime: Any,
+    iris_obj: Any,
+    method_name: str,
+    value: Any,
+) -> bool:
+    try:
+        runtime.invoke_method(iris_obj, method_name, value)
+        return True
+    except Exception:
+        pass
+
+    native_handles = getattr(runtime, "_native_handles", None)
+    if not callable(native_handles):
+        return False
+    handles = native_handles(iris_obj)
+    if handles is None:
+        return False
+
+    try:
+        oref, db, use_core_methods = handles
+        if use_core_methods:
+            oref.invoke(method_name, value)
+        else:
+            db.invoke(oref, method_name, value)
+        return True
+    except Exception:
+        return False
 
 
 def _clear_nullable_model_reference(
@@ -305,25 +335,22 @@ def _clear_nullable_model_reference(
     field_name: str,
     model_field: Any,
 ) -> bool:
-    cleared, native_attempted = _set_native_reference_null(runtime, iris_obj, field_name)
-    if cleared:
-        return True
-
     if not _is_serial_type(model_field.declared_type):
         for method_name, value in (
             (f"{field_name}SetObjectId", ""),
             (f"{field_name}SetObjectId", None),
             (f"{field_name}SetObject", None),
         ):
-            try:
-                runtime.invoke_method(iris_obj, method_name, value)
+            if _invoke_reference_clear_method(runtime, iris_obj, method_name, value):
                 return True
-            except Exception:
-                continue
+
+    cleared, native_attempted = _set_native_reference_empty(runtime, iris_obj, field_name)
+    if cleared:
+        return True
 
     if not native_attempted:
         try:
-            runtime.set_property(iris_obj, field_name, None)
+            runtime.set_property(iris_obj, field_name, "")
             return True
         except Exception:
             pass
@@ -565,7 +592,7 @@ def _populate_iris_object(
                     continue
                 val = inst_dict.get(field_name)
                 if (
-                    model_field._is_model_field
+                    iris_persistence.models._is_object_reference_field(model_field)
                     and model_field.nullable
                     and _is_model_reference_clear_value(val)
                 ):

@@ -1,6 +1,9 @@
+from typing import Any
+
 import pytest
 
 import iris_persistence.runtime as runtime_module
+from iris_persistence import Field
 from iris_persistence.models import Model
 from iris_persistence.query import (
     _build_model_from_iris_obj,
@@ -140,6 +143,8 @@ class _NativeOref:
         return object()
 
     def invoke(self, method_name, *args):
+        if method_name != "Clear":
+            raise AttributeError(method_name)
         return None
 
     def set(self, field_name, value):
@@ -152,7 +157,7 @@ class _NativeHandleObject:
         self._db = object()
 
 
-class _NativeNullRuntime(runtime_module.IRISRuntimeAdapter):
+class _NativeEmptyReferenceRuntime(runtime_module.IRISRuntimeAdapter):
     def __init__(self):
         self.obj = _NativeHandleObject()
 
@@ -193,6 +198,42 @@ class _ReferenceClearRuntime(_SaveRuntime):
 
     def invoke_method(self, obj, method_name, *args):
         return getattr(obj, method_name)(*args)
+
+
+class _NativeAndReferenceClearObject(_ReferenceClearObject):
+    def __init__(self):
+        super().__init__()
+        self._oref = _NativeOref()
+        self._db = object()
+
+
+class _NativeAndReferenceClearRuntime(_ReferenceClearRuntime):
+    def __init__(self):
+        super().__init__()
+        self.obj = _NativeAndReferenceClearObject()
+
+
+class _NativeReferenceMethodOref(_NativeOref):
+    def __init__(self):
+        super().__init__()
+        self.invoke_calls = []
+
+    def invoke(self, method_name, *args):
+        if method_name == "ChildSetObjectId":
+            self.invoke_calls.append((method_name, *args))
+            return None
+        return super().invoke(method_name, *args)
+
+
+class _NativeReferenceMethodObject:
+    def __init__(self):
+        self._oref = _NativeReferenceMethodOref()
+        self._db = object()
+
+
+class _NativeReferenceMethodRuntime(_NativeEmptyReferenceRuntime):
+    def __init__(self):
+        self.obj = _NativeReferenceMethodObject()
 
 
 def test_resolve_sql_table_name_materializes_remote_rows_before_cursor_close():
@@ -476,7 +517,7 @@ def test_save_none_leaves_new_nullable_related_model_unset():
         Child: NativeNullChild | None = None
 
     previous_runtime = runtime_module._active_runtime
-    runtime = _NativeNullRuntime()
+    runtime = _NativeEmptyReferenceRuntime()
     configure_default_runtime(runtime)
 
     try:
@@ -495,7 +536,7 @@ def test_save_empty_string_leaves_new_nullable_related_model_unset():
         Child: NativeNullChild | None = None
 
     previous_runtime = runtime_module._active_runtime
-    runtime = _NativeNullRuntime()
+    runtime = _NativeEmptyReferenceRuntime()
     configure_default_runtime(runtime)
 
     try:
@@ -508,7 +549,7 @@ def test_save_empty_string_leaves_new_nullable_related_model_unset():
     assert runtime.obj._oref.set_calls == []
 
 
-def test_save_none_clears_existing_nullable_related_model_with_native_null():
+def test_save_none_clears_existing_nullable_related_model_with_native_empty_reference():
     class ExistingNativeNullChild(Model, persistent=True):
         Name: str
 
@@ -516,7 +557,7 @@ def test_save_none_clears_existing_nullable_related_model_with_native_null():
         Child: ExistingNativeNullChild | None = None
 
     previous_runtime = runtime_module._active_runtime
-    runtime = _NativeNullRuntime()
+    runtime = _NativeEmptyReferenceRuntime()
     configure_default_runtime(runtime)
 
     try:
@@ -526,10 +567,10 @@ def test_save_none_clears_existing_nullable_related_model_with_native_null():
     finally:
         runtime_module._active_runtime = previous_runtime
 
-    assert runtime.obj._oref.set_calls == [("Child", None)]
+    assert runtime.obj._oref.set_calls == [("Child", "")]
 
 
-def test_save_empty_string_clears_existing_nullable_related_model_with_native_null():
+def test_save_empty_string_clears_existing_nullable_related_model_with_native_empty_reference():
     class ExistingNativeNullChild(Model, persistent=True):
         Name: str
 
@@ -537,7 +578,7 @@ def test_save_empty_string_clears_existing_nullable_related_model_with_native_nu
         Child: ExistingNativeNullChild | None = None
 
     previous_runtime = runtime_module._active_runtime
-    runtime = _NativeNullRuntime()
+    runtime = _NativeEmptyReferenceRuntime()
     configure_default_runtime(runtime)
 
     try:
@@ -548,7 +589,27 @@ def test_save_empty_string_clears_existing_nullable_related_model_with_native_nu
     finally:
         runtime_module._active_runtime = previous_runtime
 
-    assert runtime.obj._oref.set_calls == [("Child", None)]
+    assert runtime.obj._oref.set_calls == [("Child", "")]
+
+
+def test_save_empty_string_clears_scaffold_style_nullable_reference_with_native_empty():
+    class ExistingScaffoldStyleParent(Model, persistent=True):
+        Child: Any | None = Field(iris_type="Demo.ReferenceChild", default=None)
+
+    previous_runtime = runtime_module._active_runtime
+    runtime = _NativeEmptyReferenceRuntime()
+    configure_default_runtime(runtime)
+
+    try:
+        model = ExistingScaffoldStyleParent()
+        model.Child = ""
+        model._pk = "7"
+        save_model(model)
+    finally:
+        runtime_module._active_runtime = previous_runtime
+
+    assert ExistingScaffoldStyleParent._complex_save_fields[0][0] == "Child"
+    assert runtime.obj._oref.set_calls == [("Child", "")]
 
 
 def test_save_none_clears_existing_nullable_related_model_with_object_id_setter():
@@ -571,6 +632,52 @@ def test_save_none_clears_existing_nullable_related_model_with_object_id_setter(
 
     assert runtime.obj.clear_calls == [("ChildSetObjectId", "")]
     assert runtime.set_calls == []
+
+
+def test_save_empty_string_prefers_object_id_clear_over_native_empty_reference():
+    class ExistingClearChild(Model, persistent=True):
+        Name: str
+
+    class ExistingClearParent(Model, persistent=True):
+        Child: ExistingClearChild | None = None
+
+    previous_runtime = runtime_module._active_runtime
+    runtime = _NativeAndReferenceClearRuntime()
+    configure_default_runtime(runtime)
+
+    try:
+        model = ExistingClearParent()
+        model.Child = ""
+        model._pk = "7"
+        save_model(model)
+    finally:
+        runtime_module._active_runtime = previous_runtime
+
+    assert runtime.obj.clear_calls == [("ChildSetObjectId", "")]
+    assert runtime.obj._oref.set_calls == []
+
+
+def test_save_empty_string_invokes_native_object_id_clear_before_native_empty_reference():
+    class ExistingClearChild(Model, persistent=True):
+        Name: str
+
+    class ExistingClearParent(Model, persistent=True):
+        Child: ExistingClearChild | None = None
+
+    previous_runtime = runtime_module._active_runtime
+    runtime = _NativeReferenceMethodRuntime()
+    configure_default_runtime(runtime)
+
+    try:
+        model = ExistingClearParent()
+        model.Child = ""
+        model._pk = "7"
+        save_model(model)
+    finally:
+        runtime_module._active_runtime = previous_runtime
+
+    assert runtime.obj._oref.invoke_calls == [("ChildSetObjectId", "")]
+    assert runtime.obj._oref.set_calls == []
 
 
 def test_save_none_clears_nullable_date_with_empty_scalar_null():

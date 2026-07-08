@@ -52,6 +52,10 @@ SCALAR_COLLECTION_IRIS_TYPES = frozenset(
 )
 
 
+def _is_application_iris_class(iris_type: Any) -> bool:
+    return isinstance(iris_type, str) and iris_type != "" and not iris_type.startswith("%")
+
+
 def _is_empty_class_metadata(metadata: ClassMetadata | None) -> bool:
     if metadata is None:
         return True
@@ -400,6 +404,16 @@ def _build_fast_save(
     return fn
 
 
+def _is_object_reference_field(model_field: ModelField) -> bool:
+    if model_field._is_model_field:
+        return True
+    if model_field._collection_kind is not None:
+        return False
+    if getattr(model_field.field_info, "collection", None) is not None:
+        return False
+    return _is_application_iris_class(getattr(model_field.field_info, "iris_type", None))
+
+
 def _type_name(value: Any) -> str:
     return getattr(value, "__name__", repr(value))
 
@@ -454,7 +468,7 @@ def _validate_field_value(model_field: ModelField, value: Any) -> Any:
         isinstance(value, str)
         and value == ""
         and model_field.nullable
-        and model_field._is_model_field
+        and _is_object_reference_field(model_field)
     ):
         return None
 
@@ -589,7 +603,7 @@ def _partition_save_fields(
     for field_name, model_field in model_fields.items():
         if getattr(model_field.field_info, "readonly", False):
             complex_save.append((field_name, model_field))
-        elif model_field._collection_kind is None and not model_field._is_model_field:
+        elif model_field._collection_kind is None and not _is_object_reference_field(model_field):
             if model_field.declared_type in _PRIMITIVE_TYPES:
                 scalar_fast.append(field_name)
             else:

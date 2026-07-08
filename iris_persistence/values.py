@@ -331,7 +331,7 @@ class IRISValueAdapterMixin:
         val: Any,
         field_meta: Any | None = None,
     ) -> None:
-        if val is None:
+        if val is None or (isinstance(val, str) and val == ""):
             if self._clear_property_value(obj, field_name):
                 return
             if self._set_null_property_value(obj, field_name):

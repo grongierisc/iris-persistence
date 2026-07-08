@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import datetime
 import warnings
-from typing import Any, Dict, Generic, List, Optional, Type, TypeVar
+from contextlib import contextmanager
+from typing import Any, Dict, Generic, Iterator, List, Optional, Type, TypeVar
 
 import iris_persistence.models
 from iris_persistence.codecs import (
+    NULL_STRING,
     coerce_value_for_load,
     coerce_value_for_save,
 )
@@ -22,9 +24,23 @@ def _clear_auto_sync_cache() -> None:
     _AUTO_SYNCED.clear()
 
 
+@contextmanager
+def _dbapi_cursor(runtime: Any) -> Iterator[Any]:
+    """Yield a cursor from a fresh DB-API connection, closing both afterwards."""
+    conn = runtime.get_dbapi_connection()
+    cursor = conn.cursor()
+    try:
+        yield cursor
+    finally:
+        for handle in (cursor, conn):
+            close = getattr(handle, "close", None)
+            if callable(close):
+                close()
+
+
 def _scalar_null_value_for_save(declared_type: Any) -> Any:
     if declared_type is str:
-        return chr(0)
+        return NULL_STRING
     return ""
 
 
@@ -80,7 +96,7 @@ def _build_model_from_iris_obj(
     # str fields: direct getattr, normalise None/0 → "" (IRIS can return 0 for empty string props)
     for field_name in model_cls._read_str_fields:
         val = getattr(iris_obj, field_name, None)
-        d[field_name] = None if val == chr(0) else (val if val else "")
+        d[field_name] = None if val == NULL_STRING else (val if val else "")
 
     # int/float fields: direct getattr, IRIS already returns correct Python type
     for field_name in model_cls._read_primitive_fields:
@@ -119,7 +135,7 @@ def _build_model_from_iris_obj(
                     model_field._is_scalar_string or model_field.declared_type is str
                 ):
                     python_val = ""
-                elif python_val == chr(0) and (
+                elif python_val == NULL_STRING and (
                     model_field._is_scalar_string or model_field.declared_type is str
                 ):
                     python_val = None
@@ -148,13 +164,6 @@ def _build_model_from_iris_obj(
     else:
         instance_dict["_pk"] = None
     return instance
-
-
-def _new_iris_object(runtime: Any, classname: str) -> Any:
-    new_object = getattr(runtime, "new_object", None)
-    if callable(new_object):
-        return new_object(classname)
-    return runtime.create_object(classname)
 
 
 def _materialize_related_value(
@@ -339,9 +348,7 @@ def _resolve_sql_table_name(model_cls: Type[TModel]) -> str:
     runtime = get_runtime()
     row = None
     try:
-        conn = runtime.get_dbapi_connection()
-        cursor = conn.cursor()
-        try:
+        with _dbapi_cursor(runtime) as cursor:
             cursor.execute(
                 (
                     "SELECT SqlTableName, SqlSchemaName "
@@ -355,13 +362,6 @@ def _resolve_sql_table_name(model_cls: Type[TModel]) -> str:
             elif hasattr(cursor, "fetchall"):
                 rows = cursor.fetchall()
                 row = tuple(rows[0]) if rows else None
-        finally:
-            close = getattr(cursor, "close", None)
-            if callable(close):
-                close()
-            close = getattr(conn, "close", None)
-            if callable(close):
-                close()
     except Exception as exc:
         warnings.warn(
             f"Could not resolve SQL table name for {model_cls._classname!r} "
@@ -457,24 +457,14 @@ class QuerySet(Generic[TModel]):
                 _resolve_sql_field_name(self.model_cls, key) for key in self.order_by_keys
             )
 
-        conn = runtime.get_dbapi_connection()
-        cursor = conn.cursor()
-        try:
+        results = []
+        with _dbapi_cursor(runtime) as cursor:
             cursor.execute(sql, params)
-
-            results = []
             for row in cursor:
                 row_id = row[0]
                 obj = self.model_cls.get(str(row_id))
                 if obj is not None:
                     results.append(obj)
-        finally:
-            close = getattr(cursor, "close", None)
-            if callable(close):
-                close()
-            close = getattr(conn, "close", None)
-            if callable(close):
-                close()
 
         return results
 
@@ -506,7 +496,7 @@ def _populate_iris_object(
             val = inst_dict.get(field_name)
             model_field = cls.__model_fields__[field_name]
             if val is None and model_field.declared_type is str:
-                runtime.set_property(iris_obj, field_name, chr(0))
+                runtime.set_property(iris_obj, field_name, NULL_STRING)
             elif val is None and model_field.nullable:
                 runtime.set_property(
                     iris_obj,
@@ -626,7 +616,7 @@ def _materialize_model(
             assert pk is not None
             iris_obj = runtime.get_object(classname, pk)
         else:
-            iris_obj = _new_iris_object(runtime, classname)
+            iris_obj = runtime.new_object(classname)
 
     instance._iris_obj = iris_obj
     _populate_iris_object(

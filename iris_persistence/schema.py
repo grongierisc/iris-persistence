@@ -7,10 +7,10 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from difflib import unified_diff
 from types import SimpleNamespace
-from typing import Any, Type, get_args, get_origin
+from typing import Any, Callable, Type, get_args, get_origin
 
 import iris_persistence.models
-from iris_persistence.metadata_utils import coerce_bool
+from iris_persistence.field_utils import PYTHON_TO_IRIS_TYPE, coerce_bool
 from iris_persistence.runtime import get_runtime
 from iris_persistence.types import UNSET, FieldInfo
 
@@ -248,27 +248,8 @@ def _remove_runtime_list_indices(
             raise RuntimeError(f"Could not remove schema member from {context}") from last_error
 
 
-def _owned_schema_member_indices(
-    runtime: Any,
-    list_obj: Any,
-    classname: str,
-    *,
-    skip_system_names: bool = True,
-) -> tuple[list[int], set[str]]:
-    indices: list[int] = []
-    names: set[str] = set()
-    for index, item in _iter_runtime_list_with_indices(runtime, list_obj):
-        name = _safe_get_property(runtime, item, "Name")
-        if not name:
-            continue
-        name = str(name)
-        if skip_system_names and (name.startswith("%") or name == "GUID"):
-            continue
-        if not _item_belongs_to_class(runtime, item, classname):
-            continue
-        indices.append(index)
-        names.add(name)
-    return indices, names
+def _is_system_member_name(name: str) -> bool:
+    return name.startswith("%") or name == "GUID"
 
 
 def _owned_schema_member_entries(
@@ -285,7 +266,7 @@ def _owned_schema_member_entries(
         if not name:
             continue
         name = str(name)
-        if skip_system_names and (name.startswith("%") or name == "GUID"):
+        if skip_system_names and _is_system_member_name(name):
             continue
         if not _item_belongs_to_class(runtime, item, classname):
             continue
@@ -304,7 +285,7 @@ def _owned_schema_member_entries(
         if not name or not object_id:
             continue
         name = str(name)
-        if skip_system_names and (name.startswith("%") or name == "GUID"):
+        if skip_system_names and _is_system_member_name(name):
             continue
         try:
             obj = runtime.get_object(dictionary_class_name, str(object_id))
@@ -339,25 +320,6 @@ def _remove_owned_schema_member_entries(
             runtime.delete_object(dictionary_class_name, object_id)
         except Exception:
             pass
-
-
-def _remove_missing_owned_schema_members(
-    runtime: Any,
-    list_obj: Any,
-    classname: str,
-    owned_entries: dict[str, tuple[int, Any, str | None]],
-    desired_names: set[str],
-    *,
-    dictionary_class_name: str,
-    member_name: str,
-) -> None:
-    _remove_owned_schema_member_entries(
-        runtime,
-        list_obj,
-        [entry for name, entry in owned_entries.items() if name not in desired_names],
-        dictionary_class_name=dictionary_class_name,
-        context=f"{classname}.{member_name}",
-    )
 
 
 def _item_belongs_to_class(runtime: Any, item: Any, classname: str) -> bool:
@@ -598,14 +560,7 @@ def _collect_model_schema_state(model_cls: Type[Any]) -> SchemaState:
 
     indexes = {}
     for index_meta in getattr(model_cls, "_indexes", []) or []:
-        indexes[index_meta.name] = _compact_mapping(
-            {
-                "properties": index_meta.properties,
-                "unique": getattr(index_meta, "unique", False),
-                "type": getattr(index_meta, "type", None),
-                "primary_key": getattr(index_meta, "primary_key", False),
-            }
-        )
+        indexes[index_meta.name] = _index_state_from_meta(index_meta)
     state["indexes"] = indexes
 
     storage_meta = getattr(model_cls, "_storage", None)
@@ -674,7 +629,7 @@ def _collect_live_parameters_from_sql(runtime: Any, classname: str) -> dict[str,
     parameters = {}
     for row in rows:
         name = _row_value(row, "Name")
-        if not name or str(name).startswith("%") or str(name) == "GUID":
+        if not name or _is_system_member_name(str(name)):
             continue
         parameters[str(name)] = str(_row_value(row, "Default"))
     return parameters
@@ -748,6 +703,17 @@ def _index_state_from_getter(get_value: Any) -> dict[str, Any]:
     )
 
 
+def _index_state_from_meta(index_meta: Any) -> dict[str, Any]:
+    return _compact_mapping(
+        {
+            "properties": index_meta.properties,
+            "unique": getattr(index_meta, "unique", False),
+            "type": getattr(index_meta, "type", None),
+            "primary_key": getattr(index_meta, "primary_key", False),
+        }
+    )
+
+
 def _runtime_property_name(state_key: str) -> str:
     if state_key == "global_name":
         return "Global"
@@ -795,6 +761,33 @@ def _collect_runtime_state_mapping(
     return _sort_mapping(items)
 
 
+def _collect_live_members(
+    runtime: Any,
+    class_def: Any,
+    classname: str,
+    *,
+    list_property: str,
+    item_state: Callable[[Any], Any],
+    sql_fallback: dict[str, Any],
+    skip: Callable[[str], bool] | None = None,
+) -> dict[str, Any]:
+    """Collect owned schema members from the runtime object walk plus a SQL fallback."""
+    members: dict[str, Any] = {}
+    for item in _iter_runtime_list(runtime, _safe_get_property(runtime, class_def, list_property)):
+        name = _safe_get_property(runtime, item, "Name")
+        if not name:
+            continue
+        name = str(name)
+        if skip is not None and skip(name):
+            continue
+        if not _item_belongs_to_class(runtime, item, classname):
+            continue
+        members[name] = item_state(item)
+    for name, member_state in sql_fallback.items():
+        members.setdefault(name, member_state)
+    return members
+
+
 def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
     state = _empty_schema_state(_schema_classname_for_save(classname))
     existing_classname = _find_existing_classname(runtime, classname)
@@ -811,25 +804,17 @@ def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
         bool_keys=CLASS_METADATA_FLAG_KEYS,
     )
 
-    parameters = {}
-    for item in _iter_runtime_list(runtime, _safe_get_property(runtime, class_def, "Parameters")):
-        name = _safe_get_property(runtime, item, "Name")
-        if not name or str(name).startswith("%") or str(name) == "GUID":
-            continue
-        if not _item_belongs_to_class(runtime, item, existing_classname):
-            continue
-        parameters[str(name)] = str(_safe_get_property(runtime, item, "Default"))
-    state["parameters"] = parameters
-    for name, parameter in _collect_live_parameters_from_sql(runtime, existing_classname).items():
-        state["parameters"].setdefault(name, parameter)
+    state["parameters"] = _collect_live_members(
+        runtime,
+        class_def,
+        existing_classname,
+        list_property="Parameters",
+        skip=_is_system_member_name,
+        item_state=lambda item: str(_safe_get_property(runtime, item, "Default")),
+        sql_fallback=_collect_live_parameters_from_sql(runtime, existing_classname),
+    )
 
-    properties = {}
-    for item in _iter_runtime_list(runtime, _safe_get_property(runtime, class_def, "Properties")):
-        name = _safe_get_property(runtime, item, "Name")
-        if not name or str(name).startswith("%"):
-            continue
-        if not _item_belongs_to_class(runtime, item, existing_classname):
-            continue
+    def _live_property_state(item: Any) -> dict[str, Any]:
         max_length = None
         scale = None
         params = _safe_get_property(runtime, item, "Parameters")
@@ -842,31 +827,32 @@ def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
                 scale = runtime.invoke_method(params, "GetAt", "SCALE")
             except Exception:
                 scale = None
-        properties[str(name)] = _property_state_from_getter(
-            lambda property_name, item=item: _safe_get_property(runtime, item, property_name),
+        return _property_state_from_getter(
+            lambda property_name: _safe_get_property(runtime, item, property_name),
             max_length=max_length,
             scale=scale,
         )
-    state["properties"] = properties
-    for name, property_state in _collect_live_properties_from_sql(
-        runtime,
-        existing_classname,
-    ).items():
-        state["properties"].setdefault(name, property_state)
 
-    indexes = {}
-    for item in _iter_runtime_list(runtime, _safe_get_property(runtime, class_def, "Indices")):
-        name = _safe_get_property(runtime, item, "Name")
-        if not name:
-            continue
-        if not _item_belongs_to_class(runtime, item, existing_classname):
-            continue
-        indexes[str(name)] = _index_state_from_getter(
-            lambda property_name, item=item: _safe_get_property(runtime, item, property_name)
-        )
-    state["indexes"] = indexes
-    for name, index_state in _collect_live_indexes_from_sql(runtime, existing_classname).items():
-        state["indexes"].setdefault(name, index_state)
+    state["properties"] = _collect_live_members(
+        runtime,
+        class_def,
+        existing_classname,
+        list_property="Properties",
+        skip=lambda name: name.startswith("%"),
+        item_state=_live_property_state,
+        sql_fallback=_collect_live_properties_from_sql(runtime, existing_classname),
+    )
+
+    state["indexes"] = _collect_live_members(
+        runtime,
+        class_def,
+        existing_classname,
+        list_property="Indices",
+        item_state=lambda item: _index_state_from_getter(
+            lambda property_name: _safe_get_property(runtime, item, property_name)
+        ),
+        sql_fallback=_collect_live_indexes_from_sql(runtime, existing_classname),
+    )
 
     storage_strategy = _safe_get_property(runtime, class_def, "StorageStrategy")
     storages = _iter_runtime_list(runtime, _safe_get_property(runtime, class_def, "Storages"))
@@ -994,30 +980,22 @@ def _merge_schema_state_for_sync(
         return SchemaState.from_dict(live_mapping)
     if not live_mapping["super"] or mode == "replace":
         return SchemaState.from_dict(desired_mapping)
-    if mode == "managed":
-        planned = deepcopy(live_mapping)
-        planned["super"] = desired_mapping["super"]
-        for key, value in desired_mapping["metadata"].items():
-            if value not in (None, "", False):
-                planned["metadata"][key] = value
-        planned["parameters"] = deepcopy(desired_mapping["parameters"])
-        planned["properties"] = deepcopy(desired_mapping["properties"])
-        planned["indexes"] = deepcopy(desired_mapping["indexes"])
-        if desired_mapping["storage"] is not None:
-            planned["storage"] = deepcopy(desired_mapping["storage"])
-        return SchemaState.from_dict(planned)
 
     planned = deepcopy(live_mapping)
     planned["super"] = desired_mapping["super"]
     for key, value in desired_mapping["metadata"].items():
         if value not in (None, "", False):
             planned["metadata"][key] = value
-    for key, value in desired_mapping["parameters"].items():
-        planned["parameters"].setdefault(key, value)
-    for key, value in desired_mapping["properties"].items():
-        planned["properties"].setdefault(key, value)
-    for key, value in desired_mapping["indexes"].items():
-        planned["indexes"].setdefault(key, value)
+
+    if mode == "managed":
+        for section in ("parameters", "properties", "indexes"):
+            planned[section] = deepcopy(desired_mapping[section])
+        if desired_mapping["storage"] is not None:
+            planned["storage"] = deepcopy(desired_mapping["storage"])
+    else:
+        for section in ("parameters", "properties", "indexes"):
+            for key, value in desired_mapping[section].items():
+                planned[section].setdefault(key, value)
     return SchemaState.from_dict(planned)
 
 
@@ -1122,30 +1100,12 @@ def _map_python_type_to_iris(py_type: Any, field_meta: FieldInfo) -> str:
         if has_none and len(args) == 2:
             py_type = args[0] if args[1] is type(None) else args[1]
 
-    if py_type is str:
-        return "%Library.String"
-    if py_type is int:
-        return "%Library.Integer"
-    if py_type is float:
-        return "%Library.Double"
-    if py_type is decimal.Decimal:
-        return "%Library.Decimal"
-    if py_type is bool:
-        return "%Library.Boolean"
-    if py_type is bytes or py_type is bytearray:
-        return "%Stream.GlobalBinary"
-    if py_type is dict or str(py_type).startswith("dict"):
-        return "%Library.DynamicObject"
-    if py_type is list or str(py_type).startswith("list"):
-        return "%Library.DynamicArray"
-    if str(py_type) == "<class 'datetime.datetime'>":
-        return "%Library.TimeStamp"
-    if str(py_type) == "<class 'datetime.date'>":
-        return "%Library.Date"
-    if str(py_type) == "<class 'datetime.time'>":
-        return "%Library.Time"
-    if isinstance(py_type, type) and issubclass(py_type, iris_persistence.models.Model):
-        return _schema_classname_for_save(py_type._classname)
+    if isinstance(py_type, type):
+        mapped = PYTHON_TO_IRIS_TYPE.get(py_type)
+        if mapped is not None:
+            return mapped
+        if issubclass(py_type, iris_persistence.models.Model):
+            return _schema_classname_for_save(py_type._classname)
 
     return "%Library.String"
 
@@ -1420,7 +1380,7 @@ def _ensure_class_definition(
             existing_classname,
         )
 
-    class_definition = runtime.create_object("%Dictionary.ClassDefinition")
+    class_definition = runtime.new_object("%Dictionary.ClassDefinition")
     runtime.set_property(class_definition, "Name", schema_classname)
     return (class_definition, False, schema_classname)
 
@@ -1444,6 +1404,60 @@ def _apply_class_definition(
             _set_runtime_property_if_not_none(runtime, class_definition, property_name, value)
 
 
+def _sync_members(
+    runtime: Any,
+    class_definition: Any,
+    classname: str,
+    *,
+    list_property: str,
+    dictionary_class_name: str,
+    desired: dict[str, Any],
+    mode: str,
+    update: Callable[[Any, Any], None],
+    insert: Callable[[str, Any], Any],
+) -> None:
+    """Sync one kind of owned schema member (parameters, properties, indexes).
+
+    `update(existing_obj, state)` mutates an owned member in managed mode;
+    `insert(name, state)` builds a new member definition to append to the list.
+    """
+    if mode not in {"extend", "managed", "replace"}:
+        return
+
+    member_list = runtime.get_property(class_definition, list_property)
+    if member_list is None:
+        return
+    owned_entries = _owned_schema_member_entries(
+        runtime,
+        member_list,
+        classname,
+        dictionary_class_name=dictionary_class_name,
+    )
+    if mode == "managed":
+        _remove_owned_schema_member_entries(
+            runtime,
+            member_list,
+            [entry for name, entry in owned_entries.items() if name not in desired],
+            dictionary_class_name=dictionary_class_name,
+            context=f"{classname}.{list_property}",
+        )
+
+    for name, state in desired.items():
+        if name in owned_entries:
+            if mode == "extend":
+                continue
+            if mode == "managed":
+                update(owned_entries[name][1], state)
+                continue
+        runtime.invoke_method(member_list, "Insert", insert(name, state))
+
+
+def _new_parameter_definition(runtime: Any, classname: str, name: str, default: Any) -> Any:
+    param_def = _new_schema_member(runtime, "%Dictionary.ParameterDefinition", name, classname)
+    runtime.set_property(param_def, "Default", str(default))
+    return param_def
+
+
 def _sync_parameters(
     runtime: Any,
     class_definition: Any,
@@ -1451,40 +1465,21 @@ def _sync_parameters(
     parameters: dict[str, Any],
     mode: str,
 ) -> None:
-    if mode not in {"extend", "managed", "replace"} or not isinstance(parameters, dict):
+    if not isinstance(parameters, dict):
         return
-
-    parameter_list = runtime.get_property(class_definition, "Parameters")
-    if parameter_list is None:
-        return
-    owned_entries = _owned_schema_member_entries(
+    _sync_members(
         runtime,
-        parameter_list,
+        class_definition,
         classname,
+        list_property="Parameters",
         dictionary_class_name="%Dictionary.ParameterDefinition",
+        desired=parameters,
+        mode=mode,
+        update=lambda obj, default: runtime.set_property(obj, "Default", str(default)),
+        insert=lambda name, default: _new_parameter_definition(
+            runtime, classname, name, default
+        ),
     )
-    if mode == "managed":
-        _remove_missing_owned_schema_members(
-            runtime,
-            parameter_list,
-            classname,
-            owned_entries,
-            set(parameters),
-            dictionary_class_name="%Dictionary.ParameterDefinition",
-            member_name="Parameters",
-        )
-
-    for param_name, param_default in parameters.items():
-        if mode == "extend" and param_name in owned_entries:
-            continue
-        if mode == "managed" and param_name in owned_entries:
-            runtime.set_property(owned_entries[param_name][1], "Default", str(param_default))
-            continue
-        param_def = _new_schema_member(
-            runtime, "%Dictionary.ParameterDefinition", param_name, classname
-        )
-        runtime.set_property(param_def, "Default", str(param_default))
-        runtime.invoke_method(parameter_list, "Insert", param_def)
 
 
 def _sync_related_models(
@@ -1501,20 +1496,6 @@ def _sync_related_models(
             and resolved is not model_cls
         ):
             _sync_schema_model(runtime, resolved, seen)
-
-
-def _build_property_definition(
-    runtime: Any,
-    classname: str,
-    field_name: str,
-    model_field: Any,
-) -> Any:
-    return _build_property_definition_from_state(
-        runtime,
-        classname,
-        field_name,
-        _collect_model_schema_state_for_field(field_name, model_field),
-    )
 
 
 _PROPERTY_FLAG_FIELDS = (
@@ -1596,19 +1577,35 @@ def _build_property_definition_from_state(
     field_name: str,
     property_state: dict[str, Any],
 ) -> Any:
-    prop = runtime.create_object("%Dictionary.PropertyDefinition")
+    prop = runtime.new_object("%Dictionary.PropertyDefinition")
     runtime.set_property(prop, "Name", field_name)
     runtime.set_property(prop, "parent", classname)
     _apply_property_definition_state(runtime, prop, property_state, exact=False)
     return prop
 
 
-def _apply_property_definition_from_state(
+def _sync_property_states(
     runtime: Any,
-    prop: Any,
-    property_state: dict[str, Any],
+    class_definition: Any,
+    classname: str,
+    properties: dict[str, dict[str, Any]],
+    mode: str,
 ) -> None:
-    _apply_property_definition_state(runtime, prop, property_state, exact=True)
+    _sync_members(
+        runtime,
+        class_definition,
+        classname,
+        list_property="Properties",
+        dictionary_class_name="%Dictionary.PropertyDefinition",
+        desired=properties,
+        mode=mode,
+        update=lambda obj, state: _apply_property_definition_state(
+            runtime, obj, state, exact=True
+        ),
+        insert=lambda name, state: _build_property_definition_from_state(
+            runtime, classname, name, state
+        ),
+    )
 
 
 def _sync_properties(
@@ -1618,39 +1615,11 @@ def _sync_properties(
     model_fields: dict[str, Any],
     mode: str,
 ) -> None:
-    props_oref_list = runtime.get_property(class_definition, "Properties")
-    if props_oref_list is None:
-        return
-    owned_entries = _owned_schema_member_entries(
-        runtime,
-        props_oref_list,
-        classname,
-        dictionary_class_name="%Dictionary.PropertyDefinition",
-    )
-    if mode == "managed":
-        _remove_missing_owned_schema_members(
-            runtime,
-            props_oref_list,
-            classname,
-            owned_entries,
-            set(model_fields),
-            dictionary_class_name="%Dictionary.PropertyDefinition",
-            member_name="Properties",
-        )
-
-    for field_name, model_field in model_fields.items():
-        if mode == "extend" and field_name in owned_entries:
-            continue
-        if mode == "managed" and field_name in owned_entries:
-            state = _collect_model_schema_state_for_field(field_name, model_field)
-            _apply_property_definition_from_state(
-                runtime,
-                owned_entries[field_name][1],
-                state,
-            )
-            continue
-        prop = _build_property_definition(runtime, classname, field_name, model_field)
-        runtime.invoke_method(props_oref_list, "Insert", prop)
+    desired = {
+        field_name: _collect_model_schema_state_for_field(field_name, model_field)
+        for field_name, model_field in model_fields.items()
+    }
+    _sync_property_states(runtime, class_definition, classname, desired, mode)
 
 
 def _sync_properties_from_state(
@@ -1659,15 +1628,64 @@ def _sync_properties_from_state(
     classname: str,
     properties: dict[str, dict[str, Any]],
 ) -> None:
-    props_oref_list = runtime.get_property(class_definition, "Properties")
-    for field_name, property_state in sorted(properties.items(), key=lambda item: item[0]):
-        prop = _build_property_definition_from_state(
-            runtime,
-            classname,
-            field_name,
-            property_state,
-        )
-        runtime.invoke_method(props_oref_list, "Insert", prop)
+    _sync_property_states(
+        runtime,
+        class_definition,
+        classname,
+        dict(sorted(properties.items())),
+        "replace",
+    )
+
+
+def _apply_index_definition_state(
+    runtime: Any,
+    idx_def: Any,
+    index_state: dict[str, Any],
+    *,
+    exact: bool,
+) -> None:
+    _set_runtime_property_if_not_none(
+        runtime, idx_def, "Properties", index_state.get("properties")
+    )
+    _set_runtime_property_if_not_none(runtime, idx_def, "Type", index_state.get("type"))
+    for state_key, property_name in (("unique", "Unique"), ("primary_key", "PrimaryKey")):
+        if exact:
+            _set_runtime_flag_exact(runtime, idx_def, property_name, index_state.get(state_key))
+        else:
+            _set_runtime_flag_if_true(runtime, idx_def, property_name, index_state.get(state_key))
+
+
+def _build_index_definition_from_state(
+    runtime: Any,
+    classname: str,
+    index_name: str,
+    index_state: dict[str, Any],
+) -> Any:
+    idx_def = _new_schema_member(runtime, "%Dictionary.IndexDefinition", index_name, classname)
+    _apply_index_definition_state(runtime, idx_def, index_state, exact=False)
+    return idx_def
+
+
+def _sync_index_states(
+    runtime: Any,
+    class_definition: Any,
+    classname: str,
+    indexes: dict[str, dict[str, Any]],
+    mode: str,
+) -> None:
+    _sync_members(
+        runtime,
+        class_definition,
+        classname,
+        list_property="Indices",
+        dictionary_class_name="%Dictionary.IndexDefinition",
+        desired=indexes,
+        mode=mode,
+        update=lambda obj, state: _apply_index_definition_state(runtime, obj, state, exact=True),
+        insert=lambda name, state: _build_index_definition_from_state(
+            runtime, classname, name, state
+        ),
+    )
 
 
 def _sync_indexes(
@@ -1677,70 +1695,10 @@ def _sync_indexes(
     indexes: list[Any],
     mode: str,
 ) -> None:
-    if mode not in {"extend", "managed", "replace"} or not isinstance(indexes, list):
+    if not isinstance(indexes, list):
         return
-
-    index_list = runtime.get_property(class_definition, "Indices")
-    if index_list is None:
-        return
-    owned_entries = _owned_schema_member_entries(
-        runtime,
-        index_list,
-        classname,
-        dictionary_class_name="%Dictionary.IndexDefinition",
-    )
-    if mode == "managed":
-        _remove_missing_owned_schema_members(
-            runtime,
-            index_list,
-            classname,
-            owned_entries,
-            {index_meta.name for index_meta in indexes},
-            dictionary_class_name="%Dictionary.IndexDefinition",
-            member_name="Indices",
-        )
-
-    for index_meta in indexes:
-        if mode == "extend" and index_meta.name in owned_entries:
-            continue
-        if mode == "managed" and index_meta.name in owned_entries:
-            idx_def = owned_entries[index_meta.name][1]
-            runtime.set_property(idx_def, "Properties", index_meta.properties)
-            runtime.set_property(
-                idx_def,
-                "Unique",
-                1 if getattr(index_meta, "unique", False) else 0,
-            )
-            _set_runtime_property_if_not_none(
-                runtime,
-                idx_def,
-                "Type",
-                getattr(index_meta, "type", None),
-            )
-            runtime.set_property(
-                idx_def,
-                "PrimaryKey",
-                1 if getattr(index_meta, "primary_key", False) else 0,
-            )
-            continue
-        idx_def = _new_schema_member(
-            runtime, "%Dictionary.IndexDefinition", index_meta.name, classname
-        )
-        runtime.set_property(idx_def, "Properties", index_meta.properties)
-        _set_runtime_flag_if_true(runtime, idx_def, "Unique", getattr(index_meta, "unique", False))
-        _set_runtime_property_if_not_none(
-            runtime,
-            idx_def,
-            "Type",
-            getattr(index_meta, "type", None),
-        )
-        _set_runtime_flag_if_true(
-            runtime,
-            idx_def,
-            "PrimaryKey",
-            getattr(index_meta, "primary_key", False),
-        )
-        runtime.invoke_method(index_list, "Insert", idx_def)
+    desired = {index_meta.name: _index_state_from_meta(index_meta) for index_meta in indexes}
+    _sync_index_states(runtime, class_definition, classname, desired, mode)
 
 
 def _sync_indexes_from_state(
@@ -1749,26 +1707,13 @@ def _sync_indexes_from_state(
     classname: str,
     indexes: dict[str, dict[str, Any]],
 ) -> None:
-    index_list = runtime.get_property(class_definition, "Indices")
-    if index_list is None:
-        return
-
-    for index_name, index_state in sorted(indexes.items(), key=lambda item: item[0]):
-        idx_def = _new_schema_member(
-            runtime, "%Dictionary.IndexDefinition", index_name, classname
-        )
-        _set_runtime_property_if_not_none(
-            runtime, idx_def, "Properties", index_state.get("properties")
-        )
-        _set_runtime_flag_if_true(runtime, idx_def, "Unique", index_state.get("unique"))
-        _set_runtime_property_if_not_none(runtime, idx_def, "Type", index_state.get("type"))
-        _set_runtime_flag_if_true(
-            runtime,
-            idx_def,
-            "PrimaryKey",
-            index_state.get("primary_key"),
-        )
-        runtime.invoke_method(index_list, "Insert", idx_def)
+    _sync_index_states(
+        runtime,
+        class_definition,
+        classname,
+        dict(sorted(indexes.items())),
+        "replace",
+    )
 
 
 _STORAGE_BOOL_ATTRS = {"bias_queries_as_outlier", "conditional_with_host_vars"}
@@ -1795,7 +1740,7 @@ def _new_schema_member(
     name: Any,
     parent: str,
 ) -> Any:
-    obj = runtime.create_object(dictionary_class)
+    obj = runtime.new_object(dictionary_class)
     runtime.set_property(obj, "Name", name)
     runtime.set_property(obj, "parent", parent)
     return obj
@@ -1957,7 +1902,7 @@ def _sync_storage(
     if storage_list is None:
         return
     if mode == "managed":
-        owned_indices, _owned_names = _owned_schema_member_indices(
+        owned_entries = _owned_schema_member_entries(
             runtime,
             storage_list,
             classname,
@@ -1966,10 +1911,10 @@ def _sync_storage(
         _remove_runtime_list_indices(
             runtime,
             storage_list,
-            owned_indices,
+            [entry[0] for entry in owned_entries.values()],
             context=f"{classname}.Storages",
         )
-    storage_definition = runtime.create_object("%Dictionary.StorageDefinition")
+    storage_definition = runtime.new_object("%Dictionary.StorageDefinition")
     storage_name = getattr(storage_meta, "name", None) or "CustomStorage"
     runtime.set_property(storage_definition, "Name", storage_name)
     runtime.set_property(storage_definition, "parent", classname)

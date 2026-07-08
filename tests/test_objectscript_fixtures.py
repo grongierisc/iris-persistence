@@ -167,7 +167,7 @@ def test_objectscript_fixture_scaffold_e2e(loaded_objectscript_fixtures, tmp_pat
 
     assert RequestFixture._superclasses == "Ens.Request"
     assert RequestFixture._fields["CorrelationId"].required is True
-    assert RequestFixture._fields["CorrelationId"].maxlen == 64
+    assert RequestFixture._fields["CorrelationId"].max_length == 64
     assert RequestFixture._fields["CorrelationId"].iris_type == "%Library.String"
     assert RequestFixture._fields["SourceSystem"].default == "ERP"
     assert RequestFixture._storage is not None
@@ -176,7 +176,7 @@ def test_objectscript_fixture_scaffold_e2e(loaded_objectscript_fixtures, tmp_pat
 
     assert SerialFixture._superclasses in {"%SerialObject", "%Library.SerialObject"}
     assert SerialFixture._fields["Street"].required is True
-    assert SerialFixture._fields["Street"].maxlen == 120
+    assert SerialFixture._fields["Street"].max_length == 120
     assert SerialFixture._fields["Street"].iris_type == "%Library.String"
     assert SerialFixture._fields["Country"].default == "FR"
     assert SerialFixture._storage is not None

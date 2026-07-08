@@ -74,16 +74,38 @@ class IRISValueAdapterMixin:
             return None
         return (oref, db, hasattr(oref, "invoke"))
 
+    @staticmethod
+    def _native_get(handles: tuple[Any, Any, bool], field_name: str) -> Any:
+        oref, db, use_core_methods = handles
+        return oref.get(field_name) if use_core_methods else db.get(oref, field_name)
+
+    @staticmethod
+    def _native_set(handles: tuple[Any, Any, bool], field_name: str, value: Any) -> None:
+        oref, db, use_core_methods = handles
+        if use_core_methods:
+            oref.set(field_name, value)
+        else:
+            db.set(oref, field_name, value)
+
+    @staticmethod
+    def _native_invoke(
+        handles: tuple[Any, Any, bool],
+        target: Any,
+        method_name: str,
+        *args: Any,
+    ) -> None:
+        _oref, db, use_core_methods = handles
+        if use_core_methods:
+            target.invoke(method_name, *args)
+        else:
+            db.invoke(target, method_name, *args)
+
     def _clear_property_value(self, obj: Any, field_name: str) -> bool:
-        native_handles = self._native_handles(obj)
-        if native_handles is not None:
+        handles = self._native_handles(obj)
+        if handles is not None:
             try:
-                oref, db, use_core_methods = native_handles
-                stream_oref = oref.get(field_name) if use_core_methods else db.get(oref, field_name)
-                if use_core_methods:
-                    stream_oref.invoke("Clear")
-                else:
-                    db.invoke(stream_oref, "Clear")
+                stream_oref = self._native_get(handles, field_name)
+                self._native_invoke(handles, stream_oref, "Clear")
                 return True
             except Exception:
                 return False
@@ -95,32 +117,23 @@ class IRISValueAdapterMixin:
         return True
 
     def _set_null_property_value(self, obj: Any, field_name: str) -> bool:
-        native_handles = self._native_handles(obj)
-        if native_handles is None:
+        handles = self._native_handles(obj)
+        if handles is None:
             return False
 
         try:
-            oref, db, use_core_methods = native_handles
-            if use_core_methods:
-                oref.set(field_name, "")
-            else:
-                db.set(oref, field_name, "")
+            self._native_set(handles, field_name, "")
             return True
         except Exception:
             return False
 
     def _write_stream_property(self, obj: Any, field_name: str, val: bytes | bytearray) -> bool:
-        native_handles = self._native_handles(obj)
-        if native_handles is not None:
+        handles = self._native_handles(obj)
+        if handles is not None:
             try:
-                oref, db, use_core_methods = native_handles
-                stream_oref = oref.get(field_name) if use_core_methods else db.get(oref, field_name)
-                if use_core_methods:
-                    stream_oref.invoke("Clear")
-                    stream_oref.invoke("Write", val)
-                else:
-                    db.invoke(stream_oref, "Clear")
-                    db.invoke(stream_oref, "Write", val)
+                stream_oref = self._native_get(handles, field_name)
+                self._native_invoke(handles, stream_oref, "Clear")
+                self._native_invoke(handles, stream_oref, "Write", val)
                 return True
             except Exception:
                 return False
@@ -139,14 +152,11 @@ class IRISValueAdapterMixin:
         iris_class_name: str,
         val: Any,
     ) -> bool:
-        native_handles = self._native_handles(obj)
-        if native_handles is not None:
-            oref, db, use_core_methods = native_handles
+        handles = self._native_handles(obj)
+        if handles is not None:
+            _oref, db, _use_core_methods = handles
             dyn_value = db.classMethodValue(iris_class_name, "%FromJSON", json.dumps(val))
-            if use_core_methods:
-                oref.set(field_name, dyn_value)
-            else:
-                db.set(oref, field_name, dyn_value)
+            self._native_set(handles, field_name, dyn_value)
             return True
 
         dyn_value = self.call_classmethod(iris_class_name, "_FromJSON", json.dumps(val))

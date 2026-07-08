@@ -9,7 +9,6 @@ from iris_persistence.values import IRISValueAdapterMixin
 class RuntimeAdapter(Protocol):
     def call_classmethod(self, class_name: str, method_name: str, *args: Any) -> Any: ...
     def new_object(self, class_name: str) -> Any: ...
-    def create_object(self, class_name: str) -> Any: ...
     def save_object(self, obj: Any) -> Any: ...
     def get_object(self, class_name: str, obj_id: str) -> Any: ...
     def delete_object(self, class_name: str, obj_id: str) -> bool: ...
@@ -178,9 +177,6 @@ class IRISRuntimeAdapter(IRISValueAdapterMixin):
     def new_object(self, class_name: str) -> Any:
         return self._cls(class_name)._New()
 
-    def create_object(self, class_name: str) -> Any:
-        return self.new_object(class_name)
-
     def save_object(self, obj: Any) -> Any:
         return obj._Save()
 
@@ -288,8 +284,6 @@ class IRISRuntimeAdapter(IRISValueAdapterMixin):
         return None
 
     def is_ok(self, status: Any) -> bool:
-        if type(status) is int:
-            return status != 0
         if isinstance(status, int):
             return status != 0
         if isinstance(status, str):

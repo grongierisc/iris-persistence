@@ -2,6 +2,7 @@ from typing import Any
 
 from iris_persistence import Field, Model
 from iris_persistence.field_utils import (
+    coerce_bool,
     collection_kind_from_field,
     collection_kind_from_iris_type,
     collection_value_type,
@@ -10,7 +11,6 @@ from iris_persistence.field_utils import (
     is_percent_list_field,
     is_scalar_string_field,
 )
-from iris_persistence.metadata_utils import coerce_bool
 
 
 class HelperChild(Model, serial=True):

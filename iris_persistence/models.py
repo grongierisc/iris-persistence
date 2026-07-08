@@ -20,7 +20,7 @@ from typing import (
     get_type_hints,
 )
 
-from iris_persistence.codecs import resolve_declared_type
+from iris_persistence.codecs import NULL_STRING, resolve_declared_type
 from iris_persistence.field_utils import (
     IRIS_COLLECTION_TYPES,
     collection_value_type,
@@ -339,7 +339,7 @@ def _build_fast_load(model_cls: Any, model_fields: Dict[str, ModelField], is_ser
     namespace: dict[str, Any] = {
         "_model_cls": model_cls,
         "_get_runtime": _get_runtime_fn,
-        "_NULL_STRING": chr(0),
+        "_NULL_STRING": NULL_STRING,
     }
     exec(source, namespace)
     fn = namespace["_fast_load"]
@@ -393,7 +393,7 @@ def _build_fast_save(
                 lines.append(f"        if _v is not None: iris_obj.{name} = _v")
 
     source = "\n".join(lines)
-    namespace: dict[str, Any] = {"_NULL_STRING": chr(0)}
+    namespace: dict[str, Any] = {"_NULL_STRING": NULL_STRING}
     exec(source, namespace)
     fn = namespace["_fast_save"]
     fn.__qualname__ = f"{model_cls.__qualname__}._fast_save"

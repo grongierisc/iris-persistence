@@ -42,12 +42,9 @@ class FieldInfo:
     index_type: Optional[str] = None
     max_length: Optional[int] = None
     initial_expression: Optional[str] = None
-    maxlen: Optional[int] = None
     readonly: bool = False
     collection: Optional[str] = None  # e.g. "list", "array"
     iris_type: Optional[str] = None
-    # Backward-compatible alias for older callers; prefer `iris_type`.
-    sql_type: Optional[str] = None
     sql_field_name: Optional[str] = None
     identity: bool = False
     relationship: Optional[str] = None
@@ -63,85 +60,15 @@ class FieldInfo:
     sql_computed: bool = False
 
     def __post_init__(self) -> None:
-        if self.iris_type is None and self.sql_type is not None:
-            self.iris_type = self.sql_type
-        elif self.iris_type is not None and self.sql_type is None:
-            self.sql_type = self.iris_type
-        if self.max_length is None and self.maxlen is not None:
-            self.max_length = self.maxlen
-        elif self.max_length is not None and self.maxlen is None:
-            self.maxlen = self.max_length
-        elif self.max_length is not None and self.maxlen is not None:
-            self.maxlen = self.max_length
         if self.default is not UNSET and self.default_factory is not UNSET:
             raise TypeError("Field cannot define both default and default_factory")
         if self.default_factory is not UNSET and not callable(self.default_factory):
             raise TypeError("Field default_factory must be callable")
 
 
-def Field(
-    *,
-    required: bool = False,
-    default: Any = UNSET,
-    default_factory: Callable[[], Any] | Any = UNSET,
-    nullable: Optional[bool] = None,
-    primary_key: bool = False,
-    index: bool = False,
-    unique: bool = False,
-    index_name: Optional[str] = None,
-    index_type: Optional[str] = None,
-    max_length: Optional[int] = None,
-    initial_expression: Optional[str] = None,
-    maxlen: Optional[int] = None,
-    readonly: bool = False,
-    collection: Optional[str] = None,
-    iris_type: Optional[str] = None,
-    sql_type: Optional[str] = None,
-    sql_field_name: Optional[str] = None,
-    identity: bool = False,
-    relationship: Optional[str] = None,
-    on_delete: Optional[str] = None,
-    inverse: Optional[str] = None,
-    transient: bool = False,
-    storable: bool = True,
-    multi_dimensional: bool = False,
-    sql_list_delimiter: Optional[str] = None,
-    sql_list_type: Optional[str] = None,
-    sql_compute_code: Optional[str] = None,
-    sql_compute_on_change: Optional[str] = None,
-    sql_computed: bool = False,
-) -> Any:
-    return FieldInfo(
-        required=required,
-        default=default,
-        default_factory=default_factory,
-        nullable=nullable,
-        primary_key=primary_key,
-        index=index,
-        unique=unique,
-        index_name=index_name,
-        index_type=index_type,
-        max_length=max_length,
-        initial_expression=initial_expression,
-        maxlen=maxlen,
-        readonly=readonly,
-        collection=collection,
-        iris_type=iris_type,
-        sql_type=sql_type,
-        sql_field_name=sql_field_name,
-        identity=identity,
-        relationship=relationship,
-        on_delete=on_delete,
-        inverse=inverse,
-        transient=transient,
-        storable=storable,
-        multi_dimensional=multi_dimensional,
-        sql_list_delimiter=sql_list_delimiter,
-        sql_list_type=sql_list_type,
-        sql_compute_code=sql_compute_code,
-        sql_compute_on_change=sql_compute_on_change,
-        sql_computed=sql_computed,
-    )
+def Field(**kwargs: Any) -> Any:
+    """Declare field metadata for a model attribute. Accepts any `FieldInfo` keyword."""
+    return FieldInfo(**kwargs)
 
 
 @dataclass(frozen=True)

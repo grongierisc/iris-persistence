@@ -22,7 +22,7 @@ def test_field_iris_type_overrides_python_mapping():
 
 
 def test_field_sql_type_alias_maps_to_iris_type():
-    field = Field(sql_type="%Library.Currency")
+    field = Field(iris_type="%Library.Currency")
 
     assert field.iris_type == "%Library.Currency"
     assert _map_python_type_to_iris(float, field) == "%Library.Currency"
@@ -103,7 +103,7 @@ class _RecordingRuntime:
             return False
         return 1
 
-    def create_object(self, class_name):
+    def new_object(self, class_name):
         obj = _RecordingObject(class_name)
         self.created.append((class_name, obj))
         if class_name == "%Dictionary.ClassDefinition":
@@ -162,7 +162,7 @@ class _ExistingClassRuntime(_RecordingRuntime):
             return True
         return 1
 
-    def create_object(self, class_name):
+    def new_object(self, class_name):
         obj = _RecordingObject(class_name)
         self.created.append((class_name, obj))
         return obj
@@ -186,7 +186,7 @@ class _ExistingUserClassRuntime(_RecordingRuntime):
             return args[0] == self.existing_classname
         return 1
 
-    def create_object(self, class_name):
+    def new_object(self, class_name):
         obj = _RecordingObject(class_name)
         self.created.append((class_name, obj))
         return obj
@@ -653,7 +653,7 @@ def test_property_definition_create_and_update_apply_same_state():
         property_state,
     )
     updated = _RecordingObject("%Dictionary.PropertyDefinition")
-    schema_module._apply_property_definition_from_state(runtime, updated, property_state)
+    schema_module._apply_property_definition_state(runtime, updated, property_state, exact=True)
 
     assert _property_snapshot(created) == _property_snapshot(updated)
 
@@ -682,10 +682,11 @@ def test_property_definition_update_clears_absent_metadata_exactly():
     prop.Parameters.SetAt("80", "MAXLEN")
     prop.Parameters.SetAt("2", "SCALE")
 
-    schema_module._apply_property_definition_from_state(
+    schema_module._apply_property_definition_state(
         runtime,
         prop,
         {"type": "%Library.String"},
+        exact=True,
     )
 
     assert prop.Type == "%Library.String"

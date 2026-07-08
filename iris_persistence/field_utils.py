@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime
+import decimal
 from typing import Any, Dict, List, get_args, get_origin
 
 from iris_persistence.codecs import resolve_declared_type
@@ -89,3 +91,41 @@ def collection_kind_from_field(field_meta: Any | None) -> str | None:
     if collection in {"list", "array"}:
         return collection
     return collection_kind_from_iris_type(getattr(field_meta, "iris_type", None))
+
+
+def coerce_bool(value: Any) -> bool:
+    return value == 1 or value == "1" or str(value).lower() == "true"
+
+
+# Single source of truth for scalar type mapping between Python and IRIS.
+# Rows: (python type, python type name for codegen, IRIS type, reverse-only IRIS aliases).
+# A `None` python name marks forward-only rows (scaffolded code never emits that name).
+_TYPE_MAP: tuple[tuple[Any, str | None, str, tuple[str, ...]], ...] = (
+    (str, "str", "%Library.String", ("%Stream.GlobalCharacter", "%Stream.FileCharacter")),
+    (int, "int", "%Library.Integer", ()),
+    (float, "float", "%Library.Double", ("%Library.Float", "%Library.Decimal")),
+    (bool, "bool", "%Library.Boolean", ()),
+    (bytes, "bytes", "%Stream.GlobalBinary", ("%Stream.FileBinary",)),
+    (bytearray, None, "%Stream.GlobalBinary", ()),
+    (decimal.Decimal, None, "%Library.Decimal", ()),
+    (dict, "dict", "%Library.DynamicObject", ()),
+    (list, "list", "%Library.DynamicArray", ()),
+    (datetime.datetime, "datetime.datetime", "%Library.TimeStamp", ()),
+    (datetime.date, "datetime.date", "%Library.Date", ()),
+    (datetime.time, "datetime.time", "%Library.Time", ()),
+)
+
+PYTHON_TO_IRIS_TYPE: dict[Any, str] = {py: iris for py, _name, iris, _aliases in _TYPE_MAP}
+
+
+def _build_reverse_type_map() -> dict[str, str]:
+    reverse: dict[str, str] = {}
+    for _py, name, iris_type, aliases in _TYPE_MAP:
+        if name is None:
+            continue
+        for iris_name in (iris_type, *aliases):
+            reverse.setdefault(iris_name, name)
+    return reverse
+
+
+IRIS_TYPE_TO_PYTHON_NAME: dict[str, str] = _build_reverse_type_map()

@@ -421,7 +421,7 @@ class TestIRISRuntimeAdapter(unittest.TestCase):
                 RuntimeError,
                 r"IRIS class 'Demo\.Demo' does not exist in the current namespace",
             ) as exc_info:
-                self.adapter.create_object("Demo.Demo")
+                self.adapter.new_object("Demo.Demo")
 
         self.assertIn("Model.sync_schema()", str(exc_info.exception))
         self.assertIn("Meta.classname", str(exc_info.exception))

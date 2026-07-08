@@ -4,6 +4,9 @@ import datetime
 from types import UnionType
 from typing import Annotated, Any, Union, get_args, get_origin
 
+# Sentinel stored in IRIS string properties to represent Python None.
+NULL_STRING = "\x00"
+
 
 def resolve_declared_type(hint: Any) -> Any:
     """Resolve Annotated/Optional wrappers down to the declared core Python type."""
@@ -54,7 +57,7 @@ def coerce_value_for_load(expected_type: Any, value: Any) -> Any:
     """Convert values loaded from IRIS back to the declared Python type."""
     if value is None:
         return None
-    if expected_type is str and value == "\x00":
+    if expected_type is str and value == NULL_STRING:
         return None
     if expected_type in (datetime.datetime, datetime.date, datetime.time) and value == "":
         return None

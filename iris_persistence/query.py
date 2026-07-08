@@ -11,6 +11,7 @@ from iris_persistence.codecs import (
     resolve_declared_type,
 )
 from iris_persistence.runtime import get_runtime
+from iris_persistence.types import UNSET
 
 TModel = TypeVar("TModel", bound="iris_persistence.models.Model")
 
@@ -265,6 +266,33 @@ def _materialize_related_value(
     return value
 
 
+def _nullable_reference_has_no_initial_value(model_field: Any) -> bool:
+    field_meta = model_field.field_info
+    default = getattr(field_meta, "default", UNSET)
+    return (
+        getattr(field_meta, "initial_expression", None) is None
+        and (default is UNSET or default is None)
+    )
+
+
+def _clear_nullable_model_reference(
+    runtime: Any,
+    iris_obj: Any,
+    field_name: str,
+    model_field: Any,
+) -> bool:
+    if _is_serial_type(model_field.declared_type):
+        return False
+
+    for method_name in (f"{field_name}SetObjectId", f"{field_name}SetObject"):
+        try:
+            runtime.invoke_method(iris_obj, method_name, "")
+            return True
+        except Exception:
+            continue
+    return False
+
+
 def _resolve_sql_field_name(model_cls: Type[TModel], field_name: str) -> str:
     field_meta = model_cls._fields.get(field_name)
     if field_meta is None:
@@ -430,6 +458,7 @@ def _populate_iris_object(
     runtime: Any,
     *,
     is_update: bool,
+    had_existing_iris_obj: bool,
     persist_related: bool,
     auto_sync: bool,
     validate: bool,
@@ -500,6 +529,20 @@ def _populate_iris_object(
                 val = inst_dict.get(field_name)
                 if val is None:
                     if model_field.nullable:
+                        if model_field._is_model_field:
+                            if (
+                                not is_update
+                                and not had_existing_iris_obj
+                                and _nullable_reference_has_no_initial_value(model_field)
+                            ):
+                                continue
+                            if _clear_nullable_model_reference(
+                                runtime,
+                                iris_obj,
+                                field_name,
+                                model_field,
+                            ):
+                                continue
                         runtime.inject_iris_value(
                             iris_obj,
                             field_name,
@@ -542,6 +585,7 @@ def _materialize_model(
     pk = instance._pk
     is_update = bool(pk)
     iris_obj = instance._iris_obj
+    had_existing_iris_obj = iris_obj is not None
     if iris_obj is None:
         if is_update:
             assert pk is not None
@@ -555,6 +599,7 @@ def _materialize_model(
         iris_obj,
         runtime,
         is_update=is_update,
+        had_existing_iris_obj=had_existing_iris_obj,
         persist_related=persist_related,
         auto_sync=auto_sync,
         validate=validate,

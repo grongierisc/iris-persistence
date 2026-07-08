@@ -172,6 +172,26 @@ class _NativeNullRuntime(runtime_module.IRISRuntimeAdapter):
         return "1"
 
 
+class _ReferenceClearObject:
+    def __init__(self):
+        self.clear_calls = []
+
+    def ChildSetObjectId(self, object_id):
+        self.clear_calls.append(("ChildSetObjectId", object_id))
+
+
+class _ReferenceClearRuntime(_SaveRuntime):
+    def __init__(self):
+        super().__init__()
+        self.obj = _ReferenceClearObject()
+
+    def get_object(self, class_name, obj_id):
+        return self.obj
+
+    def invoke_method(self, obj, method_name, *args):
+        return getattr(obj, method_name)(*args)
+
+
 def test_resolve_sql_table_name_materializes_remote_rows_before_cursor_close():
     previous_runtime = runtime_module._active_runtime
     configure_default_runtime(_FakeRuntime())
@@ -445,7 +465,7 @@ def test_save_none_clears_nullable_complex_field():
         runtime_module._active_runtime = previous_runtime
 
 
-def test_save_none_clears_nullable_related_model_with_native_null():
+def test_save_none_leaves_new_nullable_related_model_unset():
     class NativeNullChild(Model, persistent=True):
         Name: str
 
@@ -461,7 +481,29 @@ def test_save_none_clears_nullable_related_model_with_native_null():
     finally:
         runtime_module._active_runtime = previous_runtime
 
-    assert runtime.obj._oref.set_calls == [("Child", None)]
+    assert runtime.obj._oref.set_calls == []
+
+
+def test_save_none_clears_existing_nullable_related_model_with_object_id_setter():
+    class ExistingClearChild(Model, persistent=True):
+        Name: str
+
+    class ExistingClearParent(Model, persistent=True):
+        Child: ExistingClearChild | None = None
+
+    previous_runtime = runtime_module._active_runtime
+    runtime = _ReferenceClearRuntime()
+    configure_default_runtime(runtime)
+
+    try:
+        model = ExistingClearParent(Child=None)
+        model._pk = "7"
+        save_model(model)
+    finally:
+        runtime_module._active_runtime = previous_runtime
+
+    assert runtime.obj.clear_calls == [("ChildSetObjectId", "")]
+    assert runtime.set_calls == []
 
 
 def test_save_none_clears_nullable_date_with_empty_scalar_null():

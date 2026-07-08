@@ -10,6 +10,10 @@ from iris_persistence.codecs import (
     NULL_STRING,
     coerce_value_for_load,
     coerce_value_for_save,
+    load_scalar_bool,
+    load_scalar_number,
+    load_scalar_str,
+    save_scalar_null,
 )
 from iris_persistence.field_utils import collection_value_type, is_model_type, is_serial_model_type
 from iris_persistence.runtime import get_runtime
@@ -36,16 +40,6 @@ def _dbapi_cursor(runtime: Any) -> Iterator[Any]:
             close = getattr(handle, "close", None)
             if callable(close):
                 close()
-
-
-def _scalar_null_value_for_save(declared_type: Any) -> Any:
-    if declared_type is str:
-        return NULL_STRING
-    return ""
-
-
-def _is_empty_scalar_null(value: Any) -> bool:
-    return value in ("", None)
 
 
 def _is_null_object_reference(value: Any) -> bool:
@@ -95,24 +89,21 @@ def _build_model_from_iris_obj(
 
     # str fields: direct getattr, normalise None/0 → "" (IRIS can return 0 for empty string props)
     for field_name in model_cls._read_str_fields:
-        val = getattr(iris_obj, field_name, None)
-        d[field_name] = None if val == NULL_STRING else (val if val else "")
+        d[field_name] = load_scalar_str(getattr(iris_obj, field_name, None))
 
     # int/float fields: direct getattr, IRIS already returns correct Python type
     for field_name in model_cls._read_primitive_fields:
-        raw_val = getattr(iris_obj, field_name, None)
-        if _is_empty_scalar_null(raw_val) and model_cls.__model_fields__[field_name].nullable:
-            d[field_name] = None
-        else:
-            d[field_name] = raw_val
+        d[field_name] = load_scalar_number(
+            getattr(iris_obj, field_name, None),
+            model_cls.__model_fields__[field_name].nullable,
+        )
 
     # bool fields: IRIS stores as int 0/1, convert without calling coerce_value_for_load
     for field_name in model_cls._read_bool_fields:
-        raw_val = getattr(iris_obj, field_name, None)
-        if _is_empty_scalar_null(raw_val) and model_cls.__model_fields__[field_name].nullable:
-            d[field_name] = None
-        else:
-            d[field_name] = bool(raw_val or 0)
+        d[field_name] = load_scalar_bool(
+            getattr(iris_obj, field_name, None),
+            model_cls.__model_fields__[field_name].nullable,
+        )
 
     # Scalar fields needing full coercion (e.g. datetime): still skip get_property dispatch
     if model_cls._read_coerce_fields:
@@ -251,21 +242,20 @@ def _is_model_reference_clear_value(value: Any) -> bool:
     return value is None or (isinstance(value, str) and value == "")
 
 
-def _set_native_reference_empty(runtime: Any, iris_obj: Any, field_name: str) -> tuple[bool, bool]:
+def _native_handles_for(runtime: Any, iris_obj: Any) -> Any | None:
     native_handles = getattr(runtime, "_native_handles", None)
     if not callable(native_handles):
-        return (False, False)
+        return None
+    return native_handles(iris_obj)
 
-    handles = native_handles(iris_obj)
+
+def _set_native_reference_empty(runtime: Any, iris_obj: Any, field_name: str) -> tuple[bool, bool]:
+    handles = _native_handles_for(runtime, iris_obj)
     if handles is None:
         return (False, False)
 
     try:
-        oref, db, use_core_methods = handles
-        if use_core_methods:
-            oref.set(field_name, "")
-        else:
-            db.set(oref, field_name, "")
+        runtime._native_set(handles, field_name, "")
         return (True, True)
     except Exception:
         return (False, True)
@@ -283,19 +273,12 @@ def _invoke_reference_clear_method(
     except Exception:
         pass
 
-    native_handles = getattr(runtime, "_native_handles", None)
-    if not callable(native_handles):
-        return False
-    handles = native_handles(iris_obj)
+    handles = _native_handles_for(runtime, iris_obj)
     if handles is None:
         return False
 
     try:
-        oref, db, use_core_methods = handles
-        if use_core_methods:
-            oref.invoke(method_name, value)
-        else:
-            db.invoke(oref, method_name, value)
+        runtime._native_invoke(handles, handles[0], method_name, value)
         return True
     except Exception:
         return False
@@ -501,7 +484,7 @@ def _populate_iris_object(
                 runtime.set_property(
                     iris_obj,
                     field_name,
-                    _scalar_null_value_for_save(model_field.declared_type),
+                    save_scalar_null(model_field.declared_type),
                 )
             elif val is not None:
                 runtime.set_property(iris_obj, field_name, val)

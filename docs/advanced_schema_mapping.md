@@ -149,7 +149,7 @@ Field metadata is written to `%Dictionary.PropertyDefinition` and then projected
 | `iris_type` | `Type` | Forces the IRIS property type directly |
 | `required=True` | `Required=1` | IRIS projects required/non-nullable semantics for the property |
 | `default=...` | `InitialExpression` | Object/property default; this is not the same as issuing raw SQL `DEFAULT` DDL yourself |
-| `max_length=...` / `maxlen=...` | property parameter `MAXLEN` | Affects string length projection and validation |
+| `max_length=...` | property parameter `MAXLEN` | Affects string length projection and validation |
 | `decimal.Decimal` or explicit `%Library.Decimal` | property parameter `SCALE=18` | Preserves fractional values with the non-deprecated decimal type |
 | `readonly=True` | `ReadOnly=1` | Marks the IRIS property as read-only |
 | `collection="list"` / `"array"` | `Collection` | Changes collection semantics and SQL/storage projection behavior |
@@ -170,7 +170,6 @@ Field metadata is written to `%Dictionary.PropertyDefinition` and then projected
 Notes:
 
 - `Field.default` is written as an IRIS initial expression.
-- `Field.sql_type` is accepted as an alias for `Field.iris_type`.
 - Plain `list[T]` and `dict[str, T]` annotations infer `Collection="list"` and
   `Collection="array"` respectively when no scalar collection `iris_type` such as `%List`,
   `%ListOfDataTypes`, or `%ArrayOfDataTypes` is supplied.
@@ -498,7 +497,7 @@ reviewed migration plans and pre-apply backups.
 
 The current codebase round-trips:
 
-- field type/default/required/maxlen/readonly/collection/sql field name
+- field type/default/required/max_length/readonly/collection/sql field name
 - index unique/type/primary key metadata
 - storage globals, row-id helpers, and SQL storage scalars
 - storage data nodes

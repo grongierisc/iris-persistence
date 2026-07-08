@@ -8,6 +8,29 @@ from typing import Annotated, Any, Union, get_args, get_origin
 NULL_STRING = "\x00"
 
 
+# Scalar conversion rules shared by the generic load/save paths (query.py) and the
+# per-class code generators (models._build_fast_load/_build_fast_save), which inline
+# the same semantics for speed.
+def load_scalar_str(value: Any) -> Any:
+    """IRIS str property -> Python (NULL_STRING sentinel -> None, falsy -> '')."""
+    return None if value == NULL_STRING else (value if value else "")
+
+
+def load_scalar_number(value: Any, nullable: bool) -> Any:
+    return None if nullable and value in ("", None) else value
+
+
+def load_scalar_bool(value: Any, nullable: bool) -> Any:
+    if nullable and value in ("", None):
+        return None
+    return bool(value or 0)
+
+
+def save_scalar_null(declared_type: Any) -> Any:
+    """Value stored in IRIS for None in a nullable scalar property."""
+    return NULL_STRING if declared_type is str else ""
+
+
 def resolve_declared_type(hint: Any) -> Any:
     """Resolve Annotated/Optional wrappers down to the declared core Python type."""
     origin = get_origin(hint)

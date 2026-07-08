@@ -22,27 +22,43 @@ CLASS_METADATA_KEYS = (
     "procedure_block",
 )
 CLASS_METADATA_FLAG_KEYS = {"deprecated", "final", "procedure_block"}
-PROPERTY_KEYS = (
-    "type",
-    "required",
-    "readonly",
-    "collection",
-    "sql_field_name",
-    "identity",
-    "relationship",
-    "on_delete",
-    "inverse",
-    "transient",
-    "storable",
-    "multi_dimensional",
-    "sql_list_delimiter",
-    "sql_list_type",
-    "sql_compute_code",
-    "sql_compute_on_change",
-    "sql_computed",
-    "initial_expression",
-    "max_length",
-    "scale",
+# Single source of truth for property state keys.
+# Rows: (state key, %Dictionary property/parameter name, kind) where kind is:
+#   "flag"    boolean stored as 1/0 on the property definition
+#   "value"   plain value stored on the property definition
+#   "param"   property parameter (Parameters.SetAt)
+#   "special" handled explicitly (computed type, inverted storable)
+_PROPERTY_SPEC = (
+    ("type", "Type", "special"),
+    ("required", "Required", "flag"),
+    ("readonly", "ReadOnly", "flag"),
+    ("collection", "Collection", "value"),
+    ("sql_field_name", "SqlFieldName", "value"),
+    ("identity", "Identity", "flag"),
+    ("relationship", "Relationship", "value"),
+    ("on_delete", "OnDelete", "value"),
+    ("inverse", "Inverse", "value"),
+    ("transient", "Transient", "flag"),
+    ("storable", "Storable", "special"),
+    ("multi_dimensional", "MultiDimensional", "flag"),
+    ("sql_list_delimiter", "SqlListDelimiter", "value"),
+    ("sql_list_type", "SqlListType", "value"),
+    ("sql_compute_code", "SqlComputeCode", "value"),
+    ("sql_compute_on_change", "SqlComputeOnChange", "value"),
+    ("sql_computed", "SqlComputed", "flag"),
+    ("initial_expression", "InitialExpression", "value"),
+    ("max_length", "MAXLEN", "param"),
+    ("scale", "SCALE", "param"),
+)
+PROPERTY_KEYS = tuple(key for key, _name, _kind in _PROPERTY_SPEC)
+_PROPERTY_FLAG_FIELDS = tuple(
+    (key, name) for key, name, kind in _PROPERTY_SPEC if kind == "flag"
+)
+_PROPERTY_VALUE_FIELDS = tuple(
+    (key, name) for key, name, kind in _PROPERTY_SPEC if kind == "value"
+)
+_PROPERTY_PARAM_FIELDS = tuple(
+    (key, name) for key, name, kind in _PROPERTY_SPEC if kind == "param"
 )
 DEFAULT_DECIMAL_SCALE = "18"
 INDEX_KEYS = ("properties", "unique", "type", "primary_key")
@@ -515,28 +531,16 @@ def _collect_model_schema_state_for_field(field_name: str, model_field: Any) -> 
     field_meta = model_field.field_info
     py_type = _resolve_model_type(model_field.declared_type)
     iris_type = _map_python_type_to_iris(py_type, field_meta)
+    overrides = {
+        "type": iris_type,
+        "storable": (False if getattr(field_meta, "storable", True) is False else None),
+        "initial_expression": _field_initial_expression(field_meta),
+        "scale": _decimal_scale_for_field(py_type, iris_type),
+    }
     return _compact_property_state(
         {
-            "type": iris_type,
-            "required": getattr(field_meta, "required", False),
-            "readonly": getattr(field_meta, "readonly", False),
-            "collection": getattr(field_meta, "collection", None),
-            "sql_field_name": getattr(field_meta, "sql_field_name", None),
-            "identity": getattr(field_meta, "identity", False),
-            "relationship": getattr(field_meta, "relationship", None),
-            "on_delete": getattr(field_meta, "on_delete", None),
-            "inverse": getattr(field_meta, "inverse", None),
-            "transient": getattr(field_meta, "transient", False),
-            "storable": (False if getattr(field_meta, "storable", True) is False else None),
-            "multi_dimensional": getattr(field_meta, "multi_dimensional", False),
-            "sql_list_delimiter": getattr(field_meta, "sql_list_delimiter", None),
-            "sql_list_type": getattr(field_meta, "sql_list_type", None),
-            "sql_compute_code": getattr(field_meta, "sql_compute_code", None),
-            "sql_compute_on_change": getattr(field_meta, "sql_compute_on_change", None),
-            "sql_computed": getattr(field_meta, "sql_computed", False),
-            "initial_expression": _field_initial_expression(field_meta),
-            "max_length": getattr(field_meta, "max_length", None),
-            "scale": _decimal_scale_for_field(py_type, iris_type),
+            key: overrides[key] if key in overrides else getattr(field_meta, key, None)
+            for key, _name, _kind in _PROPERTY_SPEC
         }
     )
 
@@ -1498,28 +1502,6 @@ def _sync_related_models(
             _sync_schema_model(runtime, resolved, seen)
 
 
-_PROPERTY_FLAG_FIELDS = (
-    ("required", "Required"),
-    ("readonly", "ReadOnly"),
-    ("identity", "Identity"),
-    ("transient", "Transient"),
-    ("multi_dimensional", "MultiDimensional"),
-    ("sql_computed", "SqlComputed"),
-)
-_PROPERTY_VALUE_FIELDS = (
-    ("collection", "Collection"),
-    ("sql_field_name", "SqlFieldName"),
-    ("relationship", "Relationship"),
-    ("on_delete", "OnDelete"),
-    ("inverse", "Inverse"),
-    ("sql_list_delimiter", "SqlListDelimiter"),
-    ("sql_list_type", "SqlListType"),
-    ("sql_compute_code", "SqlComputeCode"),
-    ("sql_compute_on_change", "SqlComputeOnChange"),
-    ("initial_expression", "InitialExpression"),
-)
-
-
 def _apply_property_definition_state(
     runtime: Any,
     prop: Any,
@@ -1560,10 +1542,7 @@ def _apply_property_definition_state(
     if params is None:
         return
 
-    for state_key, parameter_name in (
-        ("max_length", "MAXLEN"),
-        ("scale", "SCALE"),
-    ):
+    for state_key, parameter_name in _PROPERTY_PARAM_FIELDS:
         value = property_state.get(state_key)
         if value is not None:
             runtime.invoke_method(params, "SetAt", str(value), parameter_name)

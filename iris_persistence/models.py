@@ -280,6 +280,9 @@ def _build_fast_load(model_cls: Any, model_fields: Dict[str, ModelField], is_ser
 
         getattr(iris_obj, 'Name', None)    # slow (getattr builtin)
 
+    The inlined expressions must match the semantics of codecs.load_scalar_str/
+    load_scalar_number/load_scalar_bool used by the generic path in query.py.
+
     Returns None for models with complex fields (collections, related models) or non-standard
     scalar types (datetime, bytes, …) so those fall back to the generic path.
     """
@@ -357,6 +360,9 @@ def _build_fast_save(
     Like _build_fast_load, this avoids the overhead of calling set_property() per field
     (a Python function call + isinstance(val, bool) check each time) by emitting direct
     `iris_obj.Field = val` assignments via code-gen.
+
+    The inlined expressions must match the semantics of codecs.save_scalar_null and the
+    generic scalar branch of query._populate_iris_object.
 
     Only generated for models where all writable fields are primitive scalars with no
     coercion or complex fields (collections, related models).  Falls back to the generic

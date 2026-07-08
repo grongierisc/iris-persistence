@@ -143,9 +143,9 @@ class IRISValueAdapterMixin:
         try:
             oref, db, use_core_methods = native_handles
             if use_core_methods:
-                oref.set(field_name, "")
+                oref.set(field_name, None)
             else:
-                db.set(oref, field_name, "")
+                db.set(oref, field_name, None)
             return True
         except Exception:
             return False

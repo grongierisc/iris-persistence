@@ -132,6 +132,46 @@ class _SaveRuntime:
         return val
 
 
+class _NativeOref:
+    def __init__(self):
+        self.set_calls = []
+
+    def get(self, field_name):
+        return object()
+
+    def invoke(self, method_name, *args):
+        return None
+
+    def set(self, field_name, value):
+        self.set_calls.append((field_name, value))
+
+
+class _NativeHandleObject:
+    def __init__(self):
+        self._oref = _NativeOref()
+        self._db = object()
+
+
+class _NativeNullRuntime(runtime_module.IRISRuntimeAdapter):
+    def __init__(self):
+        self.obj = _NativeHandleObject()
+
+    def new_object(self, class_name):
+        return self.obj
+
+    def save_object(self, obj):
+        return True
+
+    def is_ok(self, status):
+        return bool(status)
+
+    def format_status(self, status):
+        return str(status)
+
+    def get_object_id(self, obj):
+        return "1"
+
+
 def test_resolve_sql_table_name_materializes_remote_rows_before_cursor_close():
     previous_runtime = runtime_module._active_runtime
     configure_default_runtime(_FakeRuntime())
@@ -403,6 +443,25 @@ def test_save_none_clears_nullable_complex_field():
         assert adapter.db[NullableComplexFixture._classname][model.pk]["Payload"] is None
     finally:
         runtime_module._active_runtime = previous_runtime
+
+
+def test_save_none_clears_nullable_related_model_with_native_null():
+    class NativeNullChild(Model, persistent=True):
+        Name: str
+
+    class NativeNullParent(Model, persistent=True):
+        Child: NativeNullChild | None = None
+
+    previous_runtime = runtime_module._active_runtime
+    runtime = _NativeNullRuntime()
+    configure_default_runtime(runtime)
+
+    try:
+        save_model(NativeNullParent(Child=None))
+    finally:
+        runtime_module._active_runtime = previous_runtime
+
+    assert runtime.obj._oref.set_calls == [("Child", None)]
 
 
 def test_save_none_clears_nullable_date_with_empty_scalar_null():

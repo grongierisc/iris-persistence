@@ -275,6 +275,10 @@ def _nullable_reference_has_no_initial_value(model_field: Any) -> bool:
     )
 
 
+def _is_model_reference_clear_value(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and value == "")
+
+
 def _set_native_reference_null(runtime: Any, iris_obj: Any, field_name: str) -> tuple[bool, bool]:
     native_handles = getattr(runtime, "_native_handles", None)
     if not callable(native_handles):
@@ -560,26 +564,30 @@ def _populate_iris_object(
                 if field_name not in inst_dict:
                     continue
                 val = inst_dict.get(field_name)
+                if (
+                    model_field._is_model_field
+                    and model_field.nullable
+                    and _is_model_reference_clear_value(val)
+                ):
+                    if (
+                        not is_update
+                        and not had_existing_iris_obj
+                        and _nullable_reference_has_no_initial_value(model_field)
+                    ):
+                        continue
+                    if _clear_nullable_model_reference(
+                        runtime,
+                        iris_obj,
+                        field_name,
+                        model_field,
+                    ):
+                        continue
+                    raise RuntimeError(
+                        f"Could not clear nullable object reference {field_name!r} "
+                        f"on {cls.__name__}"
+                    )
                 if val is None:
                     if model_field.nullable:
-                        if model_field._is_model_field:
-                            if (
-                                not is_update
-                                and not had_existing_iris_obj
-                                and _nullable_reference_has_no_initial_value(model_field)
-                            ):
-                                continue
-                            if _clear_nullable_model_reference(
-                                runtime,
-                                iris_obj,
-                                field_name,
-                                model_field,
-                            ):
-                                continue
-                            raise RuntimeError(
-                                f"Could not clear nullable object reference {field_name!r} "
-                                f"on {cls.__name__}"
-                            )
                         runtime.inject_iris_value(
                             iris_obj,
                             field_name,

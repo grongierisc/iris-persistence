@@ -487,6 +487,27 @@ def test_save_none_leaves_new_nullable_related_model_unset():
     assert runtime.obj._oref.set_calls == []
 
 
+def test_save_empty_string_leaves_new_nullable_related_model_unset():
+    class NativeNullChild(Model, persistent=True):
+        Name: str
+
+    class NativeNullParent(Model, persistent=True):
+        Child: NativeNullChild | None = None
+
+    previous_runtime = runtime_module._active_runtime
+    runtime = _NativeNullRuntime()
+    configure_default_runtime(runtime)
+
+    try:
+        model = NativeNullParent()
+        model.Child = ""
+        save_model(model)
+    finally:
+        runtime_module._active_runtime = previous_runtime
+
+    assert runtime.obj._oref.set_calls == []
+
+
 def test_save_none_clears_existing_nullable_related_model_with_native_null():
     class ExistingNativeNullChild(Model, persistent=True):
         Name: str
@@ -500,6 +521,28 @@ def test_save_none_clears_existing_nullable_related_model_with_native_null():
 
     try:
         model = ExistingNativeNullParent(Child=None)
+        model._pk = "7"
+        save_model(model)
+    finally:
+        runtime_module._active_runtime = previous_runtime
+
+    assert runtime.obj._oref.set_calls == [("Child", None)]
+
+
+def test_save_empty_string_clears_existing_nullable_related_model_with_native_null():
+    class ExistingNativeNullChild(Model, persistent=True):
+        Name: str
+
+    class ExistingNativeNullParent(Model, persistent=True):
+        Child: ExistingNativeNullChild | None = None
+
+    previous_runtime = runtime_module._active_runtime
+    runtime = _NativeNullRuntime()
+    configure_default_runtime(runtime)
+
+    try:
+        model = ExistingNativeNullParent()
+        model.Child = ""
         model._pk = "7"
         save_model(model)
     finally:

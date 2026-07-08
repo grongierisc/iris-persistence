@@ -450,6 +450,13 @@ def _validate_field_value(model_field: ModelField, value: Any) -> Any:
         if model_field.nullable or model_field.default is None:
             return value
         raise ValueError(f"Field '{model_field.name}' does not allow null values")
+    if (
+        isinstance(value, str)
+        and value == ""
+        and model_field.nullable
+        and model_field._is_model_field
+    ):
+        return None
 
     max_length = model_field.field_info.max_length
     if max_length is not None and hasattr(value, "__len__") and len(value) > max_length:

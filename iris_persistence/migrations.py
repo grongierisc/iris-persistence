@@ -40,6 +40,21 @@ class BackupRestoreError(MigrationError):
     pass
 
 
+def _payload_from_fields(
+    obj: Any,
+    fields: tuple[str, ...],
+    *,
+    list_fields: tuple[str, ...] = (),
+    operation_fields: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    data = {name: getattr(obj, name) for name in fields}
+    for name in list_fields:
+        data[name] = list(data[name])
+    for name in operation_fields:
+        data[name] = [operation.to_dict() for operation in data[name]]
+    return data
+
+
 @dataclass(frozen=True)
 class MigrationOperation:
     op_type: str
@@ -74,15 +89,10 @@ class MigrationOperation:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "op_type": self.op_type,
-            "classname": self.classname,
-            "path": self.path,
-            "before": self.before,
-            "after": self.after,
-            "safety": self.safety,
-            "payload": self.payload,
-        }
+        return _payload_from_fields(
+            self,
+            ("op_type", "classname", "path", "before", "after", "safety", "payload"),
+        )
 
 
 @dataclass(frozen=True)
@@ -93,12 +103,11 @@ class DriftReport:
     expected_schema_fingerprint: str
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "has_drift": self.has_drift,
-            "diffs": list(self.diffs),
-            "live_schema_fingerprint": self.live_schema_fingerprint,
-            "expected_schema_fingerprint": self.expected_schema_fingerprint,
-        }
+        return _payload_from_fields(
+            self,
+            ("has_drift", "diffs", "live_schema_fingerprint", "expected_schema_fingerprint"),
+            list_fields=("diffs",),
+        )
 
 
 @dataclass(frozen=True)
@@ -114,13 +123,17 @@ class ApplyResult:
         return self.status == "applied"
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "status": self.status,
-            "target_revision": self.target_revision,
-            "applied_operations": [operation.to_dict() for operation in self.applied_operations],
-            "skipped_operations": [operation.to_dict() for operation in self.skipped_operations],
-            "backup_dir": self.backup_dir,
-        }
+        return _payload_from_fields(
+            self,
+            (
+                "status",
+                "target_revision",
+                "applied_operations",
+                "skipped_operations",
+                "backup_dir",
+            ),
+            operation_fields=("applied_operations", "skipped_operations"),
+        )
 
 
 @dataclass(frozen=True)
@@ -131,12 +144,11 @@ class VerifyResult:
     diffs: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "converged": self.converged,
-            "live_schema_fingerprint": self.live_schema_fingerprint,
-            "target_schema_fingerprint": self.target_schema_fingerprint,
-            "diffs": list(self.diffs),
-        }
+        return _payload_from_fields(
+            self,
+            ("converged", "live_schema_fingerprint", "target_schema_fingerprint", "diffs"),
+            list_fields=("diffs",),
+        )
 
 
 @dataclass(frozen=True)
@@ -147,12 +159,11 @@ class RollbackResult:
     deleted_classes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "status": self.status,
-            "backup_dir": self.backup_dir,
-            "restored_classes": list(self.restored_classes),
-            "deleted_classes": list(self.deleted_classes),
-        }
+        return _payload_from_fields(
+            self,
+            ("status", "backup_dir", "restored_classes", "deleted_classes"),
+            list_fields=("restored_classes", "deleted_classes"),
+        )
 
 
 @dataclass(frozen=True)

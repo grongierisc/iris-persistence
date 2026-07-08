@@ -86,6 +86,33 @@ def _optional_str(value: Any) -> str | None:
     return None if value is None or value == "" else str(value)
 
 
+def _row_model_kwargs(
+    row: tuple[Any, ...],
+    attrs: tuple[str, ...],
+    *,
+    bool_attrs: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    return {
+        attr: coerce_bool(row[index + 1])
+        if attr in bool_attrs
+        else _optional_str(row[index + 1])
+        for index, attr in enumerate(attrs)
+    }
+
+
+def _row_model(
+    model_cls: Any,
+    row: tuple[Any, ...],
+    attrs: tuple[str, ...],
+    *,
+    bool_attrs: tuple[str, ...] = (),
+) -> Any:
+    return model_cls(
+        name=str(row[0]),
+        **_row_model_kwargs(row, attrs, bool_attrs=bool_attrs),
+    )
+
+
 def _has_storage_property_metadata(
     *,
     average_field_size: str | None,
@@ -311,6 +338,23 @@ class _CompiledDictionaryReader:
     def _fetchone(self, sql: str, params: tuple[Any, ...]) -> tuple[Any, ...] | None:
         self._cursor.execute(sql, params)
         return self._cursor.fetchone()
+
+    def _fetch_named_models(
+        self,
+        parent: str,
+        table_name: str,
+        columns: str,
+        model_cls: Any,
+        attrs: tuple[str, ...],
+    ) -> tuple[Any, ...]:
+        rows = self._fetchall(
+            f"SELECT Name, {columns} FROM %Dictionary.{table_name} WHERE parent = ?",
+            (parent,),
+        )
+        return tuple(
+            _row_model(model_cls, row, attrs)
+            for row in rows
+        )
 
     def _normalize_parameters(
         self,
@@ -599,73 +643,64 @@ class _CompiledDictionaryReader:
         *,
         include_hidden: bool = False,
     ) -> _CompiledStorage | None:
+        storage_fields = (
+            (
+                ("DataLocation", "data_location"),
+                ("DefaultData", "default_data"),
+                ("ExtentLocation", "extent_location"),
+                ("ExtentSize", "extent_size"),
+                ("CounterLocation", "counter_location"),
+                ("VersionLocation", "version_location"),
+                ("IdLocation", "id_location"),
+                ("IdExpression", "id_expression"),
+                ("IdFunction", "id_function"),
+                ("IndexLocation", "index_location"),
+                ("State", "state"),
+                ("StreamLocation", "stream_location"),
+                ("SqlChildSub", "sql_child_sub"),
+                ("SqlIdExpression", "sql_id_expression"),
+                ("SqlRowIdName", "sql_row_id_name"),
+                ("SqlRowIdProperty", "sql_row_id_property"),
+                ("SqlTableNumber", "sql_table_number"),
+                ("SequenceNumber", "sequence_number"),
+                ("Type", "storage_type"),
+            )
+            if include_hidden
+            else (
+                ("DataLocation", "data_location"),
+                ("DefaultData", "default_data"),
+                ("ExtentSize", "extent_size"),
+                ("IdLocation", "id_location"),
+                ("IndexLocation", "index_location"),
+                ("State", "state"),
+                ("StreamLocation", "stream_location"),
+                ("Type", "storage_type"),
+            )
+        )
         if include_hidden:
-            row = self._fetchone(
-                (
-                    "SELECT Name, DataLocation, DefaultData, ExtentLocation, ExtentSize, "
-                    "CounterLocation, VersionLocation, IdLocation, IdExpression, IdFunction, "
-                    "IndexLocation, State, StreamLocation, SqlChildSub, SqlIdExpression, "
-                    "SqlRowIdName, SqlRowIdProperty, SqlTableNumber, SequenceNumber, Type "
-                    "FROM %Dictionary.CompiledStorage WHERE parent = ?"
-                ),
-                (classname,),
-            )
+            attrs = tuple(attr for _, attr in storage_fields)
         else:
-            row = self._fetchone(
-                (
-                    "SELECT Name, DataLocation, DefaultData, ExtentSize, IdLocation, "
-                    "IndexLocation, State, StreamLocation, Type "
-                    "FROM %Dictionary.CompiledStorage WHERE parent = ?"
-                ),
-                (classname,),
+            attrs = (
+                "data_location",
+                "default_data",
+                "extent_size",
+                "id_location",
+                "index_location",
+                "state",
+                "stream_location",
+                "storage_type",
             )
+        columns = ", ".join(column for column, _ in storage_fields)
+        row = self._fetchone(
+            f"SELECT Name, {columns} FROM %Dictionary.CompiledStorage WHERE parent = ?",
+            (classname,),
+        )
         if row is None:
             return None
-        if not include_hidden:
-            return _CompiledStorage(
-                name=str(row[0]),
-                data_location=_optional_str(row[1]),
-                default_data=_optional_str(row[2]),
-                extent_location=None,
-                extent_size=_optional_str(row[3]),
-                counter_location=None,
-                version_location=None,
-                id_location=_optional_str(row[4]),
-                id_expression=None,
-                id_function=None,
-                index_location=_optional_str(row[5]),
-                state=_optional_str(row[6]),
-                stream_location=_optional_str(row[7]),
-                sql_child_sub=None,
-                sql_id_expression=None,
-                sql_row_id_name=None,
-                sql_row_id_property=None,
-                sql_table_number=None,
-                sequence_number=None,
-                storage_type=_optional_str(row[8]),
-            )
-        return _CompiledStorage(
-            name=str(row[0]),
-            data_location=_optional_str(row[1]),
-            default_data=_optional_str(row[2]),
-            extent_location=_optional_str(row[3]),
-            extent_size=_optional_str(row[4]),
-            counter_location=_optional_str(row[5]),
-            version_location=_optional_str(row[6]),
-            id_location=_optional_str(row[7]),
-            id_expression=_optional_str(row[8]),
-            id_function=_optional_str(row[9]),
-            index_location=_optional_str(row[10]),
-            state=_optional_str(row[11]),
-            stream_location=_optional_str(row[12]),
-            sql_child_sub=_optional_str(row[13]),
-            sql_id_expression=_optional_str(row[14]),
-            sql_row_id_name=_optional_str(row[15]),
-            sql_row_id_property=_optional_str(row[16]),
-            sql_table_number=_optional_str(row[17]),
-            sequence_number=_optional_str(row[18]),
-            storage_type=_optional_str(row[19]),
-        )
+        values = {attr: None for attr in _CompiledStorage.__annotations__ if attr != "name"}
+        values["name"] = str(row[0])
+        values.update(_row_model_kwargs(row, attrs))
+        return _CompiledStorage(**values)
 
     def list_storage_data(self, storage_parent: str) -> list[_CompiledStorageData]:
         rows = self._fetchall(
@@ -696,18 +731,18 @@ class _CompiledDictionaryReader:
             )
         return sorted(data_rows, key=lambda item: item.name)
 
-    def list_storage_properties(
+    def _list_storage_property_rows(
         self,
+        table_name: str,
         storage_parent: str,
-        *,
-        include_hidden: bool = False,
+        include_hidden: bool,
     ) -> list[_CompiledStorageProperty]:
         if include_hidden:
             rows = self._fetchall(
                 (
                     "SELECT Name, AverageFieldSize, Selectivity, OutlierSelectivity, Histogram, "
                     "ChildBlockCount, ChildExtentSize, BiasQueriesAsOutlier, StreamLocation "
-                    "FROM %Dictionary.CompiledStorageProperty WHERE parent = ?"
+                    f"FROM {table_name} WHERE parent = ?"
                 ),
                 (storage_parent,),
             )
@@ -715,31 +750,24 @@ class _CompiledDictionaryReader:
             rows = self._fetchall(
                 (
                     "SELECT Name, AverageFieldSize, Selectivity, OutlierSelectivity "
-                    "FROM %Dictionary.CompiledStorageProperty WHERE parent = ?"
+                    f"FROM {table_name} WHERE parent = ?"
                 ),
                 (storage_parent,),
             )
         properties = []
         for row in rows:
-            if include_hidden:
-                (
-                    name,
-                    avg,
-                    selectivity,
-                    outlier_selectivity,
-                    histogram,
-                    child_block_count,
-                    child_extent_size,
-                    bias_queries_as_outlier,
-                    stream_location,
-                ) = row
-            else:
-                name, avg, selectivity, outlier_selectivity = row
-                histogram = None
-                child_block_count = None
-                child_extent_size = None
-                bias_queries_as_outlier = None
-                stream_location = None
+            values = row if include_hidden else (*row, None, None, None, None, None)
+            (
+                name,
+                avg,
+                selectivity,
+                outlier_selectivity,
+                histogram,
+                child_block_count,
+                child_extent_size,
+                bias_queries_as_outlier,
+                stream_location,
+            ) = values
             average_field_size = _optional_str(avg)
             selectivity_value = _optional_str(selectivity)
             outlier_selectivity_value = _optional_str(outlier_selectivity)
@@ -778,87 +806,29 @@ class _CompiledDictionaryReader:
             )
         return sorted(properties, key=lambda item: item.name)
 
+    def list_storage_properties(
+        self,
+        storage_parent: str,
+        *,
+        include_hidden: bool = False,
+    ) -> list[_CompiledStorageProperty]:
+        return self._list_storage_property_rows(
+            "%Dictionary.CompiledStorageProperty",
+            storage_parent,
+            include_hidden,
+        )
+
     def list_storage_property_definitions(
         self,
         storage_parent: str,
         *,
         include_hidden: bool = False,
     ) -> list[_CompiledStorageProperty]:
-        if include_hidden:
-            rows = self._fetchall(
-                (
-                    "SELECT Name, AverageFieldSize, Selectivity, OutlierSelectivity, Histogram, "
-                    "ChildBlockCount, ChildExtentSize, BiasQueriesAsOutlier, StreamLocation "
-                    "FROM %Dictionary.StoragePropertyDefinition WHERE parent = ?"
-                ),
-                (storage_parent,),
-            )
-        else:
-            rows = self._fetchall(
-                (
-                    "SELECT Name, AverageFieldSize, Selectivity, OutlierSelectivity "
-                    "FROM %Dictionary.StoragePropertyDefinition WHERE parent = ?"
-                ),
-                (storage_parent,),
-            )
-        properties = []
-        for row in rows:
-            if include_hidden:
-                (
-                    name,
-                    avg,
-                    selectivity,
-                    outlier_selectivity,
-                    histogram,
-                    child_block_count,
-                    child_extent_size,
-                    bias_queries_as_outlier,
-                    stream_location,
-                ) = row
-            else:
-                name, avg, selectivity, outlier_selectivity = row
-                histogram = None
-                child_block_count = None
-                child_extent_size = None
-                bias_queries_as_outlier = None
-                stream_location = None
-            average_field_size = _optional_str(avg)
-            selectivity_value = _optional_str(selectivity)
-            outlier_selectivity_value = _optional_str(outlier_selectivity)
-            histogram_value = _optional_str(histogram)
-            child_block_count_value = _optional_str(child_block_count)
-            child_extent_size_value = _optional_str(child_extent_size)
-            bias_queries_as_outlier_value = (
-                coerce_bool(bias_queries_as_outlier)
-                if bias_queries_as_outlier is not None and bias_queries_as_outlier != ""
-                else None
-            )
-            stream_location_value = _optional_str(stream_location)
-            if str(name).startswith("%") or not _has_storage_property_metadata(
-                average_field_size=average_field_size,
-                selectivity=selectivity_value,
-                outlier_selectivity=outlier_selectivity_value,
-                histogram=histogram_value,
-                child_block_count=child_block_count_value,
-                child_extent_size=child_extent_size_value,
-                bias_queries_as_outlier=bias_queries_as_outlier_value,
-                stream_location=stream_location_value,
-            ):
-                continue
-            properties.append(
-                _CompiledStorageProperty(
-                    name=str(name),
-                    average_field_size=average_field_size,
-                    selectivity=selectivity_value,
-                    outlier_selectivity=outlier_selectivity_value,
-                    histogram=histogram_value,
-                    child_block_count=child_block_count_value,
-                    child_extent_size=child_extent_size_value,
-                    bias_queries_as_outlier=bias_queries_as_outlier_value,
-                    stream_location=stream_location_value,
-                )
-            )
-        return sorted(properties, key=lambda item: item.name)
+        return self._list_storage_property_rows(
+            "%Dictionary.StoragePropertyDefinition",
+            storage_parent,
+            include_hidden,
+        )
 
     def list_storage_indices(self, storage_parent: str) -> list[_CompiledStorageIndex]:
         rows = self._fetchall(
@@ -870,12 +840,8 @@ class _CompiledDictionaryReader:
         )
         return sorted(
             (
-                _CompiledStorageIndex(
-                    name=str(name),
-                    location=_optional_str(location),
-                    small_chunk_size=_optional_str(small_chunk_size),
-                )
-                for name, location, small_chunk_size in rows
+                _row_model(_CompiledStorageIndex, row, ("location", "small_chunk_size"))
+                for row in rows
             ),
             key=lambda item: item.name,
         )
@@ -889,52 +855,47 @@ class _CompiledDictionaryReader:
             ),
             (storage_parent,),
         )
+        map_attrs = (
+            "block_count",
+            "condition",
+            "condition_fields",
+            "conditional_with_host_vars",
+            "global_name",
+            "population_pct",
+            "population_type",
+            "row_reference",
+            "structure",
+            "map_type",
+        )
+        sub_attrs = (
+            "access_type",
+            "data_access",
+            "delimiter",
+            "expression",
+            "loop_init_value",
+            "next_code",
+            "null_marker",
+            "start_value",
+            "stop_expression",
+            "stop_value",
+        )
         sql_maps = []
-        for (
-            name,
-            block_count,
-            condition,
-            condition_fields,
-            conditional_with_host_vars,
-            global_name,
-            population_pct,
-            population_type,
-            row_reference,
-            structure,
-            map_type,
-        ) in rows:
+        for row in rows:
+            name = row[0]
             data_parent = f"{storage_parent}||{name}"
-            data_rows = self._fetchall(
-                (
-                    "SELECT Name, Node, Piece, Delimiter, RetrievalCode "
-                    "FROM %Dictionary.CompiledStorageSQLMapData WHERE parent = ?"
-                ),
-                (data_parent,),
+            data = self._fetch_named_models(
+                data_parent,
+                "CompiledStorageSQLMapData",
+                "Node, Piece, Delimiter, RetrievalCode",
+                _CompiledStorageSQLMapData,
+                ("node", "piece", "delimiter", "retrieval_code"),
             )
-            data = tuple(
-                _CompiledStorageSQLMapData(
-                    name=str(data_name),
-                    node=_optional_str(node),
-                    piece=_optional_str(piece),
-                    delimiter=_optional_str(delimiter),
-                    retrieval_code=_optional_str(retrieval_code),
-                )
-                for data_name, node, piece, delimiter, retrieval_code in data_rows
-            )
-            row_id_spec_rows = self._fetchall(
-                (
-                    "SELECT Name, Field, Expression "
-                    "FROM %Dictionary.CompiledStorageSQLMapRowIdSpec WHERE parent = ?"
-                ),
-                (data_parent,),
-            )
-            row_id_specs = tuple(
-                _CompiledStorageSQLMapRowIdSpec(
-                    name=str(spec_name),
-                    field=_optional_str(field),
-                    expression=_optional_str(expression),
-                )
-                for spec_name, field, expression in row_id_spec_rows
+            row_id_specs = self._fetch_named_models(
+                data_parent,
+                "CompiledStorageSQLMapRowIdSpec",
+                "Field, Expression",
+                _CompiledStorageSQLMapRowIdSpec,
+                ("field", "expression"),
             )
             sub_rows = self._fetchall(
                 (
@@ -945,63 +906,27 @@ class _CompiledDictionaryReader:
                 (data_parent,),
             )
             subscripts = []
-            for (
-                sub_name,
-                access_type,
-                data_access,
-                delimiter,
-                expression,
-                loop_init_value,
-                next_code,
-                null_marker,
-                start_value,
-                stop_expression,
-                stop_value,
-            ) in sub_rows:
+            for sub_row in sub_rows:
+                sub_name = sub_row[0]
                 sub_parent = f"{data_parent}||{sub_name}"
-                access_var_rows = self._fetchall(
-                    (
-                        "SELECT Name, Variable, Code "
-                        "FROM %Dictionary.CompiledStorageSQLMapSubAccessvar WHERE parent = ?"
-                    ),
-                    (sub_parent,),
+                access_vars = self._fetch_named_models(
+                    sub_parent,
+                    "CompiledStorageSQLMapSubAccessvar",
+                    "Variable, Code",
+                    _CompiledStorageSQLMapSubAccessVar,
+                    ("variable", "code"),
                 )
-                access_vars = tuple(
-                    _CompiledStorageSQLMapSubAccessVar(
-                        name=str(access_name),
-                        variable=_optional_str(variable),
-                        code=_optional_str(code),
-                    )
-                    for access_name, variable, code in access_var_rows
-                )
-                invalid_condition_rows = self._fetchall(
-                    (
-                        "SELECT Name, Expression "
-                        "FROM %Dictionary.CompiledStorageSQLMapSubInvalidcondition "
-                        "WHERE parent = ?"
-                    ),
-                    (sub_parent,),
-                )
-                invalid_conditions = tuple(
-                    _CompiledStorageSQLMapSubInvalidCondition(
-                        name=str(condition_name),
-                        expression=_optional_str(invalid_expression),
-                    )
-                    for condition_name, invalid_expression in invalid_condition_rows
+                invalid_conditions = self._fetch_named_models(
+                    sub_parent,
+                    "CompiledStorageSQLMapSubInvalidcondition",
+                    "Expression",
+                    _CompiledStorageSQLMapSubInvalidCondition,
+                    ("expression",),
                 )
                 subscripts.append(
                     _CompiledStorageSQLMapSub(
                         name=str(sub_name),
-                        access_type=_optional_str(access_type),
-                        data_access=_optional_str(data_access),
-                        delimiter=_optional_str(delimiter),
-                        expression=_optional_str(expression),
-                        loop_init_value=_optional_str(loop_init_value),
-                        next_code=_optional_str(next_code),
-                        null_marker=_optional_str(null_marker),
-                        start_value=_optional_str(start_value),
-                        stop_expression=_optional_str(stop_expression),
-                        stop_value=_optional_str(stop_value),
+                        **_row_model_kwargs(sub_row, sub_attrs),
                         access_vars=access_vars,
                         invalid_conditions=invalid_conditions,
                     )
@@ -1009,16 +934,11 @@ class _CompiledDictionaryReader:
             sql_maps.append(
                 _CompiledStorageSQLMap(
                     name=str(name),
-                    block_count=_optional_str(block_count),
-                    condition=_optional_str(condition),
-                    condition_fields=_optional_str(condition_fields),
-                    conditional_with_host_vars=coerce_bool(conditional_with_host_vars),
-                    global_name=_optional_str(global_name),
-                    population_pct=_optional_str(population_pct),
-                    population_type=_optional_str(population_type),
-                    row_reference=_optional_str(row_reference),
-                    structure=_optional_str(structure),
-                    map_type=_optional_str(map_type),
+                    **_row_model_kwargs(
+                        row,
+                        map_attrs,
+                        bool_attrs=("conditional_with_host_vars",),
+                    ),
                     data=data,
                     row_id_specs=row_id_specs,
                     subscripts=tuple(subscripts),
@@ -1149,6 +1069,27 @@ def _append_literal_arg(args: list[str], name: str, value: Any) -> None:
         args.append(f"{name}={value!r}")
 
 
+def _render_call(
+    class_name: str,
+    item: Any,
+    fields: tuple[str, ...],
+    *,
+    aliases: dict[str, str] | None = None,
+    true_flags: tuple[str, ...] = (),
+) -> str:
+    args = [f"name={item.name!r}"]
+    aliases = aliases or {}
+    for field_name in fields:
+        attr_name = aliases.get(field_name, field_name)
+        value = getattr(item, attr_name)
+        if field_name in true_flags:
+            if value:
+                args.append(f"{field_name}=True")
+        else:
+            _append_literal_arg(args, field_name, value)
+    return f"{class_name}({', '.join(args)})"
+
+
 def _double_quoted_literal(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
@@ -1174,51 +1115,45 @@ def _render_property_type(
 
 
 def _render_storage_sql_map_data(item: _CompiledStorageSQLMapData) -> str:
-    args = [f"name={item.name!r}"]
-    _append_literal_arg(args, "node", item.node)
-    _append_literal_arg(args, "piece", item.piece)
-    _append_literal_arg(args, "delimiter", item.delimiter)
-    _append_literal_arg(args, "retrieval_code", item.retrieval_code)
-    return f"StorageSQLMapData({', '.join(args)})"
+    return _render_call(
+        "StorageSQLMapData",
+        item,
+        ("node", "piece", "delimiter", "retrieval_code"),
+    )
 
 
 def _render_storage_sql_map_row_id_spec(item: _CompiledStorageSQLMapRowIdSpec) -> str:
-    args = [f"name={item.name!r}"]
-    _append_literal_arg(args, "field", item.field)
-    _append_literal_arg(args, "expression", item.expression)
-    return f"StorageSQLMapRowIdSpec({', '.join(args)})"
+    return _render_call("StorageSQLMapRowIdSpec", item, ("field", "expression"))
 
 
 def _render_storage_sql_map_sub_access_var(item: _CompiledStorageSQLMapSubAccessVar) -> str:
-    args = [f"name={item.name!r}"]
-    _append_literal_arg(args, "variable", item.variable)
-    _append_literal_arg(args, "code", item.code)
-    return f"StorageSQLMapSubAccessVar({', '.join(args)})"
+    return _render_call("StorageSQLMapSubAccessVar", item, ("variable", "code"))
 
 
 def _render_storage_sql_map_sub_invalid_condition(
     item: _CompiledStorageSQLMapSubInvalidCondition,
 ) -> str:
-    args = [f"name={item.name!r}"]
-    _append_literal_arg(args, "expression", item.expression)
-    return f"StorageSQLMapSubInvalidCondition({', '.join(args)})"
+    return _render_call("StorageSQLMapSubInvalidCondition", item, ("expression",))
 
 
 def _render_storage_sql_map_sub(item: _CompiledStorageSQLMapSub) -> list[str]:
-    args = [f"name={item.name!r}"]
-    _append_literal_arg(args, "access_type", item.access_type)
-    _append_literal_arg(args, "data_access", item.data_access)
-    _append_literal_arg(args, "delimiter", item.delimiter)
-    _append_literal_arg(args, "expression", item.expression)
-    _append_literal_arg(args, "loop_init_value", item.loop_init_value)
-    _append_literal_arg(args, "next_code", item.next_code)
-    _append_literal_arg(args, "null_marker", item.null_marker)
-    _append_literal_arg(args, "start_value", item.start_value)
-    _append_literal_arg(args, "stop_expression", item.stop_expression)
-    _append_literal_arg(args, "stop_value", item.stop_value)
-
     has_nested = bool(item.access_vars or item.invalid_conditions)
-    first_line = f"StorageSQLMapSub({', '.join(args)}"
+    first_line = _render_call(
+        "StorageSQLMapSub",
+        item,
+        (
+            "access_type",
+            "data_access",
+            "delimiter",
+            "expression",
+            "loop_init_value",
+            "next_code",
+            "null_marker",
+            "start_value",
+            "stop_expression",
+            "stop_value",
+        ),
+    )[:-1]
     if has_nested:
         first_line += ","
     lines = [first_line]
@@ -1242,21 +1177,25 @@ def _render_storage_sql_map_sub(item: _CompiledStorageSQLMapSub) -> list[str]:
 
 
 def _render_storage_sql_map(item: _CompiledStorageSQLMap) -> list[str]:
-    args = [f"name={item.name!r}"]
-    _append_literal_arg(args, "block_count", item.block_count)
-    _append_literal_arg(args, "condition", item.condition)
-    _append_literal_arg(args, "condition_fields", item.condition_fields)
-    if item.conditional_with_host_vars:
-        args.append("conditional_with_host_vars=True")
-    _append_literal_arg(args, "global_name", item.global_name)
-    _append_literal_arg(args, "population_pct", item.population_pct)
-    _append_literal_arg(args, "population_type", item.population_type)
-    _append_literal_arg(args, "row_reference", item.row_reference)
-    _append_literal_arg(args, "structure", item.structure)
-    _append_literal_arg(args, "type", item.map_type)
-
     has_nested = bool(item.data or item.row_id_specs or item.subscripts)
-    first_line = f"StorageSQLMap({', '.join(args)}"
+    first_line = _render_call(
+        "StorageSQLMap",
+        item,
+        (
+            "block_count",
+            "condition",
+            "condition_fields",
+            "conditional_with_host_vars",
+            "global_name",
+            "population_pct",
+            "population_type",
+            "row_reference",
+            "structure",
+            "type",
+        ),
+        aliases={"type": "map_type"},
+        true_flags=("conditional_with_host_vars",),
+    )[:-1]
     if has_nested:
         first_line += ","
     lines = [first_line]

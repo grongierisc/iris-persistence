@@ -61,6 +61,20 @@ def _is_empty_class_metadata(metadata: ClassMetadata | None) -> bool:
     )
 
 
+def _codegen_safe_names(names: Any) -> bool:
+    return all(name.isidentifier() and not keyword.iskeyword(name) for name in names)
+
+
+def _compile_function_source(
+    params: list[str],
+    body: list[str],
+    namespace: dict[str, Any],
+) -> Any:
+    source = "def __init__(" + ", ".join(params) + "):\n" + "\n".join(body)
+    exec(source, namespace)
+    return namespace["__init__"]
+
+
 def _parse_class_metadata(meta_inner: Any) -> ClassMetadata | None:
     if meta_inner is None:
         return None
@@ -193,7 +207,7 @@ def _build_signature(model_fields: Dict[str, ModelField]) -> Signature:
 
 
 def _build_generated_init(model_fields: Dict[str, ModelField]) -> Any | None:
-    if any(not name.isidentifier() or keyword.iskeyword(name) for name in model_fields):
+    if not _codegen_safe_names(model_fields):
         return None
 
     params = ["self"]
@@ -208,10 +222,7 @@ def _build_generated_init(model_fields: Dict[str, ModelField]) -> Any | None:
         body.append(f"    provided_values[{model_field.name!r}] = {model_field.name}")
     body.append("    self._initialize_model_state(provided_values)")
 
-    source = "def __init__(" + ", ".join(params) + "):\n" + "\n".join(body)
-    namespace = {"UNSET": UNSET}
-    exec(source, namespace)
-    return namespace["__init__"]
+    return _compile_function_source(params, body, {"UNSET": UNSET})
 
 
 def _build_fast_init(model_fields: Dict[str, ModelField]) -> Any | None:
@@ -221,7 +232,7 @@ def _build_fast_init(model_fields: Dict[str, ModelField]) -> Any | None:
     and assigns each field directly into self.__dict__, eliminating the field
     loop, the intermediate provided_values dict, and all setattr dispatch.
     """
-    if any(not name.isidentifier() or keyword.iskeyword(name) for name in model_fields):
+    if not _codegen_safe_names(model_fields):
         return None
 
     params = ["self"]
@@ -254,9 +265,7 @@ def _build_fast_init(model_fields: Dict[str, ModelField]) -> Any | None:
             params.append(f"{name}=UNSET")
             body.append(f"    if {name} is not UNSET: d[{name!r}] = {name}")
 
-    source = "def __init__(" + ", ".join(params) + "):\n" + "\n".join(body)
-    exec(source, namespace)
-    return namespace["__init__"]
+    return _compile_function_source(params, body, namespace)
 
 
 def _build_fast_load(model_cls: Any, model_fields: Dict[str, ModelField], is_serial: bool) -> Any:
@@ -275,7 +284,7 @@ def _build_fast_load(model_cls: Any, model_fields: Dict[str, ModelField], is_ser
     scalar types (datetime, bytes, …) so those fall back to the generic path.
     """
     # Field names must be valid Python identifiers (no special chars like %)
-    if any(not name.isidentifier() or keyword.iskeyword(name) for name in model_fields):
+    if not _codegen_safe_names(model_fields):
         return None
 
     lines = [
@@ -356,7 +365,7 @@ def _build_fast_save(
     if not scalar_fast_fields:
         return None
     # Field names must be valid Python identifiers
-    if any(not name.isidentifier() or keyword.iskeyword(name) for name in scalar_fast_fields):
+    if not _codegen_safe_names(scalar_fast_fields):
         return None
 
     lines = ["def _fast_save(iris_obj, inst_dict):"]
@@ -754,36 +763,42 @@ class ModelMeta(type):
         if hasattr(cls, "_declared_model_options__"):
             delattr(cls, "_declared_model_options__")
         superclasses = _resolve_model_superclasses(meta_inner, declared_model_options)
-        setattr(cls, "_classname", getattr(meta_inner, "classname", name))
-        setattr(cls, "_sync_mode", getattr(meta_inner, "mode", DEFAULT_SYNC_MODE))
-        setattr(cls, "_auto_sync", getattr(meta_inner, "auto_sync", False))
         validate_on_init = getattr(meta_inner, "validate_on_init", True)
-        setattr(cls, "_validate_on_init", validate_on_init)
+        for attr_name, value in {
+            "_classname": getattr(meta_inner, "classname", name),
+            "_sync_mode": getattr(meta_inner, "mode", DEFAULT_SYNC_MODE),
+            "_auto_sync": getattr(meta_inner, "auto_sync", False),
+            "_validate_on_init": validate_on_init,
+            "_superclasses": _normalize_superclasses(superclasses),
+            "_class_metadata": _parse_class_metadata(meta_inner),
+            "_storage": getattr(meta_inner, "storage", None),
+            "_parameters": getattr(meta_inner, "parameters", {}),
+        }.items():
+            setattr(cls, attr_name, value)
         if not validate_on_init:
             fast_init = _build_fast_init(model_fields)
             if fast_init is not None:
                 fast_init.__qualname__ = f"{cls.__qualname__}.__init__"
                 setattr(cls, "__init__", fast_init)
-        setattr(cls, "_superclasses", _normalize_superclasses(superclasses))
-        setattr(cls, "_class_metadata", _parse_class_metadata(meta_inner))
-        setattr(cls, "_storage", getattr(meta_inner, "storage", None))
         declared_indexes = list(getattr(meta_inner, "indexes", []))
         setattr(cls, "_indexes", _synthesize_indexes(cls.__name__, model_fields, declared_indexes))
-        setattr(cls, "_parameters", getattr(meta_inner, "parameters", {}))
 
         _scalar_fast, _scalar_coerce, _complex_save = _partition_save_fields(model_fields)
-        setattr(cls, "_scalar_fast_fields", _scalar_fast)
-        setattr(cls, "_scalar_coerce_fields", _scalar_coerce)
-        setattr(cls, "_complex_save_fields", _complex_save)
 
         _read_str, _read_prim, _read_bool, _read_coerce, _read_complex = (
             _partition_read_fields(model_fields)
         )
-        setattr(cls, "_read_str_fields", _read_str)
-        setattr(cls, "_read_primitive_fields", _read_prim)
-        setattr(cls, "_read_bool_fields", _read_bool)
-        setattr(cls, "_read_coerce_fields", _read_coerce)
-        setattr(cls, "_read_complex_fields", _read_complex)
+        for attr_name, value in {
+            "_scalar_fast_fields": _scalar_fast,
+            "_scalar_coerce_fields": _scalar_coerce,
+            "_complex_save_fields": _complex_save,
+            "_read_str_fields": _read_str,
+            "_read_primitive_fields": _read_prim,
+            "_read_bool_fields": _read_bool,
+            "_read_coerce_fields": _read_coerce,
+            "_read_complex_fields": _read_complex,
+        }.items():
+            setattr(cls, attr_name, value)
         # Pre-compute serial-class flag to avoid re-checking per _build_model_from_iris_obj call.
         _superclasses_str = _normalize_superclasses(superclasses) or ""
         _is_serial = "SerialObject" in _superclasses_str
@@ -887,16 +902,12 @@ class Model(metaclass=ModelMeta):
         if not isinstance(values, dict):
             raise TypeError(f"{cls.__name__}.from_dict() expects a dict")
 
-        converted: dict[str, Any] = {}
-        for name, value in values.items():
-            model_field = cls.__model_fields__.get(name)
-            if model_field is None:
-                converted[name] = value
-            else:
-                converted[name] = _convert_mapping_value_to_model(
-                    value,
-                    model_field.declared_type,
-                )
+        converted = {
+            name: value
+            if (model_field := cls.__model_fields__.get(name)) is None
+            else _convert_mapping_value_to_model(value, model_field.declared_type)
+            for name, value in values.items()
+        }
         return cls(**converted)
 
     def to_dataclass(self, dataclass_type: Type[TDataclass]) -> TDataclass:
@@ -922,15 +933,14 @@ class Model(metaclass=ModelMeta):
         if isinstance(value, type) or not is_dataclass(value):
             raise TypeError(f"{cls.__name__}.from_dataclass() expects a dataclass instance")
 
-        values: dict[str, Any] = {}
-        for dataclass_field in dataclass_fields(value):
-            name = dataclass_field.name
-            model_field = cls.__model_fields__.get(name)
-            if model_field is not None:
-                values[name] = _convert_dataclass_value_to_model(
-                    getattr(value, name),
-                    model_field.declared_type,
-                )
+        values = {
+            dataclass_field.name: _convert_dataclass_value_to_model(
+                getattr(value, dataclass_field.name),
+                model_field.declared_type,
+            )
+            for dataclass_field in dataclass_fields(value)
+            if (model_field := cls.__model_fields__.get(dataclass_field.name)) is not None
+        }
         return cls.from_dict(values)
 
     def __repr__(self) -> str:

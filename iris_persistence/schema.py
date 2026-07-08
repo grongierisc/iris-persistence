@@ -21,6 +21,7 @@ CLASS_METADATA_KEYS = (
     "sql_table_name",
     "procedure_block",
 )
+CLASS_METADATA_FLAG_KEYS = {"deprecated", "final", "procedure_block"}
 PROPERTY_KEYS = (
     "type",
     "required",
@@ -340,6 +341,25 @@ def _remove_owned_schema_member_entries(
             pass
 
 
+def _remove_missing_owned_schema_members(
+    runtime: Any,
+    list_obj: Any,
+    classname: str,
+    owned_entries: dict[str, tuple[int, Any, str | None]],
+    desired_names: set[str],
+    *,
+    dictionary_class_name: str,
+    member_name: str,
+) -> None:
+    _remove_owned_schema_member_entries(
+        runtime,
+        list_obj,
+        [entry for name, entry in owned_entries.items() if name not in desired_names],
+        dictionary_class_name=dictionary_class_name,
+        context=f"{classname}.{member_name}",
+    )
+
+
 def _item_belongs_to_class(runtime: Any, item: Any, classname: str) -> bool:
     inherited = _safe_get_property(runtime, item, "Inherited")
     if inherited is not None:
@@ -377,6 +397,25 @@ def _compact_mapping(
 
 def _compact_property_state(mapping: dict[str, Any]) -> dict[str, Any]:
     return _compact_mapping(mapping, preserve_false_keys=("storable",))
+
+
+def _object_state(obj: Any, keys: tuple[str, ...]) -> dict[str, Any]:
+    return _compact_mapping({key: getattr(obj, key, None) for key in keys})
+
+
+def _named_object_mapping(
+    items: Any,
+    keys: tuple[str, ...],
+    *,
+    extra: Any = None,
+) -> dict[str, Any]:
+    states = {}
+    for item in items or ():
+        state = _object_state(item, keys)
+        if extra is not None:
+            state.update(extra(item))
+        states[item.name] = _compact_mapping(state)
+    return _sort_mapping(states)
 
 
 def _sort_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
@@ -420,6 +459,32 @@ def _render_attribute_parts(keys: tuple[str, ...], mapping: dict[str, Any]) -> s
             continue
         parts.append(f"{key}={_format_value(value)}")
     return " ".join(parts)
+
+
+def _append_state_lines(
+    lines: list[str],
+    prefix: str,
+    items: dict[str, dict[str, Any]],
+    keys: tuple[str, ...],
+    *,
+    name_prefix: str = "",
+) -> None:
+    for name in sorted(items):
+        _append_state_line(lines, prefix, f"{name_prefix}{name}", keys, items[name])
+
+
+def _append_state_line(
+    lines: list[str],
+    prefix: str,
+    name: str,
+    keys: tuple[str, ...],
+    item: dict[str, Any],
+) -> None:
+    parts = _render_attribute_parts(keys, item)
+    if not name and not parts:
+        return
+    label = f"{prefix} {name}" if name else prefix
+    lines.append(label + (f" {parts}" if parts else ""))
 
 
 def _empty_schema_state(classname: str) -> dict[str, Any]:
@@ -521,15 +586,7 @@ def _collect_model_schema_state(model_cls: Type[Any]) -> SchemaState:
 
     class_metadata = getattr(model_cls, "_class_metadata", None)
     if class_metadata is not None:
-        state["metadata"] = _compact_mapping(
-            {
-                "description": getattr(class_metadata, "description", None),
-                "deprecated": getattr(class_metadata, "deprecated", False),
-                "final": getattr(class_metadata, "final", False),
-                "sql_table_name": getattr(class_metadata, "sql_table_name", None),
-                "procedure_block": getattr(class_metadata, "procedure_block", False),
-            }
-        )
+        state["metadata"] = _object_state(class_metadata, CLASS_METADATA_KEYS)
 
     parameters = getattr(model_cls, "_parameters", {}) or {}
     state["parameters"] = {str(name): str(value) for name, value in parameters.items()}
@@ -555,107 +612,48 @@ def _collect_model_schema_state(model_cls: Type[Any]) -> SchemaState:
     if storage_meta is not None:
         storage_state = _empty_storage_state()
         storage_state["name"] = "CustomStorage"
-        storage_state["attrs"] = _compact_mapping(
-            {key: getattr(storage_meta, key, None) for key in STORAGE_KEYS}
+        storage_state["attrs"] = _object_state(storage_meta, STORAGE_KEYS)
+        storage_state["data"] = _named_object_mapping(
+            getattr(storage_meta, "data", None),
+            STORAGE_DATA_KEYS,
+            extra=lambda item: {
+                "values": _normalize_values_mapping(getattr(item, "values", None))
+            },
         )
-        storage_state["data"] = _sort_mapping(
-            {
-                item.name: _compact_mapping(
-                    {
-                        "structure": getattr(item, "structure", None),
-                        "attribute": getattr(item, "attribute", None),
-                        "subscript": getattr(item, "subscript", None),
-                        "values": _normalize_values_mapping(getattr(item, "values", None)),
-                    }
-                )
-                for item in getattr(storage_meta, "data", ()) or ()
-            }
+        storage_state["indices"] = _named_object_mapping(
+            getattr(storage_meta, "indices", None),
+            STORAGE_INDEX_KEYS,
         )
-        storage_state["indices"] = _sort_mapping(
-            {
-                item.name: _compact_mapping(
-                    {key: getattr(item, key, None) for key in STORAGE_INDEX_KEYS}
-                )
-                for item in getattr(storage_meta, "indices", ()) or ()
-            }
-        )
-        storage_state["properties"] = _sort_mapping(
-            {
-                item.name: _compact_mapping(
-                    {key: getattr(item, key, None) for key in STORAGE_PROPERTY_KEYS}
-                )
-                for item in getattr(storage_meta, "properties", ()) or ()
-            }
+        storage_state["properties"] = _named_object_mapping(
+            getattr(storage_meta, "properties", None),
+            STORAGE_PROPERTY_KEYS,
         )
         storage_state["sql_maps"] = _sort_mapping(
             {
                 item.name: _compact_mapping(
                     {
-                        **{key: getattr(item, key, None) for key in STORAGE_SQL_MAP_KEYS},
-                        "data": _sort_mapping(
-                            {
-                                child.name: _compact_mapping(
-                                    {
-                                        key: getattr(child, key, None)
-                                        for key in STORAGE_SQL_MAP_DATA_KEYS
-                                    }
-                                )
-                                for child in (getattr(item, "data", None) or ())
-                            }
+                        **_object_state(item, STORAGE_SQL_MAP_KEYS),
+                        "data": _named_object_mapping(
+                            getattr(item, "data", None),
+                            STORAGE_SQL_MAP_DATA_KEYS,
                         ),
-                        "row_id_specs": _sort_mapping(
-                            {
-                                child.name: _compact_mapping(
-                                    {
-                                        key: getattr(child, key, None)
-                                        for key in STORAGE_SQL_MAP_ROW_ID_SPEC_KEYS
-                                    }
-                                )
-                                for child in getattr(item, "row_id_specs", ()) or ()
-                            }
+                        "row_id_specs": _named_object_mapping(
+                            getattr(item, "row_id_specs", None),
+                            STORAGE_SQL_MAP_ROW_ID_SPEC_KEYS,
                         ),
-                        "subscripts": _sort_mapping(
-                            {
-                                child.name: _compact_mapping(
-                                    {
-                                        **{
-                                            key: getattr(child, key, None)
-                                            for key in STORAGE_SQL_MAP_SUB_KEYS
-                                        },
-                                        "access_vars": _sort_mapping(
-                                            {
-                                                nested.name: _compact_mapping(
-                                                    {
-                                                        key: getattr(nested, key, None)
-                                                        for key in (
-                                                            STORAGE_SQL_MAP_SUB_ACCESS_VAR_KEYS
-                                                        )
-                                                    }
-                                                )
-                                                for nested in (
-                                                    getattr(child, "access_vars", ()) or ()
-                                                )
-                                            }
-                                        ),
-                                        "invalid_conditions": _sort_mapping(
-                                            {
-                                                nested.name: _compact_mapping(
-                                                    {
-                                                        key: getattr(nested, key, None)
-                                                        for key in (
-                                                            STORAGE_SQL_MAP_SUB_INVALID_CONDITION_KEYS
-                                                        )
-                                                    }
-                                                )
-                                                for nested in (
-                                                    getattr(child, "invalid_conditions", ()) or ()
-                                                )
-                                            }
-                                        ),
-                                    }
-                                )
-                                for child in getattr(item, "subscripts", ()) or ()
-                            }
+                        "subscripts": _named_object_mapping(
+                            getattr(item, "subscripts", None),
+                            STORAGE_SQL_MAP_SUB_KEYS,
+                            extra=lambda child: {
+                                "access_vars": _named_object_mapping(
+                                    getattr(child, "access_vars", None),
+                                    STORAGE_SQL_MAP_SUB_ACCESS_VAR_KEYS,
+                                ),
+                                "invalid_conditions": _named_object_mapping(
+                                    getattr(child, "invalid_conditions", None),
+                                    STORAGE_SQL_MAP_SUB_INVALID_CONDITION_KEYS,
+                                ),
+                            },
                         ),
                     }
                 )
@@ -682,6 +680,29 @@ def _collect_live_parameters_from_sql(runtime: Any, classname: str) -> dict[str,
     return parameters
 
 
+def _property_state_from_getter(
+    get_value: Any,
+    *,
+    max_length: Any = UNSET,
+    scale: Any = UNSET,
+) -> dict[str, Any]:
+    if max_length is UNSET:
+        max_length = get_value("MAXLEN")
+    if scale is UNSET:
+        scale = get_value("SCALE")
+    state = {
+        "type": get_value("Type"),
+        "storable": False if get_value("Storable") in (0, "0", False) else None,
+        "max_length": str(max_length) if max_length not in (None, "") else None,
+        "scale": str(scale) if scale not in (None, "") else None,
+    }
+    state.update(
+        {key: coerce_bool(get_value(prop_name)) for key, prop_name in _PROPERTY_FLAG_FIELDS}
+    )
+    state.update({key: get_value(prop_name) for key, prop_name in _PROPERTY_VALUE_FIELDS})
+    return _compact_property_state(state)
+
+
 def _collect_live_properties_from_sql(runtime: Any, classname: str) -> dict[str, dict[str, Any]]:
     rows = _dictionary_rows(
         runtime,
@@ -693,31 +714,8 @@ def _collect_live_properties_from_sql(runtime: Any, classname: str) -> dict[str,
         name = _row_value(row, "Name")
         if not name or str(name).startswith("%"):
             continue
-        max_length = _row_value(row, "MAXLEN")
-        scale = _row_value(row, "SCALE")
-        properties[str(name)] = _compact_property_state(
-            {
-                "type": _row_value(row, "Type"),
-                "required": coerce_bool(_row_value(row, "Required")),
-                "readonly": coerce_bool(_row_value(row, "ReadOnly")),
-                "collection": _row_value(row, "Collection"),
-                "sql_field_name": _row_value(row, "SqlFieldName"),
-                "identity": coerce_bool(_row_value(row, "Identity")),
-                "relationship": _row_value(row, "Relationship"),
-                "on_delete": _row_value(row, "OnDelete"),
-                "inverse": _row_value(row, "Inverse"),
-                "transient": coerce_bool(_row_value(row, "Transient")),
-                "storable": False if _row_value(row, "Storable") in (0, "0", False) else None,
-                "multi_dimensional": coerce_bool(_row_value(row, "MultiDimensional")),
-                "sql_list_delimiter": _row_value(row, "SqlListDelimiter"),
-                "sql_list_type": _row_value(row, "SqlListType"),
-                "sql_compute_code": _row_value(row, "SqlComputeCode"),
-                "sql_compute_on_change": _row_value(row, "SqlComputeOnChange"),
-                "sql_computed": coerce_bool(_row_value(row, "SqlComputed")),
-                "initial_expression": _row_value(row, "InitialExpression"),
-                "max_length": str(max_length) if max_length not in (None, "") else None,
-                "scale": str(scale) if scale not in (None, "") else None,
-            }
+        properties[str(name)] = _property_state_from_getter(
+            lambda property_name, row=row: _row_value(row, property_name)
         )
     return properties
 
@@ -733,15 +731,68 @@ def _collect_live_indexes_from_sql(runtime: Any, classname: str) -> dict[str, di
         name = _row_value(row, "Name")
         if not name:
             continue
-        indexes[str(name)] = _compact_mapping(
-            {
-                "properties": _row_value(row, "Properties"),
-                "unique": coerce_bool(_row_value(row, "Unique")),
-                "type": _row_value(row, "Type"),
-                "primary_key": coerce_bool(_row_value(row, "PrimaryKey")),
-            }
+        indexes[str(name)] = _index_state_from_getter(
+            lambda property_name, row=row: _row_value(row, property_name)
         )
     return indexes
+
+
+def _index_state_from_getter(get_value: Any) -> dict[str, Any]:
+    return _compact_mapping(
+        {
+            "properties": get_value("Properties"),
+            "unique": coerce_bool(get_value("Unique")),
+            "type": get_value("Type"),
+            "primary_key": coerce_bool(get_value("PrimaryKey")),
+        }
+    )
+
+
+def _runtime_property_name(state_key: str) -> str:
+    if state_key == "global_name":
+        return "Global"
+    return "".join(part.capitalize() for part in state_key.split("_"))
+
+
+def _runtime_state_from_item(
+    runtime: Any,
+    item: Any,
+    keys: tuple[str, ...],
+    *,
+    bool_keys: set[str] | None = None,
+) -> dict[str, Any]:
+    bool_keys = bool_keys or set()
+    return _compact_mapping(
+        {
+            key: (
+                coerce_bool(_safe_get_property(runtime, item, _runtime_property_name(key)))
+                if key in bool_keys
+                else _safe_get_property(runtime, item, _runtime_property_name(key))
+            )
+            for key in keys
+        }
+    )
+
+
+def _collect_runtime_state_mapping(
+    runtime: Any,
+    parent: Any,
+    list_property: str,
+    keys: tuple[str, ...],
+    *,
+    bool_keys: set[str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    items = {}
+    for item in _iter_runtime_list(runtime, _safe_get_property(runtime, parent, list_property)):
+        name = _safe_get_property(runtime, item, "Name")
+        if name:
+            items[str(name)] = _runtime_state_from_item(
+                runtime,
+                item,
+                keys,
+                bool_keys=bool_keys,
+            )
+    return _sort_mapping(items)
 
 
 def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
@@ -753,16 +804,11 @@ def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
     state["classname"] = existing_classname
     class_def = runtime.get_object("%Dictionary.ClassDefinition", existing_classname)
     state["super"] = _safe_get_property(runtime, class_def, "Super")
-    state["metadata"] = _compact_mapping(
-        {
-            "description": _safe_get_property(runtime, class_def, "Description"),
-            "deprecated": coerce_bool(_safe_get_property(runtime, class_def, "Deprecated")),
-            "final": coerce_bool(_safe_get_property(runtime, class_def, "Final")),
-            "sql_table_name": _safe_get_property(runtime, class_def, "SqlTableName"),
-            "procedure_block": coerce_bool(
-                _safe_get_property(runtime, class_def, "ProcedureBlock")
-            ),
-        }
+    state["metadata"] = _runtime_state_from_item(
+        runtime,
+        class_def,
+        CLASS_METADATA_KEYS,
+        bool_keys=CLASS_METADATA_FLAG_KEYS,
     )
 
     parameters = {}
@@ -796,37 +842,10 @@ def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
                 scale = runtime.invoke_method(params, "GetAt", "SCALE")
             except Exception:
                 scale = None
-        properties[str(name)] = _compact_property_state(
-            {
-                "type": _safe_get_property(runtime, item, "Type"),
-                "required": coerce_bool(_safe_get_property(runtime, item, "Required")),
-                "readonly": coerce_bool(_safe_get_property(runtime, item, "ReadOnly")),
-                "collection": _safe_get_property(runtime, item, "Collection"),
-                "sql_field_name": _safe_get_property(runtime, item, "SqlFieldName"),
-                "identity": coerce_bool(_safe_get_property(runtime, item, "Identity")),
-                "relationship": _safe_get_property(runtime, item, "Relationship"),
-                "on_delete": _safe_get_property(runtime, item, "OnDelete"),
-                "inverse": _safe_get_property(runtime, item, "Inverse"),
-                "transient": coerce_bool(_safe_get_property(runtime, item, "Transient")),
-                "storable": (
-                    False
-                    if _safe_get_property(runtime, item, "Storable") in (0, "0", False)
-                    else None
-                ),
-                "multi_dimensional": coerce_bool(
-                    _safe_get_property(runtime, item, "MultiDimensional")
-                ),
-                "sql_list_delimiter": _safe_get_property(runtime, item, "SqlListDelimiter"),
-                "sql_list_type": _safe_get_property(runtime, item, "SqlListType"),
-                "sql_compute_code": _safe_get_property(runtime, item, "SqlComputeCode"),
-                "sql_compute_on_change": _safe_get_property(
-                    runtime, item, "SqlComputeOnChange"
-                ),
-                "sql_computed": coerce_bool(_safe_get_property(runtime, item, "SqlComputed")),
-                "initial_expression": _safe_get_property(runtime, item, "InitialExpression"),
-                "max_length": str(max_length) if max_length not in (None, "") else None,
-                "scale": str(scale) if scale not in (None, "") else None,
-            }
+        properties[str(name)] = _property_state_from_getter(
+            lambda property_name, item=item: _safe_get_property(runtime, item, property_name),
+            max_length=max_length,
+            scale=scale,
         )
     state["properties"] = properties
     for name, property_state in _collect_live_properties_from_sql(
@@ -842,13 +861,8 @@ def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
             continue
         if not _item_belongs_to_class(runtime, item, existing_classname):
             continue
-        indexes[str(name)] = _compact_mapping(
-            {
-                "properties": _safe_get_property(runtime, item, "Properties"),
-                "unique": coerce_bool(_safe_get_property(runtime, item, "Unique")),
-                "type": _safe_get_property(runtime, item, "Type"),
-                "primary_key": coerce_bool(_safe_get_property(runtime, item, "PrimaryKey")),
-            }
+        indexes[str(name)] = _index_state_from_getter(
+            lambda property_name, item=item: _safe_get_property(runtime, item, property_name)
         )
     state["indexes"] = indexes
     for name, index_state in _collect_live_indexes_from_sql(runtime, existing_classname).items():
@@ -868,171 +882,96 @@ def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
     if selected_storage is not None:
         storage_state = _empty_storage_state()
         storage_state["name"] = _safe_get_property(runtime, selected_storage, "Name")
-        storage_state["attrs"] = _compact_mapping(
-            {
-                key: _safe_get_property(
-                    runtime,
-                    selected_storage,
-                    "".join(part.capitalize() for part in key.split("_")),
-                )
-                for key in STORAGE_KEYS
-            }
+        storage_state["attrs"] = _runtime_state_from_item(
+            runtime,
+            selected_storage,
+            STORAGE_KEYS,
         )
-        storage_data = _safe_get_property(runtime, selected_storage, "Data")
-        for item in _iter_runtime_list(runtime, storage_data):
+        for item in _iter_runtime_list(
+            runtime,
+            _safe_get_property(runtime, selected_storage, "Data"),
+        ):
             name = _safe_get_property(runtime, item, "Name")
             if not name:
                 continue
             values = {}
-            value_items = _safe_get_property(runtime, item, "Values")
-            for value_item in _iter_runtime_list(runtime, value_items):
+            for value_item in _iter_runtime_list(
+                runtime,
+                _safe_get_property(runtime, item, "Values"),
+            ):
                 value_name = _safe_get_property(runtime, value_item, "Name")
                 if value_name in (None, ""):
                     continue
                 values[str(value_name)] = str(_safe_get_property(runtime, value_item, "Value"))
-            storage_state["data"][str(name)] = _compact_mapping(
-                {
-                    "structure": _safe_get_property(runtime, item, "Structure"),
-                    "attribute": _safe_get_property(runtime, item, "Attribute"),
-                    "subscript": _safe_get_property(runtime, item, "Subscript"),
-                    "values": _normalize_values_mapping(values),
-                }
-            )
+            data_state = _runtime_state_from_item(runtime, item, STORAGE_DATA_KEYS)
+            data_state["values"] = _normalize_values_mapping(values)
+            storage_state["data"][str(name)] = _compact_mapping(data_state)
         storage_state["data"] = _sort_mapping(storage_state["data"])
 
-        storage_indices = _safe_get_property(runtime, selected_storage, "Indices")
-        for item in _iter_runtime_list(runtime, storage_indices):
+        storage_state["indices"] = _collect_runtime_state_mapping(
+            runtime,
+            selected_storage,
+            "Indices",
+            STORAGE_INDEX_KEYS,
+        )
+        storage_state["properties"] = _collect_runtime_state_mapping(
+            runtime,
+            selected_storage,
+            "Properties",
+            STORAGE_PROPERTY_KEYS,
+            bool_keys={"bias_queries_as_outlier"},
+        )
+
+        for item in _iter_runtime_list(
+            runtime,
+            _safe_get_property(runtime, selected_storage, "SQLMaps"),
+        ):
             name = _safe_get_property(runtime, item, "Name")
             if not name:
                 continue
-            storage_state["indices"][str(name)] = _compact_mapping(
-                {
-                    "location": _safe_get_property(runtime, item, "Location"),
-                    "small_chunk_size": _safe_get_property(runtime, item, "SmallChunkSize"),
-                }
+            map_state = _runtime_state_from_item(
+                runtime,
+                item,
+                STORAGE_SQL_MAP_KEYS,
+                bool_keys={"conditional_with_host_vars"},
             )
-        storage_state["indices"] = _sort_mapping(storage_state["indices"])
-
-        storage_properties = _safe_get_property(runtime, selected_storage, "Properties")
-        for item in _iter_runtime_list(runtime, storage_properties):
-            name = _safe_get_property(runtime, item, "Name")
-            if not name:
-                continue
-            storage_state["properties"][str(name)] = _compact_mapping(
-                {
-                    "average_field_size": _safe_get_property(runtime, item, "AverageFieldSize"),
-                    "selectivity": _safe_get_property(runtime, item, "Selectivity"),
-                    "outlier_selectivity": _safe_get_property(
-                        runtime, item, "OutlierSelectivity"
-                    ),
-                    "histogram": _safe_get_property(runtime, item, "Histogram"),
-                    "child_block_count": _safe_get_property(runtime, item, "ChildBlockCount"),
-                    "child_extent_size": _safe_get_property(runtime, item, "ChildExtentSize"),
-                    "bias_queries_as_outlier": coerce_bool(
-                        _safe_get_property(runtime, item, "BiasQueriesAsOutlier")
-                    ),
-                    "stream_location": _safe_get_property(runtime, item, "StreamLocation"),
-                }
+            map_state["data"] = _collect_runtime_state_mapping(
+                runtime,
+                item,
+                "Data",
+                STORAGE_SQL_MAP_DATA_KEYS,
             )
-        storage_state["properties"] = _sort_mapping(storage_state["properties"])
-
-        storage_sql_maps = _safe_get_property(runtime, selected_storage, "SQLMaps")
-        for item in _iter_runtime_list(runtime, storage_sql_maps):
-            name = _safe_get_property(runtime, item, "Name")
-            if not name:
-                continue
-            map_state = _compact_mapping(
-                {
-                    "block_count": _safe_get_property(runtime, item, "BlockCount"),
-                    "condition": _safe_get_property(runtime, item, "Condition"),
-                    "condition_fields": _safe_get_property(runtime, item, "ConditionFields"),
-                    "conditional_with_host_vars": coerce_bool(
-                        _safe_get_property(runtime, item, "ConditionalWithHostVars")
-                    ),
-                    "global_name": _safe_get_property(runtime, item, "Global"),
-                    "population_pct": _safe_get_property(runtime, item, "PopulationPct"),
-                    "population_type": _safe_get_property(runtime, item, "PopulationType"),
-                    "row_reference": _safe_get_property(runtime, item, "RowReference"),
-                    "structure": _safe_get_property(runtime, item, "Structure"),
-                    "type": _safe_get_property(runtime, item, "Type"),
-                    "data": {},
-                    "row_id_specs": {},
-                    "subscripts": {},
-                }
+            map_state["row_id_specs"] = _collect_runtime_state_mapping(
+                runtime,
+                item,
+                "RowIdSpecs",
+                STORAGE_SQL_MAP_ROW_ID_SPEC_KEYS,
             )
-            data_items = _safe_get_property(runtime, item, "Data")
-            for data_item in _iter_runtime_list(runtime, data_items):
-                data_name = _safe_get_property(runtime, data_item, "Name")
-                if not data_name:
-                    continue
-                map_state["data"][str(data_name)] = _compact_mapping(
-                    {
-                        "node": _safe_get_property(runtime, data_item, "Node"),
-                        "piece": _safe_get_property(runtime, data_item, "Piece"),
-                        "delimiter": _safe_get_property(runtime, data_item, "Delimiter"),
-                        "retrieval_code": _safe_get_property(runtime, data_item, "RetrievalCode"),
-                    }
-                )
-            map_state["data"] = _sort_mapping(map_state["data"])
+            map_state["subscripts"] = {}
 
-            row_id_spec_items = _safe_get_property(runtime, item, "RowIdSpecs")
-            for spec_item in _iter_runtime_list(runtime, row_id_spec_items):
-                spec_name = _safe_get_property(runtime, spec_item, "Name")
-                if not spec_name:
-                    continue
-                map_state["row_id_specs"][str(spec_name)] = _compact_mapping(
-                    {
-                        "field": _safe_get_property(runtime, spec_item, "Field"),
-                        "expression": _safe_get_property(runtime, spec_item, "Expression"),
-                    }
-                )
-            map_state["row_id_specs"] = _sort_mapping(map_state["row_id_specs"])
-
-            subscript_items = _safe_get_property(runtime, item, "Subscripts")
-            for sub_item in _iter_runtime_list(runtime, subscript_items):
+            for sub_item in _iter_runtime_list(
+                runtime,
+                _safe_get_property(runtime, item, "Subscripts"),
+            ):
                 sub_name = _safe_get_property(runtime, sub_item, "Name")
                 if not sub_name:
                     continue
-                sub_state = _compact_mapping(
-                    {
-                        "access_type": _safe_get_property(runtime, sub_item, "AccessType"),
-                        "data_access": _safe_get_property(runtime, sub_item, "DataAccess"),
-                        "delimiter": _safe_get_property(runtime, sub_item, "Delimiter"),
-                        "expression": _safe_get_property(runtime, sub_item, "Expression"),
-                        "loop_init_value": _safe_get_property(runtime, sub_item, "LoopInitValue"),
-                        "next_code": _safe_get_property(runtime, sub_item, "NextCode"),
-                        "null_marker": _safe_get_property(runtime, sub_item, "NullMarker"),
-                        "start_value": _safe_get_property(runtime, sub_item, "StartValue"),
-                        "stop_expression": _safe_get_property(runtime, sub_item, "StopExpression"),
-                        "stop_value": _safe_get_property(runtime, sub_item, "StopValue"),
-                        "access_vars": {},
-                        "invalid_conditions": {},
-                    }
+                sub_state = _runtime_state_from_item(
+                    runtime,
+                    sub_item,
+                    STORAGE_SQL_MAP_SUB_KEYS,
                 )
-                access_var_items = _safe_get_property(runtime, sub_item, "Accessvars")
-                for access_item in _iter_runtime_list(runtime, access_var_items):
-                    access_name = _safe_get_property(runtime, access_item, "Name")
-                    if not access_name:
-                        continue
-                    sub_state["access_vars"][str(access_name)] = _compact_mapping(
-                        {
-                            "variable": _safe_get_property(runtime, access_item, "Variable"),
-                            "code": _safe_get_property(runtime, access_item, "Code"),
-                        }
-                    )
-                sub_state["access_vars"] = _sort_mapping(sub_state["access_vars"])
-                invalid_items = _safe_get_property(runtime, sub_item, "Invalidconditions")
-                for invalid_item in _iter_runtime_list(runtime, invalid_items):
-                    invalid_name = _safe_get_property(runtime, invalid_item, "Name")
-                    if not invalid_name:
-                        continue
-                    sub_state["invalid_conditions"][str(invalid_name)] = _compact_mapping(
-                        {
-                            "expression": _safe_get_property(runtime, invalid_item, "Expression"),
-                        }
-                    )
-                sub_state["invalid_conditions"] = _sort_mapping(
-                    sub_state["invalid_conditions"]
+                sub_state["access_vars"] = _collect_runtime_state_mapping(
+                    runtime,
+                    sub_item,
+                    "Accessvars",
+                    STORAGE_SQL_MAP_SUB_ACCESS_VAR_KEYS,
+                )
+                sub_state["invalid_conditions"] = _collect_runtime_state_mapping(
+                    runtime,
+                    sub_item,
+                    "Invalidconditions",
+                    STORAGE_SQL_MAP_SUB_INVALID_CONDITION_KEYS,
                 )
                 map_state["subscripts"][str(sub_name)] = sub_state
             map_state["subscripts"] = _sort_mapping(map_state["subscripts"])
@@ -1094,12 +1033,8 @@ def _render_schema_state(state: SchemaState | dict[str, Any]) -> tuple[str, ...]
         lines.append(f"class_metadata {key}={_format_value(value)}")
     for name in sorted(state["parameters"]):
         lines.append(f"parameter {name}={_format_value(state['parameters'][name])}")
-    for name in sorted(state["properties"]):
-        parts = _render_attribute_parts(PROPERTY_KEYS, state["properties"][name])
-        lines.append(f"property {name}" + (f" {parts}" if parts else ""))
-    for name in sorted(state["indexes"]):
-        parts = _render_attribute_parts(INDEX_KEYS, state["indexes"][name])
-        lines.append(f"index {name}" + (f" {parts}" if parts else ""))
+    _append_state_lines(lines, "property", state["properties"], PROPERTY_KEYS)
+    _append_state_lines(lines, "index", state["indexes"], INDEX_KEYS)
     storage = state["storage"]
     if storage is not None:
         for key in STORAGE_KEYS:
@@ -1109,67 +1044,59 @@ def _render_schema_state(state: SchemaState | dict[str, Any]) -> tuple[str, ...]
             lines.append(f"storage {key}={_format_value(value)}")
         for name in sorted(storage.get("data", {})):
             item = storage["data"][name]
-            parts = _render_attribute_parts(STORAGE_DATA_KEYS, item)
-            lines.append(f"storage_data {name}" + (f" {parts}" if parts else ""))
+            _append_state_line(lines, "storage_data", name, STORAGE_DATA_KEYS, item)
             values = item.get("values") or {}
             for value_key in sorted(values, key=str):
                 lines.append(
                     f"storage_data_value {name}.{value_key}={_format_value(values[value_key])}"
                 )
-        for name in sorted(storage.get("indices", {})):
-            parts = _render_attribute_parts(STORAGE_INDEX_KEYS, storage["indices"][name])
-            lines.append(f"storage_index {name}" + (f" {parts}" if parts else ""))
-        for name in sorted(storage["properties"]):
-            parts = _render_attribute_parts(STORAGE_PROPERTY_KEYS, storage["properties"][name])
-            lines.append(f"storage_property {name}" + (f" {parts}" if parts else ""))
+        _append_state_lines(lines, "storage_index", storage.get("indices", {}), STORAGE_INDEX_KEYS)
+        _append_state_lines(
+            lines,
+            "storage_property",
+            storage["properties"],
+            STORAGE_PROPERTY_KEYS,
+        )
         for name in sorted(storage.get("sql_maps", {})):
             item = storage["sql_maps"][name]
-            parts = _render_attribute_parts(STORAGE_SQL_MAP_KEYS, item)
-            lines.append(f"storage_sql_map {name}" + (f" {parts}" if parts else ""))
-            for data_name in sorted(item.get("data", {})):
-                parts = _render_attribute_parts(
-                    STORAGE_SQL_MAP_DATA_KEYS,
-                    item["data"][data_name],
-                )
-                lines.append(
-                    f"storage_sql_map_data {name}.{data_name}"
-                    + (f" {parts}" if parts else "")
-                )
-            for spec_name in sorted(item.get("row_id_specs", {})):
-                parts = _render_attribute_parts(
-                    STORAGE_SQL_MAP_ROW_ID_SPEC_KEYS,
-                    item["row_id_specs"][spec_name],
-                )
-                lines.append(
-                    f"storage_sql_map_row_id_spec {name}.{spec_name}"
-                    + (f" {parts}" if parts else "")
-                )
+            _append_state_line(lines, "storage_sql_map", name, STORAGE_SQL_MAP_KEYS, item)
+            _append_state_lines(
+                lines,
+                "storage_sql_map_data",
+                item.get("data", {}),
+                STORAGE_SQL_MAP_DATA_KEYS,
+                name_prefix=f"{name}.",
+            )
+            _append_state_lines(
+                lines,
+                "storage_sql_map_row_id_spec",
+                item.get("row_id_specs", {}),
+                STORAGE_SQL_MAP_ROW_ID_SPEC_KEYS,
+                name_prefix=f"{name}.",
+            )
             for sub_name in sorted(item.get("subscripts", {})):
                 subscript = item["subscripts"][sub_name]
-                parts = _render_attribute_parts(STORAGE_SQL_MAP_SUB_KEYS, subscript)
-                lines.append(
-                    f"storage_sql_map_subscript {name}.{sub_name}"
-                    + (f" {parts}" if parts else "")
+                _append_state_line(
+                    lines,
+                    "storage_sql_map_subscript",
+                    f"{name}.{sub_name}",
+                    STORAGE_SQL_MAP_SUB_KEYS,
+                    subscript,
                 )
-                for access_name in sorted(subscript.get("access_vars", {})):
-                    parts = _render_attribute_parts(
-                        STORAGE_SQL_MAP_SUB_ACCESS_VAR_KEYS,
-                        subscript["access_vars"][access_name],
-                    )
-                    lines.append(
-                        f"storage_sql_map_sub_access_var {name}.{sub_name}.{access_name}"
-                        + (f" {parts}" if parts else "")
-                    )
-                for invalid_name in sorted(subscript.get("invalid_conditions", {})):
-                    parts = _render_attribute_parts(
-                        STORAGE_SQL_MAP_SUB_INVALID_CONDITION_KEYS,
-                        subscript["invalid_conditions"][invalid_name],
-                    )
-                    lines.append(
-                        f"storage_sql_map_sub_invalid_condition "
-                        f"{name}.{sub_name}.{invalid_name}"
-                        + (f" {parts}" if parts else "")
-                    )
+                _append_state_lines(
+                    lines,
+                    "storage_sql_map_sub_access_var",
+                    subscript.get("access_vars", {}),
+                    STORAGE_SQL_MAP_SUB_ACCESS_VAR_KEYS,
+                    name_prefix=f"{name}.{sub_name}.",
+                )
+                _append_state_lines(
+                    lines,
+                    "storage_sql_map_sub_invalid_condition",
+                    subscript.get("invalid_conditions", {}),
+                    STORAGE_SQL_MAP_SUB_INVALID_CONDITION_KEYS,
+                    name_prefix=f"{name}.{sub_name}.",
+                )
     return tuple(lines)
 
 
@@ -1365,38 +1292,15 @@ def diff_schema_operations(
         after=after.get("super"),
         mode=mode,
     )
-    _diff_mapping_items(
-        operations,
-        classname=classname,
-        prefix="metadata",
-        before=before.get("metadata", {}),
-        after=after.get("metadata", {}),
-        mode=mode,
-    )
-    _diff_mapping_items(
-        operations,
-        classname=classname,
-        prefix="parameters",
-        before=before.get("parameters", {}),
-        after=after.get("parameters", {}),
-        mode=mode,
-    )
-    _diff_mapping_items(
-        operations,
-        classname=classname,
-        prefix="properties",
-        before=before.get("properties", {}),
-        after=after.get("properties", {}),
-        mode=mode,
-    )
-    _diff_mapping_items(
-        operations,
-        classname=classname,
-        prefix="indexes",
-        before=before.get("indexes", {}),
-        after=after.get("indexes", {}),
-        mode=mode,
-    )
+    for prefix in ("metadata", "parameters", "properties", "indexes"):
+        _diff_mapping_items(
+            operations,
+            classname=classname,
+            prefix=prefix,
+            before=before.get(prefix, {}),
+            after=after.get(prefix, {}),
+            mode=mode,
+        )
     _append_operation(
         operations,
         classname=classname,
@@ -1531,36 +1435,13 @@ def _apply_class_definition(
     runtime.set_property(class_definition, "Super", superclasses)
     if class_metadata is None:
         return
-    _set_runtime_property_if_not_none(
-        runtime,
-        class_definition,
-        "Description",
-        _mapping_or_attr_value(class_metadata, "description"),
-    )
-    _set_runtime_flag_if_true(
-        runtime,
-        class_definition,
-        "Deprecated",
-        _mapping_or_attr_value(class_metadata, "deprecated"),
-    )
-    _set_runtime_flag_if_true(
-        runtime,
-        class_definition,
-        "Final",
-        _mapping_or_attr_value(class_metadata, "final"),
-    )
-    _set_runtime_property_if_not_none(
-        runtime,
-        class_definition,
-        "SqlTableName",
-        _mapping_or_attr_value(class_metadata, "sql_table_name"),
-    )
-    _set_runtime_flag_if_true(
-        runtime,
-        class_definition,
-        "ProcedureBlock",
-        _mapping_or_attr_value(class_metadata, "procedure_block"),
-    )
+    for key in CLASS_METADATA_KEYS:
+        value = _mapping_or_attr_value(class_metadata, key)
+        property_name = _runtime_property_name(key)
+        if key in CLASS_METADATA_FLAG_KEYS:
+            _set_runtime_flag_if_true(runtime, class_definition, property_name, value)
+        else:
+            _set_runtime_property_if_not_none(runtime, class_definition, property_name, value)
 
 
 def _sync_parameters(
@@ -1574,7 +1455,6 @@ def _sync_parameters(
         return
 
     parameter_list = runtime.get_property(class_definition, "Parameters")
-    existing_parameters: set[str] = set()
     if parameter_list is None:
         return
     owned_entries = _owned_schema_member_entries(
@@ -1583,33 +1463,26 @@ def _sync_parameters(
         classname,
         dictionary_class_name="%Dictionary.ParameterDefinition",
     )
-    owned_names = set(owned_entries)
     if mode == "managed":
-        desired_names = set(parameters)
-        removed_entries = [
-            entry
-            for name, entry in owned_entries.items()
-            if name not in desired_names
-        ]
-        _remove_owned_schema_member_entries(
+        _remove_missing_owned_schema_members(
             runtime,
             parameter_list,
-            removed_entries,
+            classname,
+            owned_entries,
+            set(parameters),
             dictionary_class_name="%Dictionary.ParameterDefinition",
-            context=f"{classname}.Parameters",
+            member_name="Parameters",
         )
-    elif mode == "extend":
-        existing_parameters = owned_names
 
     for param_name, param_default in parameters.items():
-        if mode == "extend" and param_name in existing_parameters:
+        if mode == "extend" and param_name in owned_entries:
             continue
         if mode == "managed" and param_name in owned_entries:
             runtime.set_property(owned_entries[param_name][1], "Default", str(param_default))
             continue
-        param_def = runtime.create_object("%Dictionary.ParameterDefinition")
-        runtime.set_property(param_def, "Name", param_name)
-        runtime.set_property(param_def, "parent", classname)
+        param_def = _new_schema_member(
+            runtime, "%Dictionary.ParameterDefinition", param_name, classname
+        )
         runtime.set_property(param_def, "Default", str(param_default))
         runtime.invoke_method(parameter_list, "Insert", param_def)
 
@@ -1754,24 +1627,19 @@ def _sync_properties(
         classname,
         dictionary_class_name="%Dictionary.PropertyDefinition",
     )
-    existing_props = set(owned_entries)
     if mode == "managed":
-        desired_names = set(model_fields)
-        removed_entries = [
-            entry
-            for name, entry in owned_entries.items()
-            if name not in desired_names
-        ]
-        _remove_owned_schema_member_entries(
+        _remove_missing_owned_schema_members(
             runtime,
             props_oref_list,
-            removed_entries,
+            classname,
+            owned_entries,
+            set(model_fields),
             dictionary_class_name="%Dictionary.PropertyDefinition",
-            context=f"{classname}.Properties",
+            member_name="Properties",
         )
 
     for field_name, model_field in model_fields.items():
-        if mode == "extend" and field_name in existing_props:
+        if mode == "extend" and field_name in owned_entries:
             continue
         if mode == "managed" and field_name in owned_entries:
             state = _collect_model_schema_state_for_field(field_name, model_field)
@@ -1813,7 +1681,6 @@ def _sync_indexes(
         return
 
     index_list = runtime.get_property(class_definition, "Indices")
-    existing_indexes: set[str] = set()
     if index_list is None:
         return
     owned_entries = _owned_schema_member_entries(
@@ -1822,26 +1689,19 @@ def _sync_indexes(
         classname,
         dictionary_class_name="%Dictionary.IndexDefinition",
     )
-    owned_names = set(owned_entries)
     if mode == "managed":
-        desired_names = {index_meta.name for index_meta in indexes}
-        removed_entries = [
-            entry
-            for name, entry in owned_entries.items()
-            if name not in desired_names
-        ]
-        _remove_owned_schema_member_entries(
+        _remove_missing_owned_schema_members(
             runtime,
             index_list,
-            removed_entries,
+            classname,
+            owned_entries,
+            {index_meta.name for index_meta in indexes},
             dictionary_class_name="%Dictionary.IndexDefinition",
-            context=f"{classname}.Indices",
+            member_name="Indices",
         )
-    elif mode == "extend":
-        existing_indexes = owned_names
 
     for index_meta in indexes:
-        if mode == "extend" and index_meta.name in existing_indexes:
+        if mode == "extend" and index_meta.name in owned_entries:
             continue
         if mode == "managed" and index_meta.name in owned_entries:
             idx_def = owned_entries[index_meta.name][1]
@@ -1863,9 +1723,9 @@ def _sync_indexes(
                 1 if getattr(index_meta, "primary_key", False) else 0,
             )
             continue
-        idx_def = runtime.create_object("%Dictionary.IndexDefinition")
-        runtime.set_property(idx_def, "Name", index_meta.name)
-        runtime.set_property(idx_def, "parent", classname)
+        idx_def = _new_schema_member(
+            runtime, "%Dictionary.IndexDefinition", index_meta.name, classname
+        )
         runtime.set_property(idx_def, "Properties", index_meta.properties)
         _set_runtime_flag_if_true(runtime, idx_def, "Unique", getattr(index_meta, "unique", False))
         _set_runtime_property_if_not_none(
@@ -1894,9 +1754,9 @@ def _sync_indexes_from_state(
         return
 
     for index_name, index_state in sorted(indexes.items(), key=lambda item: item[0]):
-        idx_def = runtime.create_object("%Dictionary.IndexDefinition")
-        runtime.set_property(idx_def, "Name", index_name)
-        runtime.set_property(idx_def, "parent", classname)
+        idx_def = _new_schema_member(
+            runtime, "%Dictionary.IndexDefinition", index_name, classname
+        )
         _set_runtime_property_if_not_none(
             runtime, idx_def, "Properties", index_state.get("properties")
         )
@@ -1911,35 +1771,52 @@ def _sync_indexes_from_state(
         runtime.invoke_method(index_list, "Insert", idx_def)
 
 
+_STORAGE_BOOL_ATTRS = {"bias_queries_as_outlier", "conditional_with_host_vars"}
+
+
+def _apply_state_attrs(
+    runtime: Any,
+    obj: Any,
+    meta: Any,
+    keys: tuple[str, ...],
+) -> None:
+    for key in keys:
+        value = getattr(meta, key, None)
+        property_name = _runtime_property_name(key)
+        if key in _STORAGE_BOOL_ATTRS and value is not None:
+            runtime.set_property(obj, property_name, 1 if value else 0)
+        else:
+            _set_runtime_property_if_not_none(runtime, obj, property_name, value)
+
+
+def _new_schema_member(
+    runtime: Any,
+    dictionary_class: str,
+    name: Any,
+    parent: str,
+) -> Any:
+    obj = runtime.create_object(dictionary_class)
+    runtime.set_property(obj, "Name", name)
+    runtime.set_property(obj, "parent", parent)
+    return obj
+
+
+def _insert_schema_members(
+    runtime: Any,
+    target_list: Any,
+    dictionary_class: str,
+    parent: str,
+    items: Any,
+    keys: tuple[str, ...],
+) -> None:
+    for meta in items or ():
+        obj = _new_schema_member(runtime, dictionary_class, meta.name, parent)
+        _apply_state_attrs(runtime, obj, meta, keys)
+        runtime.invoke_method(target_list, "Insert", obj)
+
+
 def _apply_storage_attributes(runtime: Any, storage_definition: Any, storage_meta: Any) -> None:
-    storage_attr_map = (
-        ("Type", "type"),
-        ("DataLocation", "data_location"),
-        ("DefaultData", "default_data"),
-        ("ExtentLocation", "extent_location"),
-        ("ExtentSize", "extent_size"),
-        ("CounterLocation", "counter_location"),
-        ("VersionLocation", "version_location"),
-        ("IdLocation", "id_location"),
-        ("IdExpression", "id_expression"),
-        ("IdFunction", "id_function"),
-        ("IndexLocation", "index_location"),
-        ("State", "state"),
-        ("StreamLocation", "stream_location"),
-        ("SqlChildSub", "sql_child_sub"),
-        ("SqlIdExpression", "sql_id_expression"),
-        ("SqlRowIdName", "sql_row_id_name"),
-        ("SqlRowIdProperty", "sql_row_id_property"),
-        ("SqlTableNumber", "sql_table_number"),
-        ("SequenceNumber", "sequence_number"),
-    )
-    for property_name, attr_name in storage_attr_map:
-        _set_runtime_property_if_not_none(
-            runtime,
-            storage_definition,
-            property_name,
-            getattr(storage_meta, attr_name, None),
-        )
+    _apply_state_attrs(runtime, storage_definition, storage_meta, STORAGE_KEYS)
 
 
 def _insert_storage_data(
@@ -1949,29 +1826,21 @@ def _insert_storage_data(
     storage_name: str,
     storage_meta: Any,
 ) -> None:
+    parent = f"{classname}||{storage_name}"
     data_list = runtime.get_property(storage_definition, "Data")
-    for data_meta in getattr(storage_meta, "data", []):
-        data_definition = runtime.create_object("%Dictionary.StorageDataDefinition")
-        runtime.set_property(data_definition, "Name", data_meta.name)
-        runtime.set_property(data_definition, "parent", f"{classname}||{storage_name}")
-        _set_runtime_property_if_not_none(
-            runtime, data_definition, "Structure", getattr(data_meta, "structure", None)
+    for data_meta in getattr(storage_meta, "data", []) or ():
+        data_definition = _new_schema_member(
+            runtime, "%Dictionary.StorageDataDefinition", data_meta.name, parent
         )
-        _set_runtime_property_if_not_none(
-            runtime, data_definition, "Attribute", getattr(data_meta, "attribute", None)
-        )
-        _set_runtime_property_if_not_none(
-            runtime, data_definition, "Subscript", getattr(data_meta, "subscript", None)
-        )
+        _apply_state_attrs(runtime, data_definition, data_meta, STORAGE_DATA_KEYS)
 
         value_list = runtime.get_property(data_definition, "Values")
         for key, value in (getattr(data_meta, "values", None) or {}).items():
-            value_definition = runtime.create_object("%Dictionary.StorageDataValueDefinition")
-            runtime.set_property(value_definition, "Name", str(key))
-            runtime.set_property(
-                value_definition,
-                "parent",
-                f"{classname}||{storage_name}||{data_meta.name}",
+            value_definition = _new_schema_member(
+                runtime,
+                "%Dictionary.StorageDataValueDefinition",
+                str(key),
+                f"{parent}||{data_meta.name}",
             )
             runtime.set_property(value_definition, "Value", str(value))
             runtime.invoke_method(value_list, "Insert", value_definition)
@@ -1986,21 +1855,14 @@ def _insert_storage_indices(
     storage_name: str,
     storage_meta: Any,
 ) -> None:
-    indices_list = runtime.get_property(storage_definition, "Indices")
-    for index_meta in getattr(storage_meta, "indices", ()) or ():
-        storage_index = runtime.create_object("%Dictionary.StorageIndexDefinition")
-        runtime.set_property(storage_index, "Name", index_meta.name)
-        runtime.set_property(storage_index, "parent", f"{classname}||{storage_name}")
-        _set_runtime_property_if_not_none(
-            runtime, storage_index, "Location", getattr(index_meta, "location", None)
-        )
-        _set_runtime_property_if_not_none(
-            runtime,
-            storage_index,
-            "SmallChunkSize",
-            getattr(index_meta, "small_chunk_size", None),
-        )
-        runtime.invoke_method(indices_list, "Insert", storage_index)
+    _insert_schema_members(
+        runtime,
+        runtime.get_property(storage_definition, "Indices"),
+        "%Dictionary.StorageIndexDefinition",
+        f"{classname}||{storage_name}",
+        getattr(storage_meta, "indices", ()) or (),
+        STORAGE_INDEX_KEYS,
+    )
 
 
 def _insert_storage_properties(
@@ -2010,57 +1872,14 @@ def _insert_storage_properties(
     storage_name: str,
     storage_meta: Any,
 ) -> None:
-    properties_list = runtime.get_property(storage_definition, "Properties")
-    for property_meta in getattr(storage_meta, "properties", []):
-        storage_property = runtime.create_object("%Dictionary.StoragePropertyDefinition")
-        runtime.set_property(storage_property, "Name", property_meta.name)
-        runtime.set_property(storage_property, "parent", f"{classname}||{storage_name}")
-        _set_runtime_property_if_not_none(
-            runtime,
-            storage_property,
-            "AverageFieldSize",
-            getattr(property_meta, "average_field_size", None),
-        )
-        _set_runtime_property_if_not_none(
-            runtime,
-            storage_property,
-            "Selectivity",
-            getattr(property_meta, "selectivity", None),
-        )
-        _set_runtime_property_if_not_none(
-            runtime,
-            storage_property,
-            "OutlierSelectivity",
-            getattr(property_meta, "outlier_selectivity", None),
-        )
-        _set_runtime_property_if_not_none(
-            runtime, storage_property, "Histogram", getattr(property_meta, "histogram", None)
-        )
-        _set_runtime_property_if_not_none(
-            runtime,
-            storage_property,
-            "ChildBlockCount",
-            getattr(property_meta, "child_block_count", None),
-        )
-        _set_runtime_property_if_not_none(
-            runtime,
-            storage_property,
-            "ChildExtentSize",
-            getattr(property_meta, "child_extent_size", None),
-        )
-        if getattr(property_meta, "bias_queries_as_outlier", None) is not None:
-            runtime.set_property(
-                storage_property,
-                "BiasQueriesAsOutlier",
-                1 if property_meta.bias_queries_as_outlier else 0,
-            )
-        _set_runtime_property_if_not_none(
-            runtime,
-            storage_property,
-            "StreamLocation",
-            getattr(property_meta, "stream_location", None),
-        )
-        runtime.invoke_method(properties_list, "Insert", storage_property)
+    _insert_schema_members(
+        runtime,
+        runtime.get_property(storage_definition, "Properties"),
+        "%Dictionary.StoragePropertyDefinition",
+        f"{classname}||{storage_name}",
+        getattr(storage_meta, "properties", []) or (),
+        STORAGE_PROPERTY_KEYS,
+    )
 
 
 def _insert_storage_sql_maps(
@@ -2070,193 +1889,55 @@ def _insert_storage_sql_maps(
     storage_name: str,
     storage_meta: Any,
 ) -> None:
+    parent = f"{classname}||{storage_name}"
     sql_maps_list = runtime.get_property(storage_definition, "SQLMaps")
-    for sql_map_meta in getattr(storage_meta, "sql_maps", []):
-        sql_map = runtime.create_object("%Dictionary.StorageSQLMapDefinition")
-        runtime.set_property(sql_map, "Name", sql_map_meta.name)
-        runtime.set_property(sql_map, "parent", f"{classname}||{storage_name}")
-        _set_runtime_property_if_not_none(
-            runtime, sql_map, "BlockCount", getattr(sql_map_meta, "block_count", None)
+    for sql_map_meta in getattr(storage_meta, "sql_maps", []) or ():
+        sql_map = _new_schema_member(
+            runtime, "%Dictionary.StorageSQLMapDefinition", sql_map_meta.name, parent
         )
-        _set_runtime_property_if_not_none(
-            runtime, sql_map, "Condition", getattr(sql_map_meta, "condition", None)
-        )
-        _set_runtime_property_if_not_none(
-            runtime,
-            sql_map,
-            "ConditionFields",
-            getattr(sql_map_meta, "condition_fields", None),
-        )
-        if getattr(sql_map_meta, "conditional_with_host_vars", None) is not None:
-            runtime.set_property(
-                sql_map,
-                "ConditionalWithHostVars",
-                1 if sql_map_meta.conditional_with_host_vars else 0,
-            )
-        _set_runtime_property_if_not_none(
-            runtime, sql_map, "Global", getattr(sql_map_meta, "global_name", None)
-        )
-        _set_runtime_property_if_not_none(
-            runtime,
-            sql_map,
-            "PopulationPct",
-            getattr(sql_map_meta, "population_pct", None),
-        )
-        _set_runtime_property_if_not_none(
-            runtime,
-            sql_map,
-            "PopulationType",
-            getattr(sql_map_meta, "population_type", None),
-        )
-        _set_runtime_property_if_not_none(
-            runtime,
-            sql_map,
-            "RowReference",
-            getattr(sql_map_meta, "row_reference", None),
-        )
-        _set_runtime_property_if_not_none(
-            runtime, sql_map, "Structure", getattr(sql_map_meta, "structure", None)
-        )
-        _set_runtime_property_if_not_none(
-            runtime, sql_map, "Type", getattr(sql_map_meta, "type", None)
-        )
+        _apply_state_attrs(runtime, sql_map, sql_map_meta, STORAGE_SQL_MAP_KEYS)
+        sql_map_parent = f"{parent}||{sql_map_meta.name}"
 
-        sql_map_data_list = runtime.get_property(sql_map, "Data")
-        for data_meta in getattr(sql_map_meta, "data", ()) or ():
-            sql_map_data = runtime.create_object("%Dictionary.StorageSQLMapDataDefinition")
-            runtime.set_property(sql_map_data, "Name", data_meta.name)
-            runtime.set_property(
-                sql_map_data,
-                "parent",
-                f"{classname}||{storage_name}||{sql_map_meta.name}",
-            )
-            _set_runtime_property_if_not_none(
-                runtime,
-                sql_map_data,
-                "Node",
-                getattr(data_meta, "node", None),
-            )
-            _set_runtime_property_if_not_none(
-                runtime,
-                sql_map_data,
-                "Piece",
-                getattr(data_meta, "piece", None),
-            )
-            _set_runtime_property_if_not_none(
-                runtime, sql_map_data, "Delimiter", getattr(data_meta, "delimiter", None)
-            )
-            _set_runtime_property_if_not_none(
-                runtime,
-                sql_map_data,
-                "RetrievalCode",
-                getattr(data_meta, "retrieval_code", None),
-            )
-            runtime.invoke_method(sql_map_data_list, "Insert", sql_map_data)
-
-        row_id_spec_list = runtime.get_property(sql_map, "RowIdSpecs")
-        for row_id_spec_meta in getattr(sql_map_meta, "row_id_specs", ()) or ():
-            row_id_spec = runtime.create_object("%Dictionary.StorageSQLMapRowIdSpecDefinition")
-            runtime.set_property(row_id_spec, "Name", row_id_spec_meta.name)
-            runtime.set_property(
-                row_id_spec,
-                "parent",
-                f"{classname}||{storage_name}||{sql_map_meta.name}",
-            )
-            _set_runtime_property_if_not_none(
-                runtime, row_id_spec, "Field", getattr(row_id_spec_meta, "field", None)
-            )
-            _set_runtime_property_if_not_none(
-                runtime,
-                row_id_spec,
-                "Expression",
-                getattr(row_id_spec_meta, "expression", None),
-            )
-            runtime.invoke_method(row_id_spec_list, "Insert", row_id_spec)
+        _insert_schema_members(
+            runtime,
+            runtime.get_property(sql_map, "Data"),
+            "%Dictionary.StorageSQLMapDataDefinition",
+            sql_map_parent,
+            getattr(sql_map_meta, "data", ()) or (),
+            STORAGE_SQL_MAP_DATA_KEYS,
+        )
+        _insert_schema_members(
+            runtime,
+            runtime.get_property(sql_map, "RowIdSpecs"),
+            "%Dictionary.StorageSQLMapRowIdSpecDefinition",
+            sql_map_parent,
+            getattr(sql_map_meta, "row_id_specs", ()) or (),
+            STORAGE_SQL_MAP_ROW_ID_SPEC_KEYS,
+        )
 
         subscript_list = runtime.get_property(sql_map, "Subscripts")
         for sub_meta in getattr(sql_map_meta, "subscripts", ()) or ():
-            subscript = runtime.create_object("%Dictionary.StorageSQLMapSubDefinition")
-            runtime.set_property(subscript, "Name", sub_meta.name)
-            runtime.set_property(
-                subscript,
-                "parent",
-                f"{classname}||{storage_name}||{sql_map_meta.name}",
+            subscript = _new_schema_member(
+                runtime, "%Dictionary.StorageSQLMapSubDefinition", sub_meta.name, sql_map_parent
             )
-            _set_runtime_property_if_not_none(
-                runtime, subscript, "AccessType", getattr(sub_meta, "access_type", None)
-            )
-            _set_runtime_property_if_not_none(
-                runtime, subscript, "DataAccess", getattr(sub_meta, "data_access", None)
-            )
-            _set_runtime_property_if_not_none(
-                runtime, subscript, "Delimiter", getattr(sub_meta, "delimiter", None)
-            )
-            _set_runtime_property_if_not_none(
-                runtime, subscript, "Expression", getattr(sub_meta, "expression", None)
-            )
-            _set_runtime_property_if_not_none(
+            _apply_state_attrs(runtime, subscript, sub_meta, STORAGE_SQL_MAP_SUB_KEYS)
+            sub_parent = f"{sql_map_parent}||{sub_meta.name}"
+            _insert_schema_members(
                 runtime,
-                subscript,
-                "LoopInitValue",
-                getattr(sub_meta, "loop_init_value", None),
+                runtime.get_property(subscript, "Accessvars"),
+                "%Dictionary.StorageSQLMapSubAccessvarDefinition",
+                sub_parent,
+                getattr(sub_meta, "access_vars", ()) or (),
+                STORAGE_SQL_MAP_SUB_ACCESS_VAR_KEYS,
             )
-            _set_runtime_property_if_not_none(
-                runtime, subscript, "NextCode", getattr(sub_meta, "next_code", None)
-            )
-            _set_runtime_property_if_not_none(
-                runtime, subscript, "NullMarker", getattr(sub_meta, "null_marker", None)
-            )
-            _set_runtime_property_if_not_none(
-                runtime, subscript, "StartValue", getattr(sub_meta, "start_value", None)
-            )
-            _set_runtime_property_if_not_none(
+            _insert_schema_members(
                 runtime,
-                subscript,
-                "StopExpression",
-                getattr(sub_meta, "stop_expression", None),
+                runtime.get_property(subscript, "Invalidconditions"),
+                "%Dictionary.StorageSQLMapSubInvalidconditionDefinition",
+                sub_parent,
+                getattr(sub_meta, "invalid_conditions", ()) or (),
+                STORAGE_SQL_MAP_SUB_INVALID_CONDITION_KEYS,
             )
-            _set_runtime_property_if_not_none(
-                runtime, subscript, "StopValue", getattr(sub_meta, "stop_value", None)
-            )
-
-            access_var_list = runtime.get_property(subscript, "Accessvars")
-            for access_var_meta in getattr(sub_meta, "access_vars", ()) or ():
-                access_var = runtime.create_object(
-                    "%Dictionary.StorageSQLMapSubAccessvarDefinition"
-                )
-                runtime.set_property(access_var, "Name", access_var_meta.name)
-                runtime.set_property(
-                    access_var,
-                    "parent",
-                    f"{classname}||{storage_name}||{sql_map_meta.name}||{sub_meta.name}",
-                )
-                _set_runtime_property_if_not_none(
-                    runtime, access_var, "Variable", getattr(access_var_meta, "variable", None)
-                )
-                _set_runtime_property_if_not_none(
-                    runtime, access_var, "Code", getattr(access_var_meta, "code", None)
-                )
-                runtime.invoke_method(access_var_list, "Insert", access_var)
-
-            invalid_condition_list = runtime.get_property(subscript, "Invalidconditions")
-            for invalid_condition_meta in getattr(sub_meta, "invalid_conditions", ()) or ():
-                invalid_condition = runtime.create_object(
-                    "%Dictionary.StorageSQLMapSubInvalidconditionDefinition"
-                )
-                runtime.set_property(invalid_condition, "Name", invalid_condition_meta.name)
-                runtime.set_property(
-                    invalid_condition,
-                    "parent",
-                    f"{classname}||{storage_name}||{sql_map_meta.name}||{sub_meta.name}",
-                )
-                _set_runtime_property_if_not_none(
-                    runtime,
-                    invalid_condition,
-                    "Expression",
-                    getattr(invalid_condition_meta, "expression", None),
-                )
-                runtime.invoke_method(invalid_condition_list, "Insert", invalid_condition)
-
             runtime.invoke_method(subscript_list, "Insert", subscript)
 
         runtime.invoke_method(sql_maps_list, "Insert", sql_map)

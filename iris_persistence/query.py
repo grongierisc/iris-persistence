@@ -15,7 +15,12 @@ from iris_persistence.codecs import (
     load_scalar_str,
     save_scalar_null,
 )
-from iris_persistence.field_utils import collection_value_type, is_model_type, is_serial_model_type
+from iris_persistence.field_utils import (
+    collection_value_type,
+    is_model_type,
+    is_serial_model_type,
+    walk_declared_value,
+)
 from iris_persistence.runtime import get_runtime
 from iris_persistence.types import UNSET
 
@@ -46,25 +51,6 @@ def _is_null_object_reference(value: Any) -> bool:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return value == 0
     return False
-
-
-def _coerce_collection_for_load(
-    collection_kind: str,
-    element_type: Any,
-    value: Any,
-) -> Any:
-    if collection_kind == "list" and isinstance(value, list):
-        if is_model_type(element_type):
-            return [_build_model_from_iris_obj(element_type, item) for item in value]
-        return [coerce_value_for_load(element_type, item) for item in value]
-    if collection_kind == "array" and isinstance(value, dict):
-        if is_model_type(element_type):
-            return {
-                str(key): _build_model_from_iris_obj(element_type, item)
-                for key, item in value.items()
-            }
-        return {str(key): coerce_value_for_load(element_type, item) for key, item in value.items()}
-    return value
 
 
 def _build_model_from_iris_obj(
@@ -127,8 +113,13 @@ def _build_model_from_iris_obj(
                 ):
                     python_val = None
                 if model_field._collection_kind is not None:
-                    d[field_name] = _coerce_collection_for_load(
-                        model_field._collection_kind, model_field._element_type, python_val
+                    d[field_name] = walk_declared_value(
+                        python_val,
+                        model_field.declared_type,
+                        lambda item, item_type: _build_model_from_iris_obj(item_type, item)
+                        if is_model_type(item_type)
+                        else coerce_value_for_load(item_type, item),
+                        stringify_keys=True,
                     )
                 else:
                     d[field_name] = _build_model_from_iris_obj(
@@ -164,35 +155,23 @@ def _materialize_related_value(
 ) -> Any:
     if value is None:
         return None
-    collection_kind, element_type = collection_value_type(declared_type)
-    if collection_kind == "list" and isinstance(value, list):
-        if is_model_type(element_type):
-            return [
-                _materialize_related_value(
-                    runtime,
-                    element_type,
-                    item,
-                    persist_related=persist_related,
-                    auto_sync=auto_sync,
-                    validate=validate,
-                )
-                for item in value
-            ]
-        return [coerce_value_for_save(element_type, item) for item in value]
-    if collection_kind == "array" and isinstance(value, dict):
-        if is_model_type(element_type):
-            return {
-                str(key): _materialize_related_value(
-                    runtime,
-                    element_type,
-                    item,
-                    persist_related=persist_related,
-                    auto_sync=auto_sync,
-                    validate=validate,
-                )
-                for key, item in value.items()
-            }
-        return {str(key): coerce_value_for_save(element_type, item) for key, item in value.items()}
+    collection_kind, _element_type = collection_value_type(declared_type)
+    if (collection_kind == "list" and isinstance(value, list)) or (
+        collection_kind == "array" and isinstance(value, dict)
+    ):
+        return walk_declared_value(
+            value,
+            declared_type,
+            lambda item, item_type: _materialize_related_value(
+                runtime,
+                item_type,
+                item,
+                persist_related=persist_related,
+                auto_sync=auto_sync,
+                validate=validate,
+            ),
+            stringify_keys=True,
+        )
     if not is_model_type(declared_type):
         return coerce_value_for_save(declared_type, value)
 
@@ -234,61 +213,34 @@ def _nullable_reference_has_no_initial_value(model_field: Any) -> bool:
     )
 
 
-def _set_native_reference_empty(runtime: Any, iris_obj: Any, field_name: str) -> tuple[bool, bool]:
-    native_handles = getattr(runtime, "_native_handles", None)
-    handles = native_handles(iris_obj) if callable(native_handles) else None
-    if handles is None:
-        return (False, False)
-
-    try:
-        runtime._native_set(handles, field_name, "")
-        return (True, True)
-    except Exception:
-        return (False, True)
-
-
-def _invoke_reference_clear_method(
-    runtime: Any,
-    iris_obj: Any,
-    method_name: str,
-    value: Any,
-) -> bool:
-    try:
-        runtime.invoke_method(iris_obj, method_name, value)
-        return True
-    except Exception:
-        pass
-
-    native_handles = getattr(runtime, "_native_handles", None)
-    handles = native_handles(iris_obj) if callable(native_handles) else None
-    if handles is None:
-        return False
-
-    try:
-        runtime._native_invoke(handles, handles[0], method_name, value)
-        return True
-    except Exception:
-        return False
-
-
 def _clear_nullable_model_reference(
     runtime: Any,
     iris_obj: Any,
     field_name: str,
     model_field: Any,
 ) -> bool:
+    try_native_invoke = getattr(runtime, "try_native_invoke", None)
     if not is_serial_model_type(model_field.declared_type):
         for method_name, value in (
             (f"{field_name}SetObjectId", ""),
             (f"{field_name}SetObjectId", None),
             (f"{field_name}SetObject", None),
         ):
-            if _invoke_reference_clear_method(runtime, iris_obj, method_name, value):
+            try:
+                runtime.invoke_method(iris_obj, method_name, value)
                 return True
+            except Exception:
+                if callable(try_native_invoke) and try_native_invoke(
+                    iris_obj, method_name, value
+                ):
+                    return True
 
-    cleared, native_attempted = _set_native_reference_empty(runtime, iris_obj, field_name)
-    if cleared:
-        return True
+    native_attempted = False
+    try_native_set = getattr(runtime, "try_native_set", None)
+    if callable(try_native_set):
+        cleared, native_attempted = try_native_set(iris_obj, field_name, "")
+        if cleared:
+            return True
 
     if not native_attempted:
         try:

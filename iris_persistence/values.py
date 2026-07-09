@@ -95,6 +95,26 @@ class IRISValueAdapterMixin:
         else:
             db.invoke(target, method_name, *args)
 
+    def try_native_set(self, obj: Any, field_name: str, value: Any) -> tuple[bool, bool]:
+        handles = self._native_handles(obj)
+        if handles is None:
+            return (False, False)
+        try:
+            self._native_set(handles, field_name, value)
+            return (True, True)
+        except Exception:
+            return (False, True)
+
+    def try_native_invoke(self, obj: Any, method_name: str, *args: Any) -> bool:
+        handles = self._native_handles(obj)
+        if handles is None:
+            return False
+        try:
+            self._native_invoke(handles, handles[0], method_name, *args)
+            return True
+        except Exception:
+            return False
+
     def _clear_property_value(self, obj: Any, field_name: str) -> bool:
         handles = self._native_handles(obj)
         if handles is not None:

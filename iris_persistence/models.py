@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import keyword
+from dataclasses import dataclass, is_dataclass
 from dataclasses import fields as dataclass_fields
-from dataclasses import is_dataclass
 from inspect import Parameter, Signature
 from typing import (
     TYPE_CHECKING,
@@ -28,6 +28,7 @@ from iris_persistence.field_utils import (
     is_model_type,
     is_percent_list_field,
     is_scalar_string_field,
+    walk_declared_value,
 )
 from iris_persistence.types import UNSET, ClassMetadata, FieldInfo, Index, ModelField
 
@@ -36,6 +37,14 @@ if TYPE_CHECKING:
 
 T = TypeVar("T", bound="Model")
 TDataclass = TypeVar("TDataclass")
+
+
+@dataclass(frozen=True)
+class _FieldPlan:
+    name: str
+    model_field: ModelField
+    read_kind: str
+    save_kind: str
 
 
 class _FactoryDefault:
@@ -265,7 +274,7 @@ def _build_fast_init(model_fields: Dict[str, ModelField]) -> Any | None:
     return _compile_function_source(params, body, namespace)
 
 
-def _build_fast_load(model_cls: Any, model_fields: Dict[str, ModelField], is_serial: bool) -> Any:
+def _build_fast_load(model_cls: Any, field_plans: tuple[_FieldPlan, ...], is_serial: bool) -> Any:
     """Generate a per-class _fast_load using direct attribute access (LOAD_ATTR bytecode).
 
     IRIS objects have a 2-3× penalty when property access goes through Python's getattr()
@@ -284,7 +293,7 @@ def _build_fast_load(model_cls: Any, model_fields: Dict[str, ModelField], is_ser
     scalar types (datetime, bytes, …) so those fall back to the generic path.
     """
     # Field names must be valid Python identifiers (no special chars like %)
-    if not _codegen_safe_names(model_fields):
+    if not _codegen_safe_names(plan.name for plan in field_plans):
         return None
 
     lines = [
@@ -306,15 +315,15 @@ def _build_fast_load(model_cls: Any, model_fields: Dict[str, ModelField], is_ser
         lines.append("        _oid = _get_runtime().get_object_id(iris_obj)")
         lines.append("        d['_pk'] = str(_oid) if _oid else None")
 
-    for name, mf in model_fields.items():
-        if mf._is_percent_list or mf._collection_kind is not None or mf._is_model_field:
-            return None  # complex field — cannot use this fast path
-        if mf.declared_type is str:
+    for plan in field_plans:
+        name = plan.name
+        mf = plan.model_field
+        if plan.read_kind == "str":
             lines.append(
                 f"    _v = iris_obj.{name}; "
                 f"d[{name!r}] = None if _v == _NULL_STRING else (_v if _v else '')"
             )
-        elif mf.declared_type is bool:
+        elif plan.read_kind == "bool":
             if mf.nullable:
                 lines.append(
                     f"    _v = iris_obj.{name}; "
@@ -322,7 +331,7 @@ def _build_fast_load(model_cls: Any, model_fields: Dict[str, ModelField], is_ser
                 )
             else:
                 lines.append(f"    d[{name!r}] = bool(iris_obj.{name} or 0)")
-        elif mf.declared_type in (int, float):
+        elif plan.read_kind == "primitive":
             if mf.nullable:
                 lines.append(
                     f"    _v = iris_obj.{name}; "
@@ -331,7 +340,7 @@ def _build_fast_load(model_cls: Any, model_fields: Dict[str, ModelField], is_ser
             else:
                 lines.append(f"    d[{name!r}] = iris_obj.{name}")
         else:
-            return None  # datetime, bytes, or other type needing coercion
+            return None  # complex/coerced fields need the generic path
 
     lines.append("    return instance")
     source = "\n".join(lines)
@@ -349,8 +358,7 @@ def _build_fast_load(model_cls: Any, model_fields: Dict[str, ModelField], is_ser
 
 def _build_fast_save(
     model_cls: Any,
-    model_fields: Dict[str, ModelField],
-    scalar_fast_fields: list,
+    field_plans: tuple[_FieldPlan, ...],
 ) -> Any:
     """Generate a per-class _fast_save using direct attribute assignment (STORE_ATTR bytecode).
 
@@ -365,15 +373,17 @@ def _build_fast_save(
     coercion or complex fields (collections, related models).  Falls back to the generic
     loop in save_model for all other models.
     """
-    if not scalar_fast_fields:
+    scalar_fast_plans = [plan for plan in field_plans if plan.save_kind == "scalar_fast"]
+    if not scalar_fast_plans or len(scalar_fast_plans) != len(field_plans):
         return None
     # Field names must be valid Python identifiers
-    if not _codegen_safe_names(scalar_fast_fields):
+    if not _codegen_safe_names(plan.name for plan in scalar_fast_plans):
         return None
 
     lines = ["def _fast_save(iris_obj, inst_dict):"]
-    for name in scalar_fast_fields:
-        mf = model_fields[name]
+    for plan in scalar_fast_plans:
+        name = plan.name
+        mf = plan.model_field
         if mf.declared_type is str:
             lines.append(f"    if {name!r} in inst_dict:")
             lines.append(f"        _v = inst_dict.get({name!r})")
@@ -583,59 +593,37 @@ def _resolve_model_superclasses(meta_inner: Any, declared_model_options: dict[st
     return "%Persistent"
 
 
-def _partition_save_fields(
-    model_fields: dict[str, ModelField],
-) -> tuple[list[str], list[tuple[str, Any]], list[tuple[str, ModelField]]]:
-    scalar_fast: list[str] = []
-    scalar_coerce: list[tuple[str, Any]] = []
-    complex_save: list[tuple[str, ModelField]] = []
-
-    for field_name, model_field in model_fields.items():
-        if getattr(model_field.field_info, "readonly", False):
-            complex_save.append((field_name, model_field))
-        elif model_field._collection_kind is None and not _is_object_reference_field(model_field):
-            if model_field.declared_type in DIRECT_PROPERTY_TYPES:
-                scalar_fast.append(field_name)
-            else:
-                scalar_coerce.append((field_name, model_field.declared_type))
-        else:
-            complex_save.append((field_name, model_field))
-
-    return scalar_fast, scalar_coerce, complex_save
-
-
-def _partition_read_fields(
-    model_fields: dict[str, ModelField],
-) -> tuple[
-    list[str],
-    list[str],
-    list[str],
-    list[tuple[str, Any]],
-    list[tuple[str, ModelField]],
-]:
-    read_str: list[str] = []
-    read_primitive: list[str] = []
-    read_bool: list[str] = []
-    read_coerce: list[tuple[str, Any]] = []
-    read_complex: list[tuple[str, ModelField]] = []
-
+def _build_field_plans(model_fields: dict[str, ModelField]) -> tuple[_FieldPlan, ...]:
+    plans = []
     for field_name, model_field in model_fields.items():
         if (
             model_field._is_percent_list
             or model_field._collection_kind is not None
             or model_field._is_model_field
         ):
-            read_complex.append((field_name, model_field))
+            read_kind = "complex"
         elif model_field.declared_type is bool:
-            read_bool.append(field_name)
+            read_kind = "bool"
         elif model_field.declared_type is str:
-            read_str.append(field_name)
+            read_kind = "str"
         elif model_field.declared_type in (int, float):
-            read_primitive.append(field_name)
+            read_kind = "primitive"
         else:
-            read_coerce.append((field_name, model_field.declared_type))
+            read_kind = "coerce"
 
-    return read_str, read_primitive, read_bool, read_coerce, read_complex
+        if getattr(model_field.field_info, "readonly", False):
+            save_kind = "complex"
+        elif model_field._collection_kind is None and not _is_object_reference_field(model_field):
+            save_kind = (
+                "scalar_fast"
+                if model_field.declared_type in DIRECT_PROPERTY_TYPES
+                else "scalar_coerce"
+            )
+        else:
+            save_kind = "complex"
+
+        plans.append(_FieldPlan(field_name, model_field, read_kind, save_kind))
+    return tuple(plans)
 
 
 def _model_value_to_dict(value: Any) -> Any:
@@ -653,35 +641,27 @@ def _convert_recursive_value(
     declared_type: Any,
     mode: str,
 ) -> Any:
-    if value is None:
-        return None
+    def convert_leaf(leaf_value: Any, resolved_type: Any) -> Any:
+        if (
+            mode == "mapping_to_model"
+            and is_model_type(resolved_type)
+            and isinstance(leaf_value, dict)
+        ):
+            return resolved_type.from_dict(leaf_value)
+        if (
+            mode == "dataclass_to_model"
+            and is_model_type(resolved_type)
+            and is_dataclass(leaf_value)
+            and not isinstance(leaf_value, type)
+        ):
+            return resolved_type.from_dataclass(leaf_value)
+        if mode == "model_to_dataclass" and isinstance(leaf_value, Model):
+            if isinstance(resolved_type, type) and is_dataclass(resolved_type):
+                return leaf_value.to_dataclass(resolved_type)
+            return leaf_value.to_dict()
+        return leaf_value
 
-    resolved_type = resolve_declared_type(declared_type)
-    collection_kind, element_type = collection_value_type(resolved_type)
-    if collection_kind == "list" and isinstance(value, list):
-        return [
-            _convert_recursive_value(item, element_type, mode)
-            for item in value
-        ]
-    if collection_kind == "array" and isinstance(value, dict):
-        return {
-            key: _convert_recursive_value(item, element_type, mode)
-            for key, item in value.items()
-        }
-    if mode == "mapping_to_model" and is_model_type(resolved_type) and isinstance(value, dict):
-        return resolved_type.from_dict(value)
-    if (
-        mode == "dataclass_to_model"
-        and is_model_type(resolved_type)
-        and is_dataclass(value)
-        and not isinstance(value, type)
-    ):
-        return resolved_type.from_dataclass(value)
-    if mode == "model_to_dataclass" and isinstance(value, Model):
-        if isinstance(resolved_type, type) and is_dataclass(resolved_type):
-            return value.to_dataclass(resolved_type)
-        return value.to_dict()
-    return value
+    return walk_declared_value(value, declared_type, convert_leaf)
 
 
 class ModelMeta(type):
@@ -754,20 +734,37 @@ class ModelMeta(type):
         declared_indexes = list(getattr(meta_inner, "indexes", []))
         setattr(cls, "_indexes", _synthesize_indexes(cls.__name__, model_fields, declared_indexes))
 
-        _scalar_fast, _scalar_coerce, _complex_save = _partition_save_fields(model_fields)
-
-        _read_str, _read_prim, _read_bool, _read_coerce, _read_complex = (
-            _partition_read_fields(model_fields)
-        )
+        field_plans = _build_field_plans(model_fields)
         for attr_name, value in {
-            "_scalar_fast_fields": _scalar_fast,
-            "_scalar_coerce_fields": _scalar_coerce,
-            "_complex_save_fields": _complex_save,
-            "_read_str_fields": _read_str,
-            "_read_primitive_fields": _read_prim,
-            "_read_bool_fields": _read_bool,
-            "_read_coerce_fields": _read_coerce,
-            "_read_complex_fields": _read_complex,
+            "_field_plans": field_plans,
+            "_scalar_fast_fields": [
+                plan.name for plan in field_plans if plan.save_kind == "scalar_fast"
+            ],
+            "_scalar_coerce_fields": [
+                (plan.name, plan.model_field.declared_type)
+                for plan in field_plans
+                if plan.save_kind == "scalar_coerce"
+            ],
+            "_complex_save_fields": [
+                (plan.name, plan.model_field)
+                for plan in field_plans
+                if plan.save_kind == "complex"
+            ],
+            "_read_str_fields": [plan.name for plan in field_plans if plan.read_kind == "str"],
+            "_read_primitive_fields": [
+                plan.name for plan in field_plans if plan.read_kind == "primitive"
+            ],
+            "_read_bool_fields": [plan.name for plan in field_plans if plan.read_kind == "bool"],
+            "_read_coerce_fields": [
+                (plan.name, plan.model_field.declared_type)
+                for plan in field_plans
+                if plan.read_kind == "coerce"
+            ],
+            "_read_complex_fields": [
+                (plan.name, plan.model_field)
+                for plan in field_plans
+                if plan.read_kind == "complex"
+            ],
         }.items():
             setattr(cls, attr_name, value)
         # Pre-compute serial-class flag to avoid re-checking per _build_model_from_iris_obj call.
@@ -778,15 +775,15 @@ class ModelMeta(type):
         # Generate per-class _fast_load if possible (only str/int/float/bool scalar fields).
         # None means fall back to the generic _build_model_from_iris_obj loop.
         _fast_load_fn = None
-        if not _read_coerce and not _read_complex:
-            _fast_load_fn = _build_fast_load(cls, model_fields, _is_serial)
+        if not any(plan.read_kind in {"coerce", "complex"} for plan in field_plans):
+            _fast_load_fn = _build_fast_load(cls, field_plans, _is_serial)
         setattr(cls, "_fast_load", _fast_load_fn)
 
         # Generate per-class _fast_save for primitive scalar fields only.
         # None means fall back to the generic set_property loop in save_model.
         _fast_save_fn = None
-        if not _scalar_coerce and not _complex_save:
-            _fast_save_fn = _build_fast_save(cls, model_fields, _scalar_fast)
+        if not any(plan.save_kind != "scalar_fast" for plan in field_plans):
+            _fast_save_fn = _build_fast_save(cls, field_plans)
         setattr(cls, "_fast_save", _fast_save_fn)
 
 
@@ -798,6 +795,7 @@ class Model(metaclass=ModelMeta):
     _auto_sync: bool
     _validate_on_init: bool
     _class_metadata: ClassMetadata | None
+    _field_plans: tuple[_FieldPlan, ...]
     _scalar_fast_fields: list[str]
     _scalar_coerce_fields: list[tuple[str, Any]]
     _complex_save_fields: list[tuple[str, ModelField]]

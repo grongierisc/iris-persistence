@@ -1713,6 +1713,33 @@ def _sync_indexes_from_state(
 
 
 _STORAGE_BOOL_ATTRS = {"bias_queries_as_outlier", "conditional_with_host_vars"}
+_STORAGE_MEMBER_INSERT_SPECS = (
+    ("Indices", "%Dictionary.StorageIndexDefinition", "indices", STORAGE_INDEX_KEYS),
+    ("Properties", "%Dictionary.StoragePropertyDefinition", "properties", STORAGE_PROPERTY_KEYS),
+)
+_SQL_MAP_MEMBER_INSERT_SPECS = (
+    ("Data", "%Dictionary.StorageSQLMapDataDefinition", "data", STORAGE_SQL_MAP_DATA_KEYS),
+    (
+        "RowIdSpecs",
+        "%Dictionary.StorageSQLMapRowIdSpecDefinition",
+        "row_id_specs",
+        STORAGE_SQL_MAP_ROW_ID_SPEC_KEYS,
+    ),
+)
+_SQL_MAP_SUB_MEMBER_INSERT_SPECS = (
+    (
+        "Accessvars",
+        "%Dictionary.StorageSQLMapSubAccessvarDefinition",
+        "access_vars",
+        STORAGE_SQL_MAP_SUB_ACCESS_VAR_KEYS,
+    ),
+    (
+        "Invalidconditions",
+        "%Dictionary.StorageSQLMapSubInvalidconditionDefinition",
+        "invalid_conditions",
+        STORAGE_SQL_MAP_SUB_INVALID_CONDITION_KEYS,
+    ),
+)
 
 
 def _apply_state_attrs(
@@ -1785,40 +1812,6 @@ def _insert_storage_data(
         runtime.invoke_method(data_list, "Insert", data_definition)
 
 
-def _insert_storage_indices(
-    runtime: Any,
-    storage_definition: Any,
-    classname: str,
-    storage_name: str,
-    storage_meta: Any,
-) -> None:
-    _insert_schema_members(
-        runtime,
-        runtime.get_property(storage_definition, "Indices"),
-        "%Dictionary.StorageIndexDefinition",
-        f"{classname}||{storage_name}",
-        getattr(storage_meta, "indices", ()) or (),
-        STORAGE_INDEX_KEYS,
-    )
-
-
-def _insert_storage_properties(
-    runtime: Any,
-    storage_definition: Any,
-    classname: str,
-    storage_name: str,
-    storage_meta: Any,
-) -> None:
-    _insert_schema_members(
-        runtime,
-        runtime.get_property(storage_definition, "Properties"),
-        "%Dictionary.StoragePropertyDefinition",
-        f"{classname}||{storage_name}",
-        getattr(storage_meta, "properties", []) or (),
-        STORAGE_PROPERTY_KEYS,
-    )
-
-
 def _insert_storage_sql_maps(
     runtime: Any,
     storage_definition: Any,
@@ -1835,22 +1828,15 @@ def _insert_storage_sql_maps(
         _apply_state_attrs(runtime, sql_map, sql_map_meta, STORAGE_SQL_MAP_KEYS)
         sql_map_parent = f"{parent}||{sql_map_meta.name}"
 
-        _insert_schema_members(
-            runtime,
-            runtime.get_property(sql_map, "Data"),
-            "%Dictionary.StorageSQLMapDataDefinition",
-            sql_map_parent,
-            getattr(sql_map_meta, "data", ()) or (),
-            STORAGE_SQL_MAP_DATA_KEYS,
-        )
-        _insert_schema_members(
-            runtime,
-            runtime.get_property(sql_map, "RowIdSpecs"),
-            "%Dictionary.StorageSQLMapRowIdSpecDefinition",
-            sql_map_parent,
-            getattr(sql_map_meta, "row_id_specs", ()) or (),
-            STORAGE_SQL_MAP_ROW_ID_SPEC_KEYS,
-        )
+        for list_property, dictionary_class, attr_name, member_keys in _SQL_MAP_MEMBER_INSERT_SPECS:
+            _insert_schema_members(
+                runtime,
+                runtime.get_property(sql_map, list_property),
+                dictionary_class,
+                sql_map_parent,
+                getattr(sql_map_meta, attr_name, ()) or (),
+                member_keys,
+            )
 
         subscript_list = runtime.get_property(sql_map, "Subscripts")
         for sub_meta in getattr(sql_map_meta, "subscripts", ()) or ():
@@ -1859,22 +1845,20 @@ def _insert_storage_sql_maps(
             )
             _apply_state_attrs(runtime, subscript, sub_meta, STORAGE_SQL_MAP_SUB_KEYS)
             sub_parent = f"{sql_map_parent}||{sub_meta.name}"
-            _insert_schema_members(
-                runtime,
-                runtime.get_property(subscript, "Accessvars"),
-                "%Dictionary.StorageSQLMapSubAccessvarDefinition",
-                sub_parent,
-                getattr(sub_meta, "access_vars", ()) or (),
-                STORAGE_SQL_MAP_SUB_ACCESS_VAR_KEYS,
-            )
-            _insert_schema_members(
-                runtime,
-                runtime.get_property(subscript, "Invalidconditions"),
-                "%Dictionary.StorageSQLMapSubInvalidconditionDefinition",
-                sub_parent,
-                getattr(sub_meta, "invalid_conditions", ()) or (),
-                STORAGE_SQL_MAP_SUB_INVALID_CONDITION_KEYS,
-            )
+            for (
+                list_property,
+                dictionary_class,
+                attr_name,
+                child_keys,
+            ) in _SQL_MAP_SUB_MEMBER_INSERT_SPECS:
+                _insert_schema_members(
+                    runtime,
+                    runtime.get_property(subscript, list_property),
+                    dictionary_class,
+                    sub_parent,
+                    getattr(sub_meta, attr_name, ()) or (),
+                    child_keys,
+                )
             runtime.invoke_method(subscript_list, "Insert", subscript)
 
         runtime.invoke_method(sql_maps_list, "Insert", sql_map)
@@ -1914,8 +1898,16 @@ def _sync_storage(
 
     _apply_state_attrs(runtime, storage_definition, storage_meta, STORAGE_KEYS)
     _insert_storage_data(runtime, storage_definition, classname, storage_name, storage_meta)
-    _insert_storage_indices(runtime, storage_definition, classname, storage_name, storage_meta)
-    _insert_storage_properties(runtime, storage_definition, classname, storage_name, storage_meta)
+    storage_parent = f"{classname}||{storage_name}"
+    for list_property, dictionary_class, attr_name, storage_keys in _STORAGE_MEMBER_INSERT_SPECS:
+        _insert_schema_members(
+            runtime,
+            runtime.get_property(storage_definition, list_property),
+            dictionary_class,
+            storage_parent,
+            getattr(storage_meta, attr_name, ()) or (),
+            storage_keys,
+        )
     _insert_storage_sql_maps(runtime, storage_definition, classname, storage_name, storage_meta)
 
     runtime.invoke_method(storage_list, "Insert", storage_definition)

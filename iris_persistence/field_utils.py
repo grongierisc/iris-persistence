@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime
 import decimal
-from typing import Any, Dict, List, get_args, get_origin
+from typing import Any, Callable, Dict, List, get_args, get_origin
 
 from iris_persistence.codecs import resolve_declared_type
 
@@ -66,6 +66,36 @@ def collection_value_type(declared_type: Any) -> tuple[str | None, Any]:
         element_type = resolve_declared_type(args[1]) if len(args) == 2 else Any
         return ("array", element_type)
     return (None, None)
+
+
+def walk_declared_value(
+    value: Any,
+    declared_type: Any,
+    leaf: Callable[[Any, Any], Any],
+    *,
+    stringify_keys: bool = False,
+) -> Any:
+    if value is None:
+        return None
+
+    resolved_type = resolve_declared_type(declared_type)
+    collection_kind, element_type = collection_value_type(resolved_type)
+    if collection_kind == "list" and isinstance(value, list):
+        return [
+            walk_declared_value(item, element_type, leaf, stringify_keys=stringify_keys)
+            for item in value
+        ]
+    if collection_kind == "array" and isinstance(value, dict):
+        return {
+            str(key) if stringify_keys else key: walk_declared_value(
+                item,
+                element_type,
+                leaf,
+                stringify_keys=stringify_keys,
+            )
+            for key, item in value.items()
+        }
+    return leaf(value, resolved_type)
 
 
 def is_percent_list_field(field_meta: Any | None) -> bool:
@@ -155,3 +185,15 @@ def _build_reverse_type_map() -> dict[str, str]:
 
 
 IRIS_TYPE_TO_PYTHON_NAME: dict[str, str] = _build_reverse_type_map()
+
+
+def python_annotation_for_iris_type(iris_type: str) -> str:
+    """Return the Python annotation name scaffolded for an IRIS property type."""
+    if not iris_type or is_iris_collection_type(iris_type):
+        return "Any"
+    mapped = IRIS_TYPE_TO_PYTHON_NAME.get(iris_type)
+    if mapped is not None:
+        return mapped
+    if iris_type.startswith("%"):
+        return "str"
+    return "Any"

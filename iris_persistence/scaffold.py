@@ -7,11 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from iris_persistence.field_utils import (
-    IRIS_TYPE_TO_PYTHON_NAME,
     coerce_bool,
     collection_kind_from_iris_type,
     is_application_iris_class,
-    is_iris_collection_type,
+    python_annotation_for_iris_type,
 )
 from iris_persistence.runtime import get_runtime
 from iris_persistence.types import (
@@ -26,20 +25,6 @@ from iris_persistence.types import (
     StorageSQLMapSubAccessVar,
     StorageSQLMapSubInvalidCondition,
 )
-
-
-def _map_iris_type_to_python(iris_type: str) -> str:
-    """Map an IRIS type to a Python type string for the generated class."""
-    if not iris_type:
-        return "Any"
-    mapped = IRIS_TYPE_TO_PYTHON_NAME.get(iris_type)
-    if mapped is not None:
-        return mapped
-    if is_iris_collection_type(iris_type):
-        return "Any"
-    if iris_type.startswith("%"):
-        return "str"
-    return "Any"
 
 
 def _parse_iris_list(value: Any) -> list[Any]:
@@ -414,7 +399,7 @@ class _CompiledDictionaryReader:
                 _CompiledProperty(
                     name=prop_name,
                     iris_type=prop_type,
-                    python_type=_map_iris_type_to_python(prop_type),
+                    python_type=python_annotation_for_iris_type(prop_type),
                     required=coerce_bool(required),
                     default=init_exp if init_exp != '""' and init_exp else None,
                     maxlen=parsed_params.get("MAXLEN"),

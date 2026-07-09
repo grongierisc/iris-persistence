@@ -1756,10 +1756,6 @@ def _insert_schema_members(
         runtime.invoke_method(target_list, "Insert", obj)
 
 
-def _apply_storage_attributes(runtime: Any, storage_definition: Any, storage_meta: Any) -> None:
-    _apply_state_attrs(runtime, storage_definition, storage_meta, STORAGE_KEYS)
-
-
 def _insert_storage_data(
     runtime: Any,
     storage_definition: Any,
@@ -1916,7 +1912,7 @@ def _sync_storage(
     runtime.set_property(storage_definition, "parent", classname)
     runtime.set_property(class_definition, "StorageStrategy", storage_name)
 
-    _apply_storage_attributes(runtime, storage_definition, storage_meta)
+    _apply_state_attrs(runtime, storage_definition, storage_meta, STORAGE_KEYS)
     _insert_storage_data(runtime, storage_definition, classname, storage_name, storage_meta)
     _insert_storage_indices(runtime, storage_definition, classname, storage_name, storage_meta)
     _insert_storage_properties(runtime, storage_definition, classname, storage_name, storage_meta)
@@ -2010,21 +2006,17 @@ def _sync_schema_state(runtime: Any, state: SchemaState | dict[str, Any]) -> Non
     _save_and_compile_schema_class(runtime, cd, schema_classname)
 
 
-def _schema_transaction_methods(runtime: Any) -> tuple[Any, Any, Any] | None:
-    begin = getattr(runtime, "begin_transaction", None)
-    commit = getattr(runtime, "commit_transaction", None)
-    rollback = getattr(runtime, "rollback_transaction", None)
-    if callable(begin) and callable(commit) and callable(rollback):
-        return (begin, commit, rollback)
-    return None
-
-
 def _run_with_schema_transaction(runtime: Any, action: Callable[[], Any]) -> Any:
-    transaction_methods = _schema_transaction_methods(runtime)
-    if transaction_methods is None:
+    begin_transaction = getattr(runtime, "begin_transaction", None)
+    commit_transaction = getattr(runtime, "commit_transaction", None)
+    rollback_transaction = getattr(runtime, "rollback_transaction", None)
+    if not (
+        callable(begin_transaction)
+        and callable(commit_transaction)
+        and callable(rollback_transaction)
+    ):
         return action()
 
-    begin_transaction, commit_transaction, rollback_transaction = transaction_methods
     begin_transaction()
     try:
         result = action()

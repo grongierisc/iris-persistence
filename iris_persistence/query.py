@@ -24,10 +24,6 @@ TModel = TypeVar("TModel", bound="iris_persistence.models.Model")
 _AUTO_SYNCED: set[type[iris_persistence.models.Model]] = set()
 
 
-def _clear_auto_sync_cache() -> None:
-    _AUTO_SYNCED.clear()
-
-
 @contextmanager
 def _dbapi_cursor(runtime: Any) -> Iterator[Any]:
     """Yield a cursor from a fresh DB-API connection, closing both afterwards."""
@@ -238,19 +234,9 @@ def _nullable_reference_has_no_initial_value(model_field: Any) -> bool:
     )
 
 
-def _is_model_reference_clear_value(value: Any) -> bool:
-    return value is None or (isinstance(value, str) and value == "")
-
-
-def _native_handles_for(runtime: Any, iris_obj: Any) -> Any | None:
-    native_handles = getattr(runtime, "_native_handles", None)
-    if not callable(native_handles):
-        return None
-    return native_handles(iris_obj)
-
-
 def _set_native_reference_empty(runtime: Any, iris_obj: Any, field_name: str) -> tuple[bool, bool]:
-    handles = _native_handles_for(runtime, iris_obj)
+    native_handles = getattr(runtime, "_native_handles", None)
+    handles = native_handles(iris_obj) if callable(native_handles) else None
     if handles is None:
         return (False, False)
 
@@ -273,7 +259,8 @@ def _invoke_reference_clear_method(
     except Exception:
         pass
 
-    handles = _native_handles_for(runtime, iris_obj)
+    native_handles = getattr(runtime, "_native_handles", None)
+    handles = native_handles(iris_obj) if callable(native_handles) else None
     if handles is None:
         return False
 
@@ -530,7 +517,7 @@ def _populate_iris_object(
                 if (
                     iris_persistence.models._is_object_reference_field(model_field)
                     and model_field.nullable
-                    and _is_model_reference_clear_value(val)
+                    and (val is None or (isinstance(val, str) and val == ""))
                 ):
                     if (
                         not is_update

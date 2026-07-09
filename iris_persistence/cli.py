@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from typing import Any
 
 from iris_persistence.migrations import (
     MigrationError,
@@ -17,17 +16,9 @@ from iris_persistence.migrations import (
 )
 
 
-def _models(specs: list[str]) -> list[type[Any]]:
-    return [_load_model_spec(spec) for spec in specs]
-
-
-def _print_json(data: Any) -> None:
-    print(json.dumps(data, sort_keys=True, indent=2, default=str))
-
-
 def _cmd_plan(args: argparse.Namespace) -> int:
     plan = create_plan(
-        _models(args.models),
+        [_load_model_spec(spec) for spec in args.models],
         target_revision=args.to,
         from_revision=args.from_revision,
         fail_on_drift=args.fail_on_drift,
@@ -46,16 +37,12 @@ def _cmd_plan(args: argparse.Namespace) -> int:
     return 0
 
 
-def _load_plan(path: str) -> MigrationPlan:
-    return MigrationPlan.load(path)
-
-
 def _cmd_apply(args: argparse.Namespace) -> int:
     if args.plan_file:
-        plan = _load_plan(args.plan_file)
+        plan = MigrationPlan.load(args.plan_file)
     else:
         plan = create_plan(
-            _models(args.models),
+            [_load_model_spec(spec) for spec in args.models],
             target_revision=args.to,
             from_revision=args.from_revision,
             fail_on_drift=args.fail_on_drift,
@@ -66,7 +53,7 @@ def _cmd_apply(args: argparse.Namespace) -> int:
         allow_destructive=args.allow_destructive or args.yes,
     )
     if args.json:
-        _print_json(result.to_dict())
+        print(json.dumps(result.to_dict(), sort_keys=True, indent=2, default=str))
     else:
         print(f"{result.status}: {result.target_revision}")
         if result.backup_dir:
@@ -75,7 +62,7 @@ def _cmd_apply(args: argparse.Namespace) -> int:
 
 
 def _cmd_review_plan(args: argparse.Namespace) -> int:
-    plan = _load_plan(args.plan_file)
+    plan = MigrationPlan.load(args.plan_file)
     if args.json:
         print(plan.to_json())
     else:
@@ -90,9 +77,9 @@ def _cmd_review_plan(args: argparse.Namespace) -> int:
 
 
 def _cmd_verify_plan(args: argparse.Namespace) -> int:
-    result = verify_plan(_load_plan(args.plan_file))
+    result = verify_plan(MigrationPlan.load(args.plan_file))
     if args.json:
-        _print_json(result.to_dict())
+        print(json.dumps(result.to_dict(), sort_keys=True, indent=2, default=str))
     else:
         print("Converged." if result.converged else "Not converged.")
         for diff in result.diffs:
@@ -106,16 +93,16 @@ def _cmd_rollback_backup(args: argparse.Namespace) -> int:
         allow_destructive=args.allow_destructive or args.yes,
     )
     if args.json:
-        _print_json(result.to_dict())
+        print(json.dumps(result.to_dict(), sort_keys=True, indent=2, default=str))
     else:
         print(f"Rolled back backup {result.backup_dir}")
     return 0
 
 
 def _cmd_drift(args: argparse.Namespace) -> int:
-    report = check_drift(_models(args.models))
+    report = check_drift([_load_model_spec(spec) for spec in args.models])
     if args.json:
-        _print_json(report.to_dict())
+        print(json.dumps(report.to_dict(), sort_keys=True, indent=2, default=str))
     else:
         if report.has_drift:
             for diff in report.diffs:

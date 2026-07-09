@@ -49,26 +49,9 @@ class _NonClosingConnectionProxy:
         return None
 
 
-def _is_missing_class_error(exc: BaseException) -> bool:
-    message = str(exc)
-    return "iris.cls: error finding class" in message
-
-
-def _format_missing_class_error(class_name: str) -> str:
-    return (
-        f"IRIS class {class_name!r} does not exist in the current namespace. "
-        "If this model is defined in Python, run `Model.sync_schema()` first. "
-        "Otherwise verify `Meta.classname` and the active IRIS namespace."
-    )
-
-
 def get_runtime() -> RuntimeAdapter:
     if _active_runtime is not None:
         return _active_runtime
-    return _get_wrapper_runtime()
-
-
-def _get_wrapper_runtime() -> IRISRuntimeAdapter:
     global _wrapper_runtime
     if _wrapper_runtime is None:
         _wrapper_runtime = IRISRuntimeAdapter()
@@ -94,7 +77,7 @@ def _reset_model_runtime_caches() -> None:
         import iris_persistence.query as query
     except Exception:
         return
-    query._clear_auto_sync_cache()
+    query._AUTO_SYNCED.clear()
 
 
 def configure_default_runtime(runtime: RuntimeAdapter | None) -> None:
@@ -166,8 +149,12 @@ class IRISRuntimeAdapter(IRISValueAdapterMixin):
         try:
             return iris.cls(class_name)
         except RuntimeError as exc:
-            if _is_missing_class_error(exc):
-                raise RuntimeError(_format_missing_class_error(class_name)) from exc
+            if "iris.cls: error finding class" in str(exc):
+                raise RuntimeError(
+                    f"IRIS class {class_name!r} does not exist in the current namespace. "
+                    "If this model is defined in Python, run `Model.sync_schema()` first. "
+                    "Otherwise verify `Meta.classname` and the active IRIS namespace."
+                ) from exc
             raise
 
     def call_classmethod(self, class_name: str, method_name: str, *args: Any) -> Any:

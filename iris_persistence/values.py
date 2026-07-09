@@ -6,15 +6,10 @@ import json
 from typing import Any
 
 from iris_persistence.field_utils import (
+    PYTHON_SCALAR_TYPES,
     collection_kind_from_field,
     is_percent_list_field,
 )
-
-_SCALAR_PRIMITIVES = (int, str, float, bool, bytes, bytearray)
-
-
-def _uses_iris_collection_class(field_meta: Any | None) -> bool:
-    return collection_kind_from_field(field_meta) is not None
 
 
 class IRISValueAdapterMixin:
@@ -170,7 +165,7 @@ class IRISValueAdapterMixin:
         val: dict[Any, Any],
         field_meta: Any | None = None,
     ) -> None:
-        if _uses_iris_collection_class(field_meta):
+        if collection_kind_from_field(field_meta) is not None:
             if self._populate_collection_property(obj, field_name, val, field_meta=field_meta):
                 return
             if is_percent_list_field(field_meta):
@@ -198,7 +193,7 @@ class IRISValueAdapterMixin:
         if is_percent_list_field(field_meta):
             self.set_property(obj, field_name, self._encode_percent_list(val))
             return
-        if _uses_iris_collection_class(field_meta):
+        if collection_kind_from_field(field_meta) is not None:
             if self._populate_collection_property(obj, field_name, val, field_meta=field_meta):
                 return
         try:
@@ -242,7 +237,7 @@ class IRISValueAdapterMixin:
         return None
 
     def extract_python_value(self, val: Any) -> Any:
-        if type(val) in _SCALAR_PRIMITIVES:
+        if type(val) in PYTHON_SCALAR_TYPES:
             return val
         extracted_collection = self._extract_collection_value(val)
         if extracted_collection is not None:

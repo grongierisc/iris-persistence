@@ -969,15 +969,6 @@ def _collect_classes(
     )
 
 
-def _append_literal_arg(args: list[str], name: str, value: Any) -> None:
-    if value is None:
-        return
-    if isinstance(value, bool):
-        args.append(f"{name}={'True' if value else 'False'}")
-    else:
-        args.append(f"{name}={value!r}")
-
-
 def _render_call(
     class_name: str,
     item: Any,
@@ -994,8 +985,11 @@ def _render_call(
         if field_name in true_flags:
             if value:
                 args.append(f"{field_name}=True")
-        else:
-            _append_literal_arg(args, field_name, value)
+        elif value is not None:
+            if isinstance(value, bool):
+                args.append(f"{field_name}={'True' if value else 'False'}")
+            else:
+                args.append(f"{field_name}={value!r}")
     return f"{class_name}({', '.join(args)})"
 
 
@@ -1030,20 +1024,6 @@ def _render_args(item: Any, specs: tuple[tuple[str, str, str], ...]) -> list[str
     ]
 
 
-def _render_constructor(
-    class_name: str,
-    item: Any,
-    specs: tuple[tuple[str, str, str], ...],
-) -> str:
-    return f"{class_name}({', '.join(_render_args(item, specs))})"
-
-
-def _append_arg(args: list[str], name: str, value: Any, style: str = "repr") -> None:
-    arg = _format_arg(name, value, style)
-    if arg is not None:
-        args.append(arg)
-
-
 def _render_property_type(
     prop: _CompiledProperty,
     python_class_names: dict[str, str],
@@ -1061,28 +1041,6 @@ def _render_property_type(
     if collection == "array":
         return f"dict[str, {base_type}]"
     return base_type
-
-
-def _render_storage_sql_map_data(item: StorageSQLMapData) -> str:
-    return _render_call(
-        "StorageSQLMapData",
-        item,
-        ("node", "piece", "delimiter", "retrieval_code"),
-    )
-
-
-def _render_storage_sql_map_row_id_spec(item: StorageSQLMapRowIdSpec) -> str:
-    return _render_call("StorageSQLMapRowIdSpec", item, ("field", "expression"))
-
-
-def _render_storage_sql_map_sub_access_var(item: StorageSQLMapSubAccessVar) -> str:
-    return _render_call("StorageSQLMapSubAccessVar", item, ("variable", "code"))
-
-
-def _render_storage_sql_map_sub_invalid_condition(
-    item: StorageSQLMapSubInvalidCondition,
-) -> str:
-    return _render_call("StorageSQLMapSubInvalidCondition", item, ("expression",))
 
 
 def _render_storage_sql_map_sub(item: StorageSQLMapSub) -> list[str]:
@@ -1109,7 +1067,8 @@ def _render_storage_sql_map_sub(item: StorageSQLMapSub) -> list[str]:
     if item.access_vars:
         lines.append("    access_vars=(")
         lines.extend(
-            f"        {_render_storage_sql_map_sub_access_var(access_var)},"
+            "        "
+            f"{_render_call('StorageSQLMapSubAccessVar', access_var, ('variable', 'code'))},"
             for access_var in item.access_vars
         )
         lines.append("    ),")
@@ -1117,7 +1076,7 @@ def _render_storage_sql_map_sub(item: StorageSQLMapSub) -> list[str]:
         lines.append("    invalid_conditions=(")
         lines.extend(
             "        "
-            f"{_render_storage_sql_map_sub_invalid_condition(condition)},"
+            f"{_render_call('StorageSQLMapSubInvalidCondition', condition, ('expression',))},"
             for condition in item.invalid_conditions
         )
         lines.append("    ),")
@@ -1149,16 +1108,22 @@ def _render_storage_sql_map(item: StorageSQLMap) -> list[str]:
     lines = [first_line]
     if item.data:
         lines.append("    data=(")
-        lines.extend(
-            f"        {_render_storage_sql_map_data(data_item)},"
-            for data_item in item.data
-        )
+        for data_item in item.data:
+            lines.append(
+                "        "
+                + _render_call(
+                    "StorageSQLMapData",
+                    data_item,
+                    ("node", "piece", "delimiter", "retrieval_code"),
+                )
+                + ","
+            )
         lines.append("    ),")
     if item.row_id_specs:
         lines.append("    row_id_specs=(")
         lines.extend(
             "        "
-            f"{_render_storage_sql_map_row_id_spec(spec)},"
+            f"{_render_call('StorageSQLMapRowIdSpec', spec, ('field', 'expression'))},"
             for spec in item.row_id_specs
         )
         lines.append("    ),")
@@ -1180,11 +1145,6 @@ _STORAGE_INDEX_ARG_SPECS: tuple[tuple[str, str, str], ...] = (
     ("location", "location", "double"),
     ("small_chunk_size", "small_chunk_size", "double"),
 )
-
-
-def _render_storage_index(item: StorageIndex) -> str:
-    return _render_constructor("StorageIndex", item, _STORAGE_INDEX_ARG_SPECS)
-
 
 def _has_class_metadata(class_info: _CompiledClass) -> bool:
     return any(
@@ -1294,7 +1254,9 @@ def _render_property_field(
     for attr_name, arg_name, style in _PROPERTY_FIELD_ARG_SPECS:
         if attr_name == "sql_field_name" and prop.sql_field_name == prop.name:
             continue
-        _append_arg(field_args, arg_name, getattr(prop, attr_name), style)
+        arg = _format_arg(arg_name, getattr(prop, attr_name), style)
+        if arg is not None:
+            field_args.append(arg)
     default_arg, _default_value = _python_default_literal(prop)
     if default_arg:
         field_args.append(default_arg)
@@ -1360,11 +1322,6 @@ _STORAGE_PROPERTY_ARG_SPECS: tuple[tuple[str, str, str], ...] = (
     ("stream_location", "stream_location", "double"),
 )
 
-
-def _render_storage_property(item: StorageProperty) -> str:
-    return _render_constructor("StorageProperty", item, _STORAGE_PROPERTY_ARG_SPECS)
-
-
 _STORAGE_RENDER_KEYS = (*STORAGE_SCALAR_KEYS[1:], "type")
 
 
@@ -1375,17 +1332,6 @@ _STORAGE_DATA_ARG_SPECS: tuple[tuple[str, str, str], ...] = (
     ("subscript", "subscript", "repr"),
     ("values", "values", "repr"),
 )
-
-
-def _render_storage_data_lines(item: StorageData) -> list[str]:
-    lines = ["                StorageData("]
-    lines.extend(
-        f"                    {arg},"
-        for arg in _render_args(item, _STORAGE_DATA_ARG_SPECS)
-    )
-    lines.append("                ),")
-    return lines
-
 
 def _render_storage_lines(
     storage: _CompiledStorage,
@@ -1403,17 +1349,28 @@ def _render_storage_lines(
     if storage_data:
         lines.append("            data=(")
         for item in storage_data:
-            lines.extend(_render_storage_data_lines(item))
+            lines.append("                StorageData(")
+            lines.extend(
+                f"                    {arg},"
+                for arg in _render_args(item, _STORAGE_DATA_ARG_SPECS)
+            )
+            lines.append("                ),")
         lines.append("            ),")
     if storage_indices:
         lines.append("            indices=(")
         for storage_index in storage_indices:
-            lines.append(f"                {_render_storage_index(storage_index)},")
+            lines.append(
+                "                StorageIndex("
+                f"{', '.join(_render_args(storage_index, _STORAGE_INDEX_ARG_SPECS))}),"
+            )
         lines.append("            ),")
     if storage_properties:
         lines.append("            properties=(")
         for storage_property in storage_properties:
-            lines.append(f"                {_render_storage_property(storage_property)},")
+            lines.append(
+                "                StorageProperty("
+                f"{', '.join(_render_args(storage_property, _STORAGE_PROPERTY_ARG_SPECS))}),"
+            )
         lines.append("            ),")
     if storage_sql_maps:
         lines.append("            sql_maps=(")

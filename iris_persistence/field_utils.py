@@ -98,29 +98,55 @@ def coerce_bool(value: Any) -> bool:
 
 
 # Single source of truth for scalar type mapping between Python and IRIS.
-# Rows: (python type, python type name for codegen, IRIS type, reverse-only IRIS aliases).
+# Rows: (
+#   python type,
+#   python type name for codegen,
+#   IRIS type,
+#   reverse-only IRIS aliases,
+#   scalar categories,
+# ).
 # A `None` python name marks forward-only rows (scaffolded code never emits that name).
-_TYPE_MAP: tuple[tuple[Any, str | None, str, tuple[str, ...]], ...] = (
-    (str, "str", "%Library.String", ("%Stream.GlobalCharacter", "%Stream.FileCharacter")),
-    (int, "int", "%Library.Integer", ()),
-    (float, "float", "%Library.Double", ("%Library.Float", "%Library.Decimal")),
-    (bool, "bool", "%Library.Boolean", ()),
-    (bytes, "bytes", "%Stream.GlobalBinary", ("%Stream.FileBinary",)),
-    (bytearray, None, "%Stream.GlobalBinary", ()),
-    (decimal.Decimal, None, "%Library.Decimal", ()),
-    (dict, "dict", "%Library.DynamicObject", ()),
-    (list, "list", "%Library.DynamicArray", ()),
-    (datetime.datetime, "datetime.datetime", "%Library.TimeStamp", ()),
-    (datetime.date, "datetime.date", "%Library.Date", ()),
-    (datetime.time, "datetime.time", "%Library.Time", ()),
+_TYPE_MAP: tuple[tuple[Any, str | None, str, tuple[str, ...], tuple[str, ...]], ...] = (
+    (
+        str,
+        "str",
+        "%Library.String",
+        ("%Stream.GlobalCharacter", "%Stream.FileCharacter"),
+        ("direct_property", "python_scalar"),
+    ),
+    (int, "int", "%Library.Integer", (), ("direct_property", "python_scalar")),
+    (
+        float,
+        "float",
+        "%Library.Double",
+        ("%Library.Float", "%Library.Decimal"),
+        ("direct_property", "python_scalar"),
+    ),
+    (bool, "bool", "%Library.Boolean", (), ("direct_property", "python_scalar")),
+    (bytes, "bytes", "%Stream.GlobalBinary", ("%Stream.FileBinary",), ("python_scalar",)),
+    (bytearray, None, "%Stream.GlobalBinary", (), ("python_scalar",)),
+    (decimal.Decimal, None, "%Library.Decimal", (), ()),
+    (dict, "dict", "%Library.DynamicObject", (), ()),
+    (list, "list", "%Library.DynamicArray", (), ()),
+    (datetime.datetime, "datetime.datetime", "%Library.TimeStamp", (), ()),
+    (datetime.date, "datetime.date", "%Library.Date", (), ()),
+    (datetime.time, "datetime.time", "%Library.Time", (), ()),
 )
 
-PYTHON_TO_IRIS_TYPE: dict[Any, str] = {py: iris for py, _name, iris, _aliases in _TYPE_MAP}
+PYTHON_TO_IRIS_TYPE: dict[Any, str] = {
+    py: iris for py, _name, iris, _aliases, _categories in _TYPE_MAP
+}
+DIRECT_PROPERTY_TYPES: frozenset[type] = frozenset(
+    py for py, _name, _iris, _aliases, categories in _TYPE_MAP if "direct_property" in categories
+)
+PYTHON_SCALAR_TYPES: frozenset[type] = frozenset(
+    py for py, _name, _iris, _aliases, categories in _TYPE_MAP if "python_scalar" in categories
+)
 
 
 def _build_reverse_type_map() -> dict[str, str]:
     reverse: dict[str, str] = {}
-    for _py, name, iris_type, aliases in _TYPE_MAP:
+    for _py, name, iris_type, aliases, _categories in _TYPE_MAP:
         if name is None:
             continue
         for iris_name in (iris_type, *aliases):

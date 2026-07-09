@@ -8,7 +8,6 @@ from typing import (
     TYPE_CHECKING,
     Annotated,
     Any,
-    Callable,
     Dict,
     List,
     Optional,
@@ -22,6 +21,7 @@ from typing import (
 
 from iris_persistence.codecs import NULL_STRING, resolve_declared_type
 from iris_persistence.field_utils import (
+    DIRECT_PROPERTY_TYPES,
     IRIS_COLLECTION_TYPES,
     collection_value_type,
     is_application_iris_class,
@@ -30,9 +30,6 @@ from iris_persistence.field_utils import (
     is_scalar_string_field,
 )
 from iris_persistence.types import UNSET, ClassMetadata, FieldInfo, Index, ModelField
-
-# Types that need no coercion before being passed to set_property.
-_PRIMITIVE_TYPES: frozenset[type] = frozenset({str, int, float, bool})
 
 if TYPE_CHECKING:
     from iris_persistence.query import QuerySet
@@ -416,10 +413,6 @@ def _is_object_reference_field(model_field: ModelField) -> bool:
     return is_application_iris_class(getattr(model_field.field_info, "iris_type", None))
 
 
-def _type_name(value: Any) -> str:
-    return getattr(value, "__name__", repr(value))
-
-
 def _value_matches_declared_type(declared_type: Any, value: Any) -> bool:
     origin = get_origin(declared_type)
     if declared_type is Any:
@@ -482,19 +475,12 @@ def _validate_field_value(model_field: ModelField, value: Any) -> Any:
 
     if not _value_matches_declared_type(model_field.declared_type, value):
         raise TypeError(
-            f"Field '{model_field.name}' expected {_type_name(model_field.declared_type)}, "
+            f"Field '{model_field.name}' expected "
+            f"{getattr(model_field.declared_type, '__name__', repr(model_field.declared_type))}, "
             f"got {type(value).__name__}"
         )
 
     return value
-
-
-def _split_index_properties(properties: str) -> list[str]:
-    return [item.strip() for item in properties.split(",") if item.strip()]
-
-
-def _field_requires_index(field_info: FieldInfo) -> bool:
-    return bool(field_info.index or field_info.unique or field_info.primary_key)
 
 
 def _synthesize_indexes(
@@ -508,13 +494,15 @@ def _synthesize_indexes(
 
     for index in indexes:
         used_names.add(index.name)
-        for field_name in _split_index_properties(index.properties):
+        for field_name in (item.strip() for item in index.properties.split(",")):
+            if not field_name:
+                continue
             indexed_fields.setdefault(field_name, []).append(index)
 
     synthesized: list[Index] = []
     for field_name, model_field in model_fields.items():
         field_info = model_field.field_info
-        if not _field_requires_index(field_info):
+        if not (field_info.index or field_info.unique or field_info.primary_key):
             continue
 
         if field_name in indexed_fields:
@@ -606,7 +594,7 @@ def _partition_save_fields(
         if getattr(model_field.field_info, "readonly", False):
             complex_save.append((field_name, model_field))
         elif model_field._collection_kind is None and not _is_object_reference_field(model_field):
-            if model_field.declared_type in _PRIMITIVE_TYPES:
+            if model_field.declared_type in DIRECT_PROPERTY_TYPES:
                 scalar_fast.append(field_name)
             else:
                 scalar_coerce.append((field_name, model_field.declared_type))
@@ -660,14 +648,10 @@ def _model_value_to_dict(value: Any) -> Any:
     return value
 
 
-def _is_dataclass_type(value: Any) -> bool:
-    return isinstance(value, type) and is_dataclass(value)
-
-
 def _convert_recursive_value(
     value: Any,
     declared_type: Any,
-    convert_leaf: Callable[[Any, Any], Any],
+    mode: str,
 ) -> Any:
     if value is None:
         return None
@@ -676,47 +660,28 @@ def _convert_recursive_value(
     collection_kind, element_type = collection_value_type(resolved_type)
     if collection_kind == "list" and isinstance(value, list):
         return [
-            _convert_recursive_value(item, element_type, convert_leaf)
+            _convert_recursive_value(item, element_type, mode)
             for item in value
         ]
     if collection_kind == "array" and isinstance(value, dict):
         return {
-            key: _convert_recursive_value(item, element_type, convert_leaf)
+            key: _convert_recursive_value(item, element_type, mode)
             for key, item in value.items()
         }
-    return convert_leaf(value, resolved_type)
-
-
-def _mapping_value_to_model_leaf(value: Any, resolved_type: Any) -> Any:
-    if is_model_type(resolved_type) and isinstance(value, dict):
+    if mode == "mapping_to_model" and is_model_type(resolved_type) and isinstance(value, dict):
         return resolved_type.from_dict(value)
-    return value
-
-
-def _dataclass_value_to_model_leaf(value: Any, resolved_type: Any) -> Any:
-    if is_model_type(resolved_type) and is_dataclass(value) and not isinstance(value, type):
+    if (
+        mode == "dataclass_to_model"
+        and is_model_type(resolved_type)
+        and is_dataclass(value)
+        and not isinstance(value, type)
+    ):
         return resolved_type.from_dataclass(value)
-    return value
-
-
-def _model_value_to_dataclass_leaf(value: Any, resolved_type: Any) -> Any:
-    if isinstance(value, Model):
-        if _is_dataclass_type(resolved_type):
+    if mode == "model_to_dataclass" and isinstance(value, Model):
+        if isinstance(resolved_type, type) and is_dataclass(resolved_type):
             return value.to_dataclass(resolved_type)
         return value.to_dict()
     return value
-
-
-def _convert_mapping_value_to_model(value: Any, declared_type: Any) -> Any:
-    return _convert_recursive_value(value, declared_type, _mapping_value_to_model_leaf)
-
-
-def _convert_dataclass_value_to_model(value: Any, declared_type: Any) -> Any:
-    return _convert_recursive_value(value, declared_type, _dataclass_value_to_model_leaf)
-
-
-def _convert_model_value_to_dataclass(value: Any, target_type: Any) -> Any:
-    return _convert_recursive_value(value, target_type, _model_value_to_dataclass_leaf)
 
 
 class ModelMeta(type):
@@ -911,14 +876,18 @@ class Model(metaclass=ModelMeta):
         converted = {
             name: value
             if (model_field := cls.__model_fields__.get(name)) is None
-            else _convert_mapping_value_to_model(value, model_field.declared_type)
+            else _convert_recursive_value(
+                value,
+                model_field.declared_type,
+                "mapping_to_model",
+            )
             for name, value in values.items()
         }
         return cls(**converted)
 
     def to_dataclass(self, dataclass_type: Type[TDataclass]) -> TDataclass:
         """Build a dataclass DTO from matching model field names."""
-        if not _is_dataclass_type(dataclass_type):
+        if not (isinstance(dataclass_type, type) and is_dataclass(dataclass_type)):
             raise TypeError("to_dataclass() expects a dataclass type")
 
         values: dict[str, Any] = {}
@@ -927,9 +896,10 @@ class Model(metaclass=ModelMeta):
                 continue
             name = dataclass_field.name
             if name in self.__class__.__model_fields__ and hasattr(self, name):
-                values[name] = _convert_model_value_to_dataclass(
+                values[name] = _convert_recursive_value(
                     getattr(self, name),
                     dataclass_field.type,
+                    "model_to_dataclass",
                 )
         return dataclass_type(**values)
 
@@ -940,9 +910,10 @@ class Model(metaclass=ModelMeta):
             raise TypeError(f"{cls.__name__}.from_dataclass() expects a dataclass instance")
 
         values = {
-            dataclass_field.name: _convert_dataclass_value_to_model(
+            dataclass_field.name: _convert_recursive_value(
                 getattr(value, dataclass_field.name),
                 model_field.declared_type,
+                "dataclass_to_model",
             )
             for dataclass_field in dataclass_fields(value)
             if (model_field := cls.__model_fields__.get(dataclass_field.name)) is not None

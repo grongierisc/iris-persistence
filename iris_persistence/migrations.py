@@ -17,7 +17,7 @@ from iris_persistence.schema import (
     SchemaOperation,
     SchemaState,
     _collect_live_schema_state,
-    _schema_transaction_methods,
+    _run_with_schema_transaction,
     _sync_schema_model,
     _sync_schema_state,
     diff_schema,
@@ -416,28 +416,10 @@ def apply_plan(
         models=models,
         backup_dir=backup_dir,
     )
-    transaction_methods = _schema_transaction_methods(runtime)
-    if transaction_methods is None:
-        _apply_plan_without_transaction(runtime, models)
-    else:
-        begin_transaction, commit_transaction, rollback_transaction = transaction_methods
-        begin_transaction()
-        try:
-            _apply_plan_without_transaction(runtime, models)
-        except Exception:
-            try:
-                rollback_transaction()
-            except Exception:
-                pass
-            raise
-        try:
-            commit_transaction()
-        except Exception:
-            try:
-                rollback_transaction()
-            except Exception:
-                pass
-            raise
+    _run_with_schema_transaction(
+        runtime,
+        lambda: _apply_plan_without_transaction(runtime, models),
+    )
     return ApplyResult(
         status="applied",
         target_revision=plan.target_revision,
@@ -508,28 +490,10 @@ def rollback_backup(
     )
 
     runtime = get_runtime()
-    transaction_methods = _schema_transaction_methods(runtime)
-    if transaction_methods is None:
-        restored, deleted = _rollback_backup_without_transaction(runtime, states)
-    else:
-        begin_transaction, commit_transaction, rollback_transaction = transaction_methods
-        begin_transaction()
-        try:
-            restored, deleted = _rollback_backup_without_transaction(runtime, states)
-        except Exception:
-            try:
-                rollback_transaction()
-            except Exception:
-                pass
-            raise
-        try:
-            commit_transaction()
-        except Exception:
-            try:
-                rollback_transaction()
-            except Exception:
-                pass
-            raise
+    restored, deleted = _run_with_schema_transaction(
+        runtime,
+        lambda: _rollback_backup_without_transaction(runtime, states),
+    )
 
     return RollbackResult(
         status="rolled_back",

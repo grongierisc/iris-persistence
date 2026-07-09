@@ -2,7 +2,7 @@
 iris_persistence core package
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.3"
 
 from iris_persistence.migrations import (
     ApplyResult,

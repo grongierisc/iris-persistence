@@ -1358,6 +1358,32 @@ def _set_runtime_flag_if_true(runtime: Any, obj: Any, prop_name: str, enabled: A
         runtime.set_property(obj, prop_name, 1)
 
 
+def _apply_runtime_state_fields(
+    runtime: Any,
+    obj: Any,
+    state: dict[str, Any],
+    *,
+    flag_fields: tuple[tuple[str, str], ...] = (),
+    value_fields: tuple[tuple[str, str], ...] = (),
+    exact: bool,
+    exact_values: bool | None = None,
+) -> None:
+    if exact_values is None:
+        exact_values = exact
+
+    for state_key, property_name in flag_fields:
+        if exact:
+            _set_runtime_flag_exact(runtime, obj, property_name, state.get(state_key))
+        else:
+            _set_runtime_flag_if_true(runtime, obj, property_name, state.get(state_key))
+
+    for state_key, property_name in value_fields:
+        if exact_values:
+            _set_runtime_property_exact(runtime, obj, property_name, state.get(state_key))
+        else:
+            _set_runtime_property_if_not_none(runtime, obj, property_name, state.get(state_key))
+
+
 def _mapping_or_attr_value(source: Any, name: str) -> Any:
     if isinstance(source, dict):
         return source.get(name)
@@ -1510,23 +1536,14 @@ def _apply_property_definition_state(
     exact: bool,
 ) -> None:
     _set_runtime_property_if_not_none(runtime, prop, "Type", property_state.get("type"))
-
-    for state_key, property_name in _PROPERTY_FLAG_FIELDS:
-        if exact:
-            _set_runtime_flag_exact(runtime, prop, property_name, property_state.get(state_key))
-        else:
-            _set_runtime_flag_if_true(runtime, prop, property_name, property_state.get(state_key))
-
-    for state_key, property_name in _PROPERTY_VALUE_FIELDS:
-        if exact:
-            _set_runtime_property_exact(runtime, prop, property_name, property_state.get(state_key))
-        else:
-            _set_runtime_property_if_not_none(
-                runtime,
-                prop,
-                property_name,
-                property_state.get(state_key),
-            )
+    _apply_runtime_state_fields(
+        runtime,
+        prop,
+        property_state,
+        flag_fields=_PROPERTY_FLAG_FIELDS,
+        value_fields=_PROPERTY_VALUE_FIELDS,
+        exact=exact,
+    )
 
     if exact:
         _set_runtime_flag_exact(
@@ -1623,15 +1640,15 @@ def _apply_index_definition_state(
     *,
     exact: bool,
 ) -> None:
-    _set_runtime_property_if_not_none(
-        runtime, idx_def, "Properties", index_state.get("properties")
+    _apply_runtime_state_fields(
+        runtime,
+        idx_def,
+        index_state,
+        flag_fields=(("unique", "Unique"), ("primary_key", "PrimaryKey")),
+        value_fields=(("properties", "Properties"), ("type", "Type")),
+        exact=exact,
+        exact_values=False,
     )
-    _set_runtime_property_if_not_none(runtime, idx_def, "Type", index_state.get("type"))
-    for state_key, property_name in (("unique", "Unique"), ("primary_key", "PrimaryKey")):
-        if exact:
-            _set_runtime_flag_exact(runtime, idx_def, property_name, index_state.get(state_key))
-        else:
-            _set_runtime_flag_if_true(runtime, idx_def, property_name, index_state.get(state_key))
 
 
 def _build_index_definition_from_state(
@@ -2002,6 +2019,33 @@ def _schema_transaction_methods(runtime: Any) -> tuple[Any, Any, Any] | None:
     return None
 
 
+def _run_with_schema_transaction(runtime: Any, action: Callable[[], Any]) -> Any:
+    transaction_methods = _schema_transaction_methods(runtime)
+    if transaction_methods is None:
+        return action()
+
+    begin_transaction, commit_transaction, rollback_transaction = transaction_methods
+    begin_transaction()
+    try:
+        result = action()
+    except Exception:
+        try:
+            rollback_transaction()
+        except Exception:
+            pass
+        raise
+
+    try:
+        commit_transaction()
+    except Exception:
+        try:
+            rollback_transaction()
+        except Exception:
+            pass
+        raise
+    return result
+
+
 def _sync_schema_model(
     runtime: Any,
     model_cls: Type[Any],
@@ -2050,27 +2094,4 @@ def sync_schema(model_cls: Type[Any], _seen: set[str] | None = None) -> None:
         _sync_schema_model(runtime, model_cls, _seen)
         return
 
-    transaction_methods = _schema_transaction_methods(runtime)
-    if transaction_methods is None:
-        _sync_schema_model(runtime, model_cls, set())
-        return
-
-    begin_transaction, commit_transaction, rollback_transaction = transaction_methods
-    begin_transaction()
-    try:
-        _sync_schema_model(runtime, model_cls, set())
-    except Exception:
-        try:
-            rollback_transaction()
-        except Exception:
-            pass
-        raise
-
-    try:
-        commit_transaction()
-    except Exception:
-        try:
-            rollback_transaction()
-        except Exception:
-            pass
-        raise
+    _run_with_schema_transaction(runtime, lambda: _sync_schema_model(runtime, model_cls, set()))

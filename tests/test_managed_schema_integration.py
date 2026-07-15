@@ -182,7 +182,8 @@ def test_tuned_default_is_completed_by_compiler_and_then_immutable():
         )
         assert cursor.fetchone()[0] > 0
 
-        assert ManagedTunedStorage.diff_schema().has_changes is False
+        repeated_diff = ManagedTunedStorage.diff_schema()
+        assert repeated_diff.has_changes is False, repeated_diff.to_unified_diff()
         ManagedTunedStorage.sync_schema()
         with pytest.raises(StorageMigrationRequired):
             ManagedRelocatedStorage.sync_schema()

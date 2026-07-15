@@ -159,7 +159,7 @@ def _render_call(
     aliases = aliases or {}
     for field_name in fields:
         attr_name = aliases.get(field_name, field_name)
-        value = getattr(item, attr_name)
+        value = getattr(item, attr_name, None)
         if field_name in true_flags:
             if value:
                 args.append(f"{field_name}=True")
@@ -496,7 +496,7 @@ def _render_storage_lines(
     for attr_name in _STORAGE_RENDER_KEYS:
         value = getattr(storage, attr_name, None)
         if value is not None:
-            lines.append(f"            {attr_name}={_double_quoted_literal(value)},")
+            lines.append(f"            {attr_name}={_double_quoted_literal(str(value))},")
 
     if storage_data:
         lines.append("            data=(")
@@ -527,6 +527,9 @@ def _render_storage_lines(
         lines.append("            sql_maps=(")
         for storage_sql_map in storage_sql_maps:
             rendered_map = _render_storage_sql_map(storage_sql_map)
+            if len(rendered_map) == 1:
+                lines.append(f"                {rendered_map[0]},")
+                continue
             lines.append(f"                {rendered_map[0]}")
             for map_line in rendered_map[1:-1]:
                 lines.append(f"                {map_line}")

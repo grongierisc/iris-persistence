@@ -88,18 +88,89 @@ or serial models. After the class has compiled, the declaration is immutable thr
 sync. A mismatch raises `StorageMigrationRequired` before mutation and migration plans report a
 non-bypassable `blocked_storage_change`. Moving existing data requires a separate migration.
 
-## Schema workflow
+## How the workflow works now
+
+The normal lifecycle has one Python-owned model definition and one IRIS-owned compiled class:
+
+1. Declare fields, indexes, parameters, and metadata in Python with `mode="managed"`.
+2. Preview the difference with `Model.diff_schema()` or `Model.sync_schema(dry_run=True)`.
+3. Create or evolve the IRIS class with a reviewed migration plan.
+4. IRIS compiles the class and generates `Storage Default`, SQL projection, and runtime methods.
+5. Use the model for object CRUD. Schema synchronization is not needed for each object operation.
+6. Change the Python model and repeat the plan/apply/verify cycle.
 
 ```python
 from iris_persistence import apply_plan, create_plan, verify_plan
 
-plan = create_plan([Person], target_revision="001")
-result = apply_plan(plan)
-verification = verify_plan(plan)
+plan = create_plan([Person], target_revision="001-person")
+
+# Review plan.operations or save the JSON plan for code review.
+for operation in plan.operations:
+    print(operation.safety, operation.op_type, operation.path)
+
+result = apply_plan(plan)  # writes a backup before mutation
+if result.status == "blocked":
+    raise RuntimeError(result.skipped_operations)
+
+assert verify_plan(plan).converged
 ```
 
-Generated compiler storage is excluded from normal diffs and backups. Managed migrations remain
-targeted member changes; they do not rebuild classes or storage.
+Calling `apply_plan()` is explicit authorization to apply the reviewed plan. Calling
+`rollback_backup(result.backup_dir)` is explicit authorization to restore its backup; there is no
+`allow_destructive` flag. A storage operation with `safety="blocked"` is different: it is always
+rejected because physical data relocation needs a dedicated migration workflow.
+
+For quick local development, `Person.sync_schema()` performs the same managed reconciliation
+directly. Production code should normally use `create_plan()`, `apply_plan()`, and `verify_plan()`
+so the change is inspectable and backed up.
+
+Generated compiler storage is excluded from ordinary diffs and backups. Managed migrations make
+targeted member changes; they do not delete and rebuild the class or rewrite storage.
+
+## Lifecycle of a `%Persistent` object
+
+Once the class exists, object operations are deliberately small:
+
+```python
+# Create
+person = Person(Name="Ada")
+person.save()
+person_id = person.pk
+
+# Read
+loaded = Person.get(person_id)
+
+# Update
+loaded.Name = "Ada Lovelace"
+loaded.save()
+
+# Query through the IRIS SQL projection
+matches = Person.where(Name="Ada Lovelace").order_by("Name").all()
+
+# Delete
+deleted = loaded.delete()
+assert deleted
+assert Person.get(person_id) is None
+```
+
+`save()` calls IRIS `%Save()`, `get()` opens the IRIS object by ID, query methods use the compiled
+SQL projection, and `delete()` removes the persistent object. These operations do not rewrite the
+class definition or its storage unless `Meta.auto_sync=True` was explicitly enabled.
+
+A complete runnable example also evolves the class from `PersonV1` to `PersonV2` without
+rebuilding storage: [examples/demo/06_persistent_lifecycle.py](examples/demo/06_persistent_lifecycle.py).
+
+Run it against the in-memory demonstration backend:
+
+```bash
+IRIS_DEMO_BACKEND=fake python examples/demo/06_persistent_lifecycle.py
+```
+
+Or against IRIS:
+
+```bash
+IRIS_DEMO_BACKEND=embedded python examples/demo/06_persistent_lifecycle.py
+```
 
 ## Scaffolding
 

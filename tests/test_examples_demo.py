@@ -24,11 +24,13 @@ def test_progressive_examples_run_with_fake_backend():
     basic = _load_module(demo_root / "02_python_first_crud.py")
     related = _load_module(demo_root / "03_related_objects.py")
     advanced = _load_module(demo_root / "04_advanced_schema.py")
+    lifecycle = _load_module(demo_root / "06_persistent_lifecycle.py")
 
     minimal_result = minimal.run_demo(backend="fake")
     basic_result = basic.run_demo(backend="fake")
     related_result = related.run_demo(backend="fake")
     advanced_result = advanced.run_demo(backend="fake")
+    lifecycle_result = lifecycle.run_demo(backend="fake")
 
     assert minimal_result["backend"] == "fake"
     assert minimal_result["loaded"].Message == "Hello from iris_persistence"
@@ -54,6 +56,12 @@ def test_progressive_examples_run_with_fake_backend():
     assert advanced_result["loaded"].Payload == {"origin": "advanced-demo"}
     assert advanced_result["metadata"].sql_table_name == "Demo_ExampleShowcaseRecord"
     assert advanced_result["storage"].data_location == "^Demo.ExampleShowcaseRecordD"
+
+    assert lifecycle_result["backend"] == "fake"
+    assert lifecycle_result["updated_age"] == 37
+    assert lifecycle_result["matches_before_delete"] == 1
+    assert lifecycle_result["deleted"] is True
+    assert lifecycle_result["missing_after_delete"] is True
 
 
 def test_scaffold_demo_reports_skip_with_fake_backend():

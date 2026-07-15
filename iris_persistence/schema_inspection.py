@@ -393,6 +393,23 @@ def _project_storage_state(
     return projected
 
 
+def _normalize_compiler_property_defaults(
+    live_state: SchemaState,
+    desired_state: SchemaState,
+) -> SchemaState:
+    """Ignore IRIS's generated empty-string expression for an undeclared default."""
+    live_mapping = _state_to_dict(live_state)
+    for name, desired_property in desired_state.properties.items():
+        live_property = live_mapping["properties"].get(name)
+        if (
+            live_property is not None
+            and "initial_expression" not in desired_property
+            and live_property.get("initial_expression") == '""'
+        ):
+            live_property.pop("initial_expression")
+    return SchemaState.from_dict(live_mapping)
+
+
 def _merge_schema_state_for_sync(
     *,
     mode: str,
@@ -687,6 +704,7 @@ def diff_schema(model_cls: Type[Any], *, runtime: Any | None = None) -> SchemaDi
         classname,
         include_storage=desired_state.storage is not None,
     )
+    live_state = _normalize_compiler_property_defaults(live_state, desired_state)
     if desired_state.storage is not None:
         live_mapping = _state_to_dict(live_state)
         live_mapping["storage"] = _project_storage_state(

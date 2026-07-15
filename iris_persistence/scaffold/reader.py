@@ -303,20 +303,31 @@ class _CompiledDictionaryReader(DictionarySession):
         prop_list = runtime.get_property(class_def, "Properties") if class_def else None
         if prop_list is None:
             return {}
-        result: dict[str, str] = {}
-        for index in range(1, runtime.invoke_method(prop_list, "Count") + 1):
-            prop = runtime.invoke_method(prop_list, "GetAt", index)
-            name = runtime.get_property(prop, "Name")
-            params = runtime.get_property(prop, "Parameters") if name else None
-            if params is None:
-                continue
-            try:
-                maxlen = runtime.invoke_method(params, "GetAt", "MAXLEN")
-            except (AttributeError, RuntimeError, TypeError, ValueError):
-                maxlen = None
-            if maxlen not in (None, ""):
-                result[str(name)] = str(maxlen)
-        return result
+        entries = (
+            self._runtime_property_parameter(
+                runtime,
+                runtime.invoke_method(prop_list, "GetAt", index),
+                "MAXLEN",
+            )
+            for index in range(1, runtime.invoke_method(prop_list, "Count") + 1)
+        )
+        return dict(entry for entry in entries if entry is not None)
+
+    @staticmethod
+    def _runtime_property_parameter(
+        runtime: Any, prop: Any, parameter_name: str
+    ) -> tuple[str, str] | None:
+        name = runtime.get_property(prop, "Name")
+        params = runtime.get_property(prop, "Parameters") if name else None
+        if params is None:
+            return None
+        try:
+            value = runtime.invoke_method(params, "GetAt", parameter_name)
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return None
+        if value in (None, ""):
+            return None
+        return (str(name), str(value))
 
     def list_parameters(self, classname: str) -> list[_CompiledParameter]:
         params = self._normalize_parameters(

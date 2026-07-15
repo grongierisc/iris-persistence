@@ -46,6 +46,32 @@ T = TypeVar("T", bound="Model")
 TDataclass = TypeVar("TDataclass")
 
 
+def _validate_provided_field_names(model_cls: Any, provided_values: dict[str, Any]) -> None:
+    unknown = [name for name in provided_values if name not in model_cls.__model_fields__]
+    if not unknown:
+        return
+    unknown_fields = ", ".join(sorted(unknown))
+    raise TypeError(f"Unknown field(s) for model {model_cls.__name__}: {unknown_fields}")
+
+
+def _resolve_initial_field_value(
+    model_cls: Any,
+    name: str,
+    model_field: ModelField,
+    provided_values: dict[str, Any],
+) -> tuple[bool, Any]:
+    value = provided_values.get(name, UNSET)
+    if value is UNSET:
+        value = model_field.get_default_value()
+    if value is UNSET and model_field.required:
+        raise TypeError(f"Missing required field '{name}' for model {model_cls.__name__}")
+    if value is UNSET:
+        return (False, value)
+    if model_cls._validate_on_init:
+        value = _validate_field_value(model_field, value)
+    return (True, value)
+
+
 class Model(metaclass=ModelMeta):
     __model_fields__: dict[str, ModelField]
     _fields: dict[str, FieldInfo]
@@ -77,27 +103,13 @@ class Model(metaclass=ModelMeta):
     def _initialize_model_state(self, provided_values: dict[str, Any]) -> None:
         self._pk: Optional[str] = None
         self._iris_obj: Any = None
-
-        unknown = [name for name in provided_values if name not in self.__class__.__model_fields__]
-        if unknown:
-            unknown_fields = ", ".join(sorted(unknown))
-            raise TypeError(
-                f"Unknown field(s) for model {self.__class__.__name__}: {unknown_fields}"
+        model_cls = self.__class__
+        _validate_provided_field_names(model_cls, provided_values)
+        for name, model_field in model_cls.__model_fields__.items():
+            should_assign, value = _resolve_initial_field_value(
+                model_cls, name, model_field, provided_values
             )
-
-        for name, model_field in self.__class__.__model_fields__.items():
-            value = provided_values.get(name, UNSET)
-            if value is UNSET:
-                value = model_field.get_default_value()
-                if value is UNSET:
-                    if model_field.required:
-                        raise TypeError(
-                            f"Missing required field '{name}' for model {self.__class__.__name__}"
-                        )
-                    continue
-            if self.__class__._validate_on_init:
-                setattr(self, name, _validate_field_value(model_field, value))
-            else:
+            if should_assign:
                 setattr(self, name, value)
 
     def __init__(self, **kwargs):

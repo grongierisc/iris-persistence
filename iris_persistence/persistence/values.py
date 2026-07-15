@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from iris_persistence.field_utils import (
@@ -23,6 +24,26 @@ _STREAM_CLASSES = frozenset(
 
 if TYPE_CHECKING:
     from iris_persistence._runtime_backend import WrapperBackend
+
+
+@dataclass(frozen=True)
+class _InjectionContext:
+    obj: Any
+    field_name: str
+    value: Any
+    field_meta: Any | None
+
+
+def _injection_kind(value: Any) -> str:
+    if value is None or (isinstance(value, str) and value == ""):
+        return "null"
+    if isinstance(value, (bytes, bytearray)):
+        return "binary"
+    if isinstance(value, dict):
+        return "array"
+    if isinstance(value, list):
+        return "list"
+    return "scalar"
 
 
 class IRISValueCodec:
@@ -54,22 +75,32 @@ class IRISValueCodec:
         collection_kind = collection_kind_from_field(field_meta)
         if collection_kind is None:
             return False
-
         current_prop = self.get_property(obj, field_name)
         if current_prop is None:
             return False
+        population = self._collection_population(collection_kind, val)
+        if population is None:
+            return False
+        return self._try_populate_collection(current_prop, population)
 
+    def _collection_population(self, kind: str, value: Any) -> tuple[Any, Any] | None:
+        populations = {
+            "list": (list, self._populate_list),
+            "array": (dict, self._populate_array),
+        }
+        expected_type, populate = populations[kind]
+        return (populate, value) if isinstance(value, expected_type) else None
+
+    @staticmethod
+    def _try_populate_collection(target: Any, population: tuple[Any, Any]) -> bool:
+        populate, value = population
         try:
-            clear = getattr(current_prop, "Clear", None)
+            clear = getattr(target, "Clear", None)
             if callable(clear):
                 clear()
-            if collection_kind == "list" and isinstance(val, list):
-                return self._populate_list(current_prop, val)
-            if collection_kind == "array" and isinstance(val, dict):
-                return self._populate_array(current_prop, val)
+            return bool(populate(target, value))
         except (AttributeError, RuntimeError, TypeError, ValueError):
             return False
-        return False
 
     @staticmethod
     def _populate_list(target: Any, values: list[Any]) -> bool:
@@ -312,19 +343,45 @@ class IRISValueCodec:
         val: Any,
         field_meta: Any | None = None,
     ) -> None:
-        if val is None or (isinstance(val, str) and val == ""):
-            if self._clear_property_value(obj, field_name):
-                return
-            if self._set_null_property_value(obj, field_name):
-                return
-            self.set_property(obj, field_name, val)
-        elif isinstance(val, (bytes, bytearray)):
-            if self._write_stream_property(obj, field_name, val):
-                return
-            self.set_property(obj, field_name, val)
-        elif isinstance(val, dict):
-            self._inject_collection_value(obj, field_name, val, kind="array", field_meta=field_meta)
-        elif isinstance(val, list):
-            self._inject_collection_value(obj, field_name, val, kind="list", field_meta=field_meta)
-        else:
-            self.set_property(obj, field_name, val)
+        context = _InjectionContext(obj, field_name, val, field_meta)
+        handlers = {
+            "null": self._inject_null_value,
+            "binary": self._inject_binary_value,
+            "array": self._inject_array_value,
+            "list": self._inject_list_value,
+            "scalar": self._inject_scalar_value,
+        }
+        handlers[_injection_kind(val)](context)
+
+    def _inject_null_value(self, context: _InjectionContext) -> None:
+        if self._clear_property_value(context.obj, context.field_name):
+            return
+        if self._set_null_property_value(context.obj, context.field_name):
+            return
+        self.set_property(context.obj, context.field_name, context.value)
+
+    def _inject_binary_value(self, context: _InjectionContext) -> None:
+        if self._write_stream_property(context.obj, context.field_name, context.value):
+            return
+        self.set_property(context.obj, context.field_name, context.value)
+
+    def _inject_array_value(self, context: _InjectionContext) -> None:
+        self._inject_collection_value(
+            context.obj,
+            context.field_name,
+            context.value,
+            kind="array",
+            field_meta=context.field_meta,
+        )
+
+    def _inject_list_value(self, context: _InjectionContext) -> None:
+        self._inject_collection_value(
+            context.obj,
+            context.field_name,
+            context.value,
+            kind="list",
+            field_meta=context.field_meta,
+        )
+
+    def _inject_scalar_value(self, context: _InjectionContext) -> None:
+        self.set_property(context.obj, context.field_name, context.value)

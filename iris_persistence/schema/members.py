@@ -101,22 +101,48 @@ def _merge_dictionary_entries(
         (classname,),
     )
     for row in rows:
-        name = _row_value(row, "Name")
-        object_id = _row_value(row, "%ID")
-        if not name or not object_id:
+        identity = _dictionary_entry_identity(row, skip_system_names)
+        if identity is None:
             continue
-        name = str(name)
-        if skip_system_names and _is_system_member_name(name):
+        name, object_id = identity
+        obj = _open_dictionary_entry(runtime, dictionary_class_name, object_id)
+        if obj is None:
             continue
-        try:
-            obj = runtime.get_object(dictionary_class_name, str(object_id))
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            continue
-        existing = entries.get(name)
-        if existing is None:
-            entries[name] = (0, obj, str(object_id))
-        else:
-            entries[name] = (existing[0], existing[1], str(object_id))
+        _merge_dictionary_entry(entries, name, obj, object_id)
+
+
+def _dictionary_entry_identity(
+    row: dict[str, Any], skip_system_names: bool
+) -> tuple[str, str] | None:
+    name = _row_value(row, "Name")
+    object_id = _row_value(row, "%ID")
+    if not name or not object_id:
+        return None
+    normalized_name = str(name)
+    if skip_system_names and _is_system_member_name(normalized_name):
+        return None
+    return (normalized_name, str(object_id))
+
+
+def _open_dictionary_entry(runtime: Any, class_name: str, object_id: str) -> Any | None:
+    try:
+        return runtime.get_object(class_name, object_id)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _merge_dictionary_entry(
+    entries: dict[str, tuple[int, Any, str | None]],
+    name: str,
+    obj: Any,
+    object_id: str,
+) -> None:
+    existing = entries.get(name)
+    entries[name] = (0, obj, object_id) if existing is None else (
+        existing[0],
+        existing[1],
+        object_id,
+    )
 
 
 def _remove_owned_schema_member_entries(

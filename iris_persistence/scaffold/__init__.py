@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 import warnings as py_warnings
+from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -75,41 +77,82 @@ def _assign_generated_names(
     return resolved
 
 
+@dataclass(frozen=True)
+class _CollectedClasses:
+    classes: list[_CompiledClass]
+    properties_by_class: dict[str, list[_CompiledProperty]]
+    seed_names: list[str]
+
+
+@dataclass
+class _ClassCollectionState:
+    reader: _CompiledDictionaryReader
+    classes_by_name: dict[str, _CompiledClass]
+    properties_by_class: dict[str, list[_CompiledProperty]]
+    queue: deque[str]
+    visited: set[str]
+
+
+def _related_class_names(properties: list[_CompiledProperty]) -> tuple[str, ...]:
+    return tuple(
+        prop.iris_type for prop in properties if is_application_iris_class(prop.iris_type)
+    )
+
+
+def _resolve_related_class(
+    reader: _CompiledDictionaryReader,
+    classname: str,
+    classes_by_name: dict[str, _CompiledClass],
+) -> _CompiledClass | None:
+    existing = classes_by_name.get(classname)
+    if existing is not None:
+        return existing
+    class_info = reader.get_class(classname)
+    if class_info is not None:
+        classes_by_name[class_info.name] = class_info
+    return class_info
+
+
+def _collect_related_classes(state: _ClassCollectionState, classname: str) -> None:
+    properties = state.properties_by_class.setdefault(
+        classname, state.reader.list_properties(classname)
+    )
+    for related_name in _related_class_names(properties):
+        class_info = _resolve_related_class(
+            state.reader, related_name, state.classes_by_name
+        )
+        if class_info is not None and class_info.name not in state.visited:
+            state.queue.append(class_info.name)
+
+
 def _collect_classes(
     reader: _CompiledDictionaryReader,
     pattern: str,
     include_related: bool,
-) -> tuple[list[_CompiledClass], dict[str, list[_CompiledProperty]], list[str]]:
+) -> _CollectedClasses:
     seed_classes = reader.list_classes(pattern)
     seed_names = [item.name for item in seed_classes]
     classes_by_name = {item.name: item for item in seed_classes}
     properties_by_class: dict[str, list[_CompiledProperty]] = {}
 
     if not include_related:
-        return (seed_classes, properties_by_class, seed_names)
+        return _CollectedClasses(seed_classes, properties_by_class, seed_names)
 
-    queue = list(seed_names)
-    visited = set()
-    while queue:
-        classname = queue.pop(0)
-        if classname in visited:
+    state = _ClassCollectionState(
+        reader,
+        classes_by_name,
+        properties_by_class,
+        deque(seed_names),
+        set(),
+    )
+    while state.queue:
+        classname = state.queue.popleft()
+        if classname in state.visited:
             continue
-        visited.add(classname)
-        properties = properties_by_class.setdefault(classname, reader.list_properties(classname))
-        for prop in properties:
-            if not is_application_iris_class(prop.iris_type):
-                continue
-            if prop.iris_type in classes_by_name:
-                if prop.iris_type not in visited:
-                    queue.append(prop.iris_type)
-                continue
-            class_info = reader.get_class(prop.iris_type)
-            if class_info is None:
-                continue
-            classes_by_name[class_info.name] = class_info
-            queue.append(class_info.name)
+        state.visited.add(classname)
+        _collect_related_classes(state, classname)
 
-    return (
+    return _CollectedClasses(
         sorted(classes_by_name.values(), key=lambda item: item.name),
         properties_by_class,
         seed_names,
@@ -248,9 +291,12 @@ def scaffold_from_iris(
     with runtime.connection() as connection:
         reader = _CompiledDictionaryReader(connection, runtime)
         try:
-            classes, properties_by_class, seeds = _collect_classes(
+            collected = _collect_classes(
                 reader, pattern.replace("*", "%"), include_related
             )
+            classes = collected.classes
+            properties_by_class = collected.properties_by_class
+            seeds = collected.seed_names
             classnames = [item.name for item in classes]
             class_names = _assign_generated_names(classnames, seeds, _camel_case)
             module_names = _assign_generated_names(classnames, seeds, _snake_case)

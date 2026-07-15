@@ -246,21 +246,29 @@ class _SaveContext:
     validate: bool
 
 
+_SKIP_SCALAR_WRITE = object()
+
+
+def _resolve_scalar_write(model_field: Any, value: Any) -> Any:
+    if value is not None:
+        return value
+    if model_field.declared_type is str:
+        return NULL_STRING
+    if model_field.nullable:
+        return save_scalar_null(model_field.declared_type)
+    return _SKIP_SCALAR_WRITE
+
+
 def _save_fast_scalar_fields(context: _SaveContext) -> None:
     cls = context.instance.__class__
     values = context.instance.__dict__
     for plan in cls._save_fields["scalar_fast"]:
         if plan.name not in values:
             continue
-        value = values.get(plan.name)
-        model_field = plan.model_field
-        if value is None and model_field.declared_type is str:
-            context.runtime.set_property(context.iris_obj, plan.name, NULL_STRING)
-        elif value is None and model_field.nullable:
-            null_value = save_scalar_null(model_field.declared_type)
-            context.runtime.set_property(context.iris_obj, plan.name, null_value)
-        elif value is not None:
-            context.runtime.set_property(context.iris_obj, plan.name, value)
+        value = _resolve_scalar_write(plan.model_field, values.get(plan.name))
+        if value is _SKIP_SCALAR_WRITE:
+            continue
+        context.runtime.set_property(context.iris_obj, plan.name, value)
 
 
 def _save_coerced_scalar_fields(context: _SaveContext) -> None:

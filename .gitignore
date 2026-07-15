@@ -11,3 +11,4 @@ waitISC.log
 generated_models
 .other
 dist
+plan.json

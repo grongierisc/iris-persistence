@@ -17,6 +17,13 @@ class FieldPlan:
     save_kind: str
 
 
+@dataclass(frozen=True)
+class _InitFieldCode:
+    parameter: str
+    statement: str
+    namespace_entry: tuple[str, Any] | None = None
+
+
 class _FactoryDefault:
     def __repr__(self) -> str:
         return "<factory>"
@@ -76,23 +83,31 @@ def build_fast_init(model_fields: Dict[str, ModelField]) -> Any | None:
         body.append("    d = self.__dict__")
     namespace: dict[str, Any] = {"UNSET": UNSET}
     for index, (name, field) in enumerate(model_fields.items()):
-        if field.required:
-            params.append(name)
-            body.append(f"    d[{name!r}] = {name}")
-        elif field.field_info.default_factory is not UNSET:
-            factory = f"_dfact_{index}"
-            namespace[factory] = field.field_info.default_factory
-            params.append(f"{name}=UNSET")
-            body.append(f"    d[{name!r}] = {name} if {name} is not UNSET else {factory}()")
-        elif field.field_info.default is not UNSET:
-            default = f"_dval_{index}"
-            namespace[default] = field.field_info.default
-            params.append(f"{name}=UNSET")
-            body.append(f"    d[{name!r}] = {name} if {name} is not UNSET else {default}")
-        else:
-            params.append(f"{name}=UNSET")
-            body.append(f"    if {name} is not UNSET: d[{name!r}] = {name}")
+        field_code = _fast_init_field_code(index, name, field)
+        params.append(field_code.parameter)
+        body.append(field_code.statement)
+        if field_code.namespace_entry is not None:
+            namespace.update((field_code.namespace_entry,))
     return _compile_init(params, body, namespace)
+
+
+def _fast_init_field_code(index: int, name: str, field: ModelField) -> _InitFieldCode:
+    if field.required:
+        return _InitFieldCode(name, f"    d[{name!r}] = {name}")
+    parameter = f"{name}=UNSET"
+    if field.field_info.default_factory is not UNSET:
+        factory = f"_dfact_{index}"
+        statement = f"    d[{name!r}] = {name} if {name} is not UNSET else {factory}()"
+        return _InitFieldCode(
+            parameter,
+            statement,
+            (factory, field.field_info.default_factory),
+        )
+    if field.field_info.default is not UNSET:
+        default = f"_dval_{index}"
+        statement = f"    d[{name!r}] = {name} if {name} is not UNSET else {default}"
+        return _InitFieldCode(parameter, statement, (default, field.field_info.default))
+    return _InitFieldCode(parameter, f"    if {name} is not UNSET: d[{name!r}] = {name}")
 
 
 def build_fast_load(model_cls: Any, plans: tuple[FieldPlan, ...], is_serial: bool) -> Any:

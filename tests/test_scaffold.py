@@ -5,11 +5,55 @@ import sys
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import iris_persistence.scaffold as scaffold_module
 from iris_persistence.advanced_storage import StorageData, StorageDefinition
+from iris_persistence.scaffold.render import _render_call
+
+
+def test_render_call_preserves_alias_flag_boolean_and_none_rules():
+    item = SimpleNamespace(
+        name="Demo",
+        source="value",
+        enabled=False,
+        selected=True,
+        omitted=None,
+    )
+
+    rendered = _render_call(
+        "Thing",
+        item,
+        ("alias", "enabled", "selected", "omitted"),
+        aliases={"alias": "source"},
+        true_flags=("selected",),
+    )
+
+    assert rendered == "Thing(name='Demo', alias='value', enabled=False, selected=True)"
+
+
+def test_collect_classes_stops_at_related_class_cycles():
+    class Reader:
+        properties = {
+            "Demo.Root": [SimpleNamespace(iris_type="Demo.Child")],
+            "Demo.Child": [SimpleNamespace(iris_type="Demo.Root")],
+        }
+
+        def list_classes(self, pattern):
+            return [SimpleNamespace(name="Demo.Root")]
+
+        def list_properties(self, classname):
+            return self.properties[classname]
+
+        def get_class(self, classname):
+            return SimpleNamespace(name=classname)
+
+    collected = scaffold_module._collect_classes(Reader(), "Demo.Root", True)
+
+    assert [item.name for item in collected.classes] == ["Demo.Child", "Demo.Root"]
+    assert set(collected.properties_by_class) == {"Demo.Child", "Demo.Root"}
 
 
 def _load_module(module_path: Path):

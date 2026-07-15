@@ -60,18 +60,28 @@ def _render_call(
 ) -> str:
     args = [f"name={item.name!r}"]
     aliases = aliases or {}
-    for field_name in fields:
-        attr_name = aliases.get(field_name, field_name)
-        value = getattr(item, attr_name, None)
-        if field_name in true_flags:
-            if value:
-                args.append(f"{field_name}=True")
-        elif value is not None:
-            if isinstance(value, bool):
-                args.append(f"{field_name}={'True' if value else 'False'}")
-            else:
-                args.append(f"{field_name}={value!r}")
+    args.extend(
+        argument
+        for field_name in fields
+        if (
+            argument := _render_argument(
+                field_name,
+                getattr(item, aliases.get(field_name, field_name), None),
+                field_name in true_flags,
+            )
+        )
+        is not None
+    )
     return f"{class_name}({', '.join(args)})"
+
+
+def _render_argument(field_name: str, value: Any, true_only: bool) -> str | None:
+    if true_only:
+        return f"{field_name}=True" if value else None
+    if value is None:
+        return None
+    rendered = "True" if value is True else "False" if value is False else repr(value)
+    return f"{field_name}={rendered}"
 
 
 def _double_quoted_literal(value: str) -> str:

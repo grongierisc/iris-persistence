@@ -595,6 +595,33 @@ def test_explicit_existing_storage_statistics_tuning(monkeypatch):
     assert ("%SYSTEM.OBJ", "Compile", ("Demo.ExistingTuning", "fc /display=none")) in runtime.calls
 
 
+def test_existing_storage_statistics_reuses_property_and_preserves_false_flag(monkeypatch):
+    runtime = _ExistingClassRuntime()
+    runtime.class_definition.Name = "Demo.ExistingTuning"
+    storage = _RecordingObject("%Dictionary.StorageDefinition")
+    storage.Name = "Default"
+    existing = _RecordingObject("%Dictionary.StoragePropertyDefinition")
+    existing.Name = "Name"
+    storage.Properties.Insert(existing)
+    runtime.class_definition.Storages.Insert(storage)
+    monkeypatch.setattr(runtime_module, "get_runtime", lambda: runtime)
+
+    tune_existing_storage_statistics(
+        "Demo.ExistingTuning",
+        properties=(
+            StorageProperty(
+                name="Name",
+                histogram="1,2,3",
+                bias_queries_as_outlier=False,
+            ),
+        ),
+    )
+
+    assert storage.Properties.items == [existing]
+    assert existing.Histogram == "1,2,3"
+    assert existing.BiasQueriesAsOutlier is False
+
+
 def test_existing_storage_statistics_reject_physical_locations():
     with pytest.raises(ValueError, match="physical storage"):
         tune_existing_storage_statistics(

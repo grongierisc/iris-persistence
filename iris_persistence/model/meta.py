@@ -189,48 +189,65 @@ def _synthesize_indexes(
     declared_indexes: list[Index],
 ) -> list[Index]:
     indexes = list(declared_indexes)
-    indexed_fields: dict[str, list[Index]] = {}
-    used_names = set()
-
-    for index in indexes:
-        used_names.add(index.name)
-        for field_name in (item.strip() for item in index.properties.split(",")):
-            if not field_name:
-                continue
-            indexed_fields.setdefault(field_name, []).append(index)
-
+    indexed_fields = _declared_indexes_by_field(indexes)
+    used_names = {index.name for index in indexes}
     synthesized: list[Index] = []
     for field_name, model_field in model_fields.items():
-        field_info = model_field.field_info
-        if not (field_info.index or field_info.unique or field_info.primary_key):
-            continue
-
-        if field_name in indexed_fields:
-            existing = ", ".join(sorted(index.name for index in indexed_fields[field_name]))
-            raise TypeError(
-                f"Field '{field_name}' on model {model_name} declares index metadata, "
-                f"but Meta.indexes already defines index(es): {existing}"
-            )
-
-        index_name = field_info.index_name or f"{field_name}Idx"
-        if index_name in used_names:
-            raise TypeError(
-                f"Field '{field_name}' on model {model_name} generated duplicate index name "
-                f"'{index_name}'"
-            )
-
-        synthesized.append(
-            Index(
-                index_name,
-                properties=field_name,
-                unique=bool(field_info.unique or field_info.primary_key),
-                primary_key=field_info.primary_key,
-                type=field_info.index_type,
-            )
+        index = _synthesize_field_index(
+            model_name,
+            field_name,
+            model_field,
+            indexed_fields.get(field_name),
+            used_names,
         )
-        used_names.add(index_name)
-
+        if index is None:
+            continue
+        synthesized.append(index)
+        used_names.add(index.name)
     return indexes + synthesized
+
+
+def _index_property_names(properties: str) -> tuple[str, ...]:
+    return tuple(name for item in properties.split(",") if (name := item.strip()))
+
+
+def _declared_indexes_by_field(indexes: list[Index]) -> dict[str, set[str]]:
+    indexed_fields: dict[str, set[str]] = {}
+    for index in indexes:
+        for field_name in _index_property_names(index.properties):
+            indexed_fields.setdefault(field_name, set()).add(index.name)
+    return indexed_fields
+
+
+def _synthesize_field_index(
+    model_name: str,
+    field_name: str,
+    model_field: ModelField,
+    declared_index_names: set[str] | None,
+    used_names: set[str],
+) -> Index | None:
+    field_info = model_field.field_info
+    if not (field_info.index or field_info.unique or field_info.primary_key):
+        return None
+    if declared_index_names:
+        existing = ", ".join(sorted(declared_index_names))
+        raise TypeError(
+            f"Field '{field_name}' on model {model_name} declares index metadata, "
+            f"but Meta.indexes already defines index(es): {existing}"
+        )
+    index_name = field_info.index_name or f"{field_name}Idx"
+    if index_name in used_names:
+        raise TypeError(
+            f"Field '{field_name}' on model {model_name} generated duplicate index name "
+            f"'{index_name}'"
+        )
+    return Index(
+        index_name,
+        properties=field_name,
+        unique=bool(field_info.unique or field_info.primary_key),
+        primary_key=field_info.primary_key,
+        type=field_info.index_type,
+    )
 
 
 def _collect_model_fields(cls: type, namespace: dict[str, Any]) -> dict[str, ModelField]:

@@ -8,7 +8,7 @@
         
         
         <link rel="shortcut icon" href="../img/favicon.ico">
-        <title>Advanced Schema Mapping - iris-persistence</title>
+        <title>Runtime Compatibility - iris-persistence</title>
         <link href="../css/bootstrap.min.css" rel="stylesheet">
         <link href="../css/fontawesome.min.css" rel="stylesheet">
         <link href="../css/brands.min.css" rel="stylesheet">
@@ -47,10 +47,10 @@
                                 <a href="../runtime_boundary_migration/" class="nav-link">Runtime Boundary Migration</a>
                             </li>
                             <li class="nav-item">
-                                <a href="../runtime_compatibility/" class="nav-link">Runtime Compatibility</a>
+                                <a href="./" class="nav-link active" aria-current="page">Runtime Compatibility</a>
                             </li>
                             <li class="nav-item">
-                                <a href="./" class="nav-link active" aria-current="page">Advanced Schema Mapping</a>
+                                <a href="../advanced_schema_mapping/" class="nav-link">Advanced Schema Mapping</a>
                             </li>
                         </ul>
 
@@ -61,17 +61,17 @@
                             </a>
                         </li>
                             <li class="nav-item">
-                                <a rel="prev" href="../runtime_compatibility/" class="nav-link">
+                                <a rel="prev" href="../runtime_boundary_migration/" class="nav-link">
                                     <i class="fa fa-arrow-left"></i> Previous
                                 </a>
                             </li>
                             <li class="nav-item">
-                                <a rel="next" class="nav-link disabled">
+                                <a rel="next" href="../advanced_schema_mapping/" class="nav-link">
                                     Next <i class="fa fa-arrow-right"></i>
                                 </a>
                             </li>
                             <li class="nav-item">
-                                <a href="https://github.com/grongierisc/iris-persistence/edit/master/docs/advanced_schema_mapping.md" class="nav-link"><i class="fa-brands fa-github"></i> Edit on GitHub</a>
+                                <a href="https://github.com/grongierisc/iris-persistence/edit/master/docs/runtime_compatibility.md" class="nav-link"><i class="fa-brands fa-github"></i> Edit on GitHub</a>
                             </li>
                     </ul>
                 </div>
@@ -91,32 +91,8 @@
     <div id="toc-collapse" class="navbar-collapse collapse card bg-body-tertiary">
         <ul class="nav flex-column">
             
-            <li class="nav-item" data-bs-level="1"><a href="#advanced-schema-mapping" class="nav-link">Advanced Schema Mapping</a>
+            <li class="nav-item" data-bs-level="1"><a href="#runtime-compatibility-matrix" class="nav-link">Runtime compatibility matrix</a>
               <ul class="nav flex-column">
-            <li class="nav-item" data-bs-level="2"><a href="#ownership-model" class="nav-link">Ownership model</a>
-              <ul class="nav flex-column">
-              </ul>
-            </li>
-            <li class="nav-item" data-bs-level="2"><a href="#class-metadata" class="nav-link">Class metadata</a>
-              <ul class="nav flex-column">
-              </ul>
-            </li>
-            <li class="nav-item" data-bs-level="2"><a href="#creation-time-tuning" class="nav-link">Creation-time tuning</a>
-              <ul class="nav flex-column">
-              </ul>
-            </li>
-            <li class="nav-item" data-bs-level="2"><a href="#complete-custom-storage" class="nav-link">Complete custom storage</a>
-              <ul class="nav flex-column">
-              </ul>
-            </li>
-            <li class="nav-item" data-bs-level="2"><a href="#immutability-and-migration" class="nav-link">Immutability and migration</a>
-              <ul class="nav flex-column">
-              </ul>
-            </li>
-            <li class="nav-item" data-bs-level="2"><a href="#scaffolding" class="nav-link">Scaffolding</a>
-              <ul class="nav flex-column">
-              </ul>
-            </li>
               </ul>
             </li>
         </ul>
@@ -124,103 +100,57 @@
 </div></div>
                     <div class="col-md-9" role="main">
 
-<h1 id="advanced-schema-mapping">Advanced Schema Mapping</h1>
-<h2 id="ownership-model">Ownership model</h2>
-<p>Version 0.3.0 has two modes:</p>
+<h1 id="runtime-compatibility-matrix">Runtime compatibility matrix</h1>
+<p>The minimum supported wrapper distribution is <code>iris-embedded-python-wrapper&gt;=0.5.19</code>.</p>
 <table>
 <thead>
 <tr>
-<th>Mode</th>
-<th>Authority</th>
-<th>Behavior</th>
+<th>Capability</th>
+<th>Embedded-shaped contract</th>
+<th>Native-shaped contract</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>managed</code></td>
-<td>Python for declared members</td>
-<td>Reconciles properties, indexes, parameters, and class metadata without rebuilding the class</td>
+<td>Object properties and methods</td>
+<td>Python proxy attributes/methods</td>
+<td>Current <code>_oref</code> methods and legacy <code>_db</code> dispatch</td>
 </tr>
 <tr>
-<td><code>observe</code></td>
-<td>IRIS</td>
-<td>Performs no schema write or compile</td>
+<td>Object identity</td>
+<td>normalized <code>_Id()</code></td>
+<td>normalized <code>_Id()</code></td>
+</tr>
+<tr>
+<td>DBAPI ownership</td>
+<td>wrapper-created connection is closed</td>
+<td>caller connection is proxied and not closed; runtime-created connection is closed</td>
+</tr>
+<tr>
+<td>Transactions</td>
+<td>wrapper transaction functions</td>
+<td>same normalized wrapper transaction functions</td>
+</tr>
+<tr>
+<td>Reference clearing</td>
+<td>generated setter then property assignment</td>
+<td>generated setter/invoke then native empty-reference assignment</td>
+</tr>
+<tr>
+<td>Dynamic JSON and streams</td>
+<td>class/property operations</td>
+<td>native database/object-reference operations</td>
 </tr>
 </tbody>
 </table>
-<p>IRIS owns compiler-generated <code>Storage Default</code>, SQL projection artifacts, and runtime methods.
-Python does not reconstruct or diff those artifacts.</p>
-<h2 id="class-metadata">Class metadata</h2>
-<table>
-<thead>
-<tr>
-<th>Python</th>
-<th>Writable dictionary target</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Model field</td>
-<td><code>%Dictionary.PropertyDefinition</code></td>
-</tr>
-<tr>
-<td><code>Meta.indexes</code></td>
-<td><code>%Dictionary.IndexDefinition</code></td>
-</tr>
-<tr>
-<td><code>Meta.parameters</code></td>
-<td><code>%Dictionary.ParameterDefinition</code></td>
-</tr>
-<tr>
-<td><code>Meta.metadata</code></td>
-<td><code>%Dictionary.ClassDefinition</code> scalar fields</td>
-</tr>
-</tbody>
-</table>
-<p>Managed sync removes omitted Python-owned properties, indexes, and parameters. Inherited and
-system members are preserved.</p>
-<h2 id="creation-time-tuning">Creation-time tuning</h2>
-<p>Prefer <code>Meta.parameters</code>, especially <code>DEFAULTGLOBAL</code> and <code>USEEXTENTSET</code>. When explicit physical
-locations are necessary, <code>StorageTuning</code> supports only:</p>
-<ul>
-<li><code>data_location</code></li>
-<li><code>extent_location</code></li>
-<li><code>id_location</code></li>
-<li><code>index_location</code></li>
-<li><code>stream_location</code></li>
-<li><code>counter_location</code></li>
-<li><code>version_location</code></li>
-<li><code>index_locations</code>, keyed by index name</li>
-</ul>
-<p>For a new class, these values pre-seed <code>%Dictionary.StorageDefinition</code> named <code>Default</code>. The class
-is then compiled once, allowing IRIS to generate the remaining storage nodes.</p>
-<h2 id="complete-custom-storage">Complete custom storage</h2>
-<p>The full dataclasses live in <code>iris_persistence.advanced_storage</code>:</p>
-<ul>
-<li><code>StorageDefinition</code></li>
-<li><code>StorageData</code></li>
-<li><code>StorageIndex</code></li>
-<li><code>StorageProperty</code></li>
-<li><code>StorageSQLMap</code> and its nested definitions</li>
-</ul>
-<p>Declare them with <code>Meta.custom_storage</code>. <code>StorageDefinition.name</code> defaults to <code>CustomStorage</code>.
-The schema writer creates the complete nested dictionary definition before first compilation and
-sets <code>StorageStrategy</code> only for a name other than <code>Default</code>.</p>
-<p>This API is for layouts that cannot be expressed by compiler defaults or class parameters. It is
-not a relocation mechanism.</p>
-<h2 id="immutability-and-migration">Immutability and migration</h2>
-<p>Once a class exists, ordinary sync compares only the declared tuning or custom fields against the
-writable storage definition. Compiler-added fields are ignored. Equal declarations are no-ops;
-any declared mismatch produces <code>blocked_storage_change</code> and raises <code>StorageMigrationRequired</code>
-before mutation.</p>
-<p>No application or rollback flag can bypass a blocked storage operation. Physical relocation
-needs a future workflow that can copy data, switch globals, validate, and roll back safely.</p>
-<h2 id="scaffolding">Scaffolding</h2>
-<p>Storage is ignored by default. <code>storage="custom"</code> reads the active storage directly from
-<code>%Dictionary.ClassDefinition.Storages</code> and emits an advanced-storage snapshot. It requires
-<code>mode="managed"</code> because storage declarations are invalid in observe mode.</p>
-<p>The scaffold does not query compiled storage tables, merge selectivity projections, or infer a
-storage definition from SQL metadata.</p></div>
+<p>Both current native object-reference methods and the legacy database-dispatch shape are retained
+because they run through the backend contract tests. Transaction rollback retains both
+<code>trollbackone()</code> and <code>trollback()</code> shapes for the same reason.</p>
+<p>Unsupported shapes fail through typed runtime errors rather than silently falling through domain
+algorithms. Credentials are never included in runtime error context.</p>
+<p>Integration coverage runs against the available Embedded matrix in CI. Native deployments should
+run the same contract and benchmark gate with their supported server/driver combination before
+release.</p></div>
             </div>
         </div>
 

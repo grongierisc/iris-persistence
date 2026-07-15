@@ -38,6 +38,18 @@
                                 <a href=".." class="nav-link">Home</a>
                             </li>
                             <li class="nav-item">
+                                <a href="../architecture/" class="nav-link">Architecture</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../product_surface_migration/" class="nav-link">Product-surface Migration</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="./" class="nav-link active" aria-current="page">Runtime Boundary Migration</a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="../runtime_compatibility/" class="nav-link">Runtime Compatibility</a>
+                            </li>
+                            <li class="nav-item">
                                 <a href="../advanced_schema_mapping/" class="nav-link">Advanced Schema Mapping</a>
                             </li>
                         </ul>
@@ -48,6 +60,16 @@
                                 <i class="fa fa-search"></i> Search
                             </a>
                         </li>
+                            <li class="nav-item">
+                                <a rel="prev" href="../product_surface_migration/" class="nav-link">
+                                    <i class="fa fa-arrow-left"></i> Previous
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a rel="next" href="../runtime_compatibility/" class="nav-link">
+                                    Next <i class="fa fa-arrow-right"></i>
+                                </a>
+                            </li>
                             <li class="nav-item">
                                 <a href="https://github.com/grongierisc/iris-persistence/edit/master/docs/runtime_boundary_migration.md" class="nav-link"><i class="fa-brands fa-github"></i> Edit on GitHub</a>
                             </li>
@@ -79,7 +101,7 @@
               <ul class="nav flex-column">
               </ul>
             </li>
-            <li class="nav-item" data-bs-level="2"><a href="#unchanged-compatibility-wrappers" class="nav-link">Unchanged compatibility wrappers</a>
+            <li class="nav-item" data-bs-level="2"><a href="#root-compatibility-wrappers" class="nav-link">Root compatibility wrappers</a>
               <ul class="nav flex-column">
               </ul>
             </li>
@@ -183,9 +205,10 @@ fails, that failure is available as <code>exception.__cause__.rollback_error</co
 regressions remain in the tested Embedded environment. Native deployments should run their existing
 integration matrix because connection ownership and wrapper fallback timing are the most likely
 compatibility-sensitive areas.</p>
-<h2 id="unchanged-compatibility-wrappers">Unchanged compatibility wrappers</h2>
+<h2 id="root-compatibility-wrappers">Root compatibility wrappers</h2>
 <p>The root <code>materialize()</code> and <code>from_iris()</code> functions still emit <code>DeprecationWarning</code>. Prefer
-<code>Model.to_iris()</code> and <code>Model.from_iris()</code>; their removal is separate from this runtime refactor.</p></div>
+<code>Model.to_iris()</code> and <code>Model.from_iris()</code>; they are removed with the other deprecated root aliases
+in <code>0.4.0</code>. See the <a href="../product_surface_migration/">product-surface migration</a>.</p></div>
             </div>
         </div>
 

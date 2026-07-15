@@ -22,8 +22,8 @@ from iris_persistence.field_utils import (
     collection_kind_from_iris_type,
     is_application_iris_class,
 )
-from iris_persistence.scaffold_imports import _collect_model_imports
-from iris_persistence.scaffold_reader import (
+from iris_persistence.scaffold.imports import _collect_model_imports
+from iris_persistence.scaffold.reader import (
     _CompiledClass,
     _CompiledIndex,
     _CompiledParameter,

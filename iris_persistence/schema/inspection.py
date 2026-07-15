@@ -5,13 +5,13 @@ from typing import Any, Type
 
 import iris_persistence.models
 from iris_persistence.runtime import get_runtime
-from iris_persistence.schema_live import (
+from iris_persistence.schema.live import (
     _collect_live_schema_state,
 )
-from iris_persistence.schema_live import (
+from iris_persistence.schema.live import (
     _runtime_property_name as _runtime_property_name,
 )
-from iris_persistence.schema_state import (
+from iris_persistence.schema.state import (
     CLASS_METADATA_KEYS,
     INDEX_KEYS,
     PROPERTY_KEYS,

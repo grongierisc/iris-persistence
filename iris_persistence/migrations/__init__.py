@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence, cast
 
-from iris_persistence.migration_backup import _write_apply_backup
+from iris_persistence.migrations.backup import _write_apply_backup
 from iris_persistence.models import Model
 from iris_persistence.runtime import get_runtime
 from iris_persistence.schema import (

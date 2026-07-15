@@ -13,22 +13,22 @@ from typing import (
 )
 
 from iris_persistence.advanced_storage import StorageDefinition
-from iris_persistence.model_meta import (
+from iris_persistence.model.meta import (
     DEFAULT_SYNC_MODE as DEFAULT_SYNC_MODE,
 )
-from iris_persistence.model_meta import (
+from iris_persistence.model.meta import (
     SYNC_POLICIES as SYNC_POLICIES,
 )
-from iris_persistence.model_meta import (
+from iris_persistence.model.meta import (
     ModelMeta,
     _FieldPlan,
 )
-from iris_persistence.model_values import (
+from iris_persistence.model.values import (
     _convert_recursive_value,
     _model_value_to_dict,
     _validate_field_value,
 )
-from iris_persistence.model_values import (
+from iris_persistence.model.values import (
     _is_object_reference_field as _is_object_reference_field,
 )
 from iris_persistence.types import (

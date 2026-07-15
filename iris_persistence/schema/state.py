@@ -21,28 +21,28 @@ from iris_persistence.catalog import (
     item_belongs_to_class,
 )
 from iris_persistence.field_utils import PYTHON_TO_IRIS_TYPE, coerce_bool
-from iris_persistence.schema_members import (
+from iris_persistence.schema.members import (
     _is_system_member_name as _is_system_member_name,
 )
-from iris_persistence.schema_members import (
+from iris_persistence.schema.members import (
     _iter_runtime_list as _iter_runtime_list,
 )
-from iris_persistence.schema_members import (
+from iris_persistence.schema.members import (
     _owned_schema_member_entries as _owned_schema_member_entries,
 )
-from iris_persistence.schema_members import (
+from iris_persistence.schema.members import (
     _remove_owned_schema_member_entries as _remove_owned_schema_member_entries,
 )
-from iris_persistence.schema_members import (
+from iris_persistence.schema.members import (
     _row_value as _row_value,
 )
-from iris_persistence.schema_types import (
+from iris_persistence.schema.types import (
     SchemaDiff as SchemaDiff,
 )
-from iris_persistence.schema_types import (
+from iris_persistence.schema.types import (
     SchemaOperation as SchemaOperation,
 )
-from iris_persistence.schema_types import (
+from iris_persistence.schema.types import (
     SchemaState as SchemaState,
 )
 from iris_persistence.types import UNSET, FieldInfo

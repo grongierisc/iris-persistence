@@ -315,7 +315,7 @@ def inspect_existing_storage(
 ) -> StorageDefinition:
     """Return a typed snapshot of writable storage metadata for an existing class."""
     from iris_persistence.runtime import get_runtime
-    from iris_persistence.schema_inspection import _collect_live_schema_state
+    from iris_persistence.schema.inspection import _collect_live_schema_state
 
     state = _collect_live_schema_state(
         _runtime or get_runtime(),

@@ -4,7 +4,7 @@ import os
 import warnings
 from typing import Any, Protocol
 
-from iris_persistence.values import IRISValueAdapterMixin
+from iris_persistence.persistence.values import IRISValueAdapterMixin
 
 
 class RuntimeAdapter(Protocol):

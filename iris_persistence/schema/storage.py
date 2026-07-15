@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from iris_persistence.schema_inspection import (
+from iris_persistence.schema.inspection import (
     _runtime_property_name,
     _set_runtime_property_if_not_none,
 )
-from iris_persistence.schema_state import (
+from iris_persistence.schema.state import (
     STORAGE_DATA_KEYS,
     STORAGE_INDEX_KEYS,
     STORAGE_KEYS,

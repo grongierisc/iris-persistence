@@ -12,13 +12,13 @@ from iris_persistence.field_utils import (
     is_percent_list_field,
     is_scalar_string_field,
 )
-from iris_persistence.model_codegen import FieldPlan as _FieldPlan
-from iris_persistence.model_codegen import build_fast_init as _build_fast_init
-from iris_persistence.model_codegen import build_fast_load as _build_fast_load
-from iris_persistence.model_codegen import build_fast_save as _build_fast_save
-from iris_persistence.model_codegen import build_generated_init as _build_generated_init
-from iris_persistence.model_codegen import build_signature as _build_signature
-from iris_persistence.model_values import (
+from iris_persistence.model.codegen import FieldPlan as _FieldPlan
+from iris_persistence.model.codegen import build_fast_init as _build_fast_init
+from iris_persistence.model.codegen import build_fast_load as _build_fast_load
+from iris_persistence.model.codegen import build_fast_save as _build_fast_save
+from iris_persistence.model.codegen import build_generated_init as _build_generated_init
+from iris_persistence.model.codegen import build_signature as _build_signature
+from iris_persistence.model.values import (
     _is_object_reference_field,
 )
 from iris_persistence.types import (

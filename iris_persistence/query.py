@@ -20,13 +20,13 @@ from iris_persistence.field_utils import (
     is_serial_model_type,
     walk_declared_value,
 )
-from iris_persistence.queryset import (
+from iris_persistence.persistence.queryset import (
     QuerySet as QuerySet,
 )
-from iris_persistence.queryset import (
+from iris_persistence.persistence.queryset import (
     _resolve_sql_field_name as _resolve_sql_field_name,
 )
-from iris_persistence.queryset import (
+from iris_persistence.persistence.queryset import (
     _resolve_sql_table_name as _resolve_sql_table_name,
 )
 from iris_persistence.runtime import get_runtime

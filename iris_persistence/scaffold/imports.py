@@ -11,7 +11,7 @@ from iris_persistence.field_utils import (
     collection_kind_from_iris_type,
     is_application_iris_class,
 )
-from iris_persistence.scaffold_reader import _CompiledClass, _CompiledIndex, _CompiledProperty
+from iris_persistence.scaffold.reader import _CompiledClass, _CompiledIndex, _CompiledProperty
 
 
 def _rendered_property_type(prop: _CompiledProperty, python_class_names: dict[str, str]) -> str:

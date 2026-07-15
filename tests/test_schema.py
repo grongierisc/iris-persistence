@@ -4,7 +4,7 @@ import pytest
 
 import iris_persistence.runtime as runtime_module
 import iris_persistence.schema as schema_module
-import iris_persistence.schema_inspection as schema_inspection_module
+import iris_persistence.schema.inspection as schema_inspection_module
 from iris_persistence import Field, Index, Model, StorageMigrationRequired, StorageTuning
 from iris_persistence.advanced_storage import (
     StorageProperty,

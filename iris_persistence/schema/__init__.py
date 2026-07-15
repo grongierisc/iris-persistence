@@ -4,25 +4,25 @@ from typing import Any, Callable, Type
 
 import iris_persistence.models
 from iris_persistence.runtime import get_runtime
-from iris_persistence.schema_inspection import (
+from iris_persistence.schema.inspection import (
     _collect_live_schema_state as _collect_live_schema_state,
 )
-from iris_persistence.schema_inspection import (
+from iris_persistence.schema.inspection import (
     _runtime_property_name,
     _set_runtime_property_if_not_none,
 )
-from iris_persistence.schema_inspection import diff_schema as _diff_schema
-from iris_persistence.schema_inspection import (
+from iris_persistence.schema.inspection import diff_schema as _diff_schema
+from iris_persistence.schema.inspection import (
     diff_schema_operations as diff_schema_operations,
 )
-from iris_persistence.schema_mutation import (
+from iris_persistence.schema.mutation import (
     _apply_runtime_state_fields,
     _mapping_or_attr_value,
     _remove_runtime_parameter,
     _set_runtime_flag_exact,
     _set_runtime_flag_if_true,
 )
-from iris_persistence.schema_state import (
+from iris_persistence.schema.state import (
     _PROPERTY_FLAG_FIELDS,
     _PROPERTY_PARAM_FIELDS,
     _PROPERTY_VALUE_FIELDS,
@@ -37,19 +37,19 @@ from iris_persistence.schema_state import (
     _schema_classname_for_save,
     _state_to_dict,
 )
-from iris_persistence.schema_state import (
+from iris_persistence.schema.state import (
     SchemaDiff as SchemaDiff,
 )
-from iris_persistence.schema_state import (
+from iris_persistence.schema.state import (
     SchemaOperation as SchemaOperation,
 )
-from iris_persistence.schema_state import (
+from iris_persistence.schema.state import (
     SchemaState as SchemaState,
 )
-from iris_persistence.schema_state import (
+from iris_persistence.schema.state import (
     _map_python_type_to_iris as _map_python_type_to_iris,
 )
-from iris_persistence.schema_storage import _new_schema_member, _sync_storage
+from iris_persistence.schema.storage import _new_schema_member, _sync_storage
 
 
 class StorageMigrationRequired(RuntimeError):

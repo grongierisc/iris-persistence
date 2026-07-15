@@ -5,7 +5,7 @@ from typing import Any, Callable
 from iris_persistence.catalog import dictionary_rows as _dictionary_rows
 from iris_persistence.catalog import safe_get_property as _safe_get_property
 from iris_persistence.field_utils import coerce_bool
-from iris_persistence.schema_state import (
+from iris_persistence.schema.state import (
     _PROPERTY_FLAG_FIELDS,
     _PROPERTY_VALUE_FIELDS,
     _STORAGE_SQL_MAP_RUNTIME_CHILDREN,

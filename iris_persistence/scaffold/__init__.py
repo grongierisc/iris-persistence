@@ -14,7 +14,7 @@ from iris_persistence.field_utils import (
     is_application_iris_class,
 )
 from iris_persistence.runtime import get_runtime
-from iris_persistence.scaffold_reader import (
+from iris_persistence.scaffold.reader import (
     ScaffoldResult,
     ScaffoldWarning,
     _CompiledClass,
@@ -23,7 +23,7 @@ from iris_persistence.scaffold_reader import (
     _CompiledParameter,
     _CompiledProperty,
 )
-from iris_persistence.scaffold_render import _render_model
+from iris_persistence.scaffold.render import _render_model
 
 
 def _safe_identifier_part(part: str) -> str:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from iris_persistence.schema_inspection import _set_runtime_property_if_not_none
+from iris_persistence.schema.inspection import _set_runtime_property_if_not_none
 
 
 def _set_runtime_property_exact(

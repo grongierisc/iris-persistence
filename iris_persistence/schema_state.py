@@ -9,17 +9,7 @@ from difflib import unified_diff
 from typing import Any, Type, get_args, get_origin
 
 import iris_persistence.models
-from iris_persistence.catalog import (
-    dictionary_rows as _dictionary_rows,
-)
-from iris_persistence.catalog import (
-    item_belongs_to_class,
-)
-from iris_persistence.catalog import (
-    safe_get_property as _safe_get_property,
-)
-from iris_persistence.field_utils import PYTHON_TO_IRIS_TYPE, coerce_bool
-from iris_persistence.types import (
+from iris_persistence.advanced_storage import (
     STORAGE_DATA_SCALAR_KEYS,
     STORAGE_DEFINITION_SCALAR_KEYS,
     STORAGE_INDEX_SCALAR_KEYS,
@@ -30,9 +20,18 @@ from iris_persistence.types import (
     STORAGE_SQL_MAP_SUB_ACCESS_VAR_SCALAR_KEYS,
     STORAGE_SQL_MAP_SUB_INVALID_CONDITION_SCALAR_KEYS,
     STORAGE_SQL_MAP_SUB_SCALAR_KEYS,
-    UNSET,
-    FieldInfo,
 )
+from iris_persistence.catalog import (
+    dictionary_rows as _dictionary_rows,
+)
+from iris_persistence.catalog import (
+    item_belongs_to_class,
+)
+from iris_persistence.catalog import (
+    safe_get_property as _safe_get_property,
+)
+from iris_persistence.field_utils import PYTHON_TO_IRIS_TYPE, coerce_bool
+from iris_persistence.types import UNSET, FieldInfo
 
 CLASS_METADATA_KEYS = (
     "description",
@@ -457,6 +456,7 @@ def _empty_schema_state(classname: str) -> dict[str, Any]:
 
 def _empty_storage_state() -> dict[str, Any]:
     return {
+        "kind": None,
         "name": None,
         "attrs": {},
         "data": {},
@@ -599,26 +599,42 @@ def _collect_model_schema_state(model_cls: Type[Any]) -> SchemaState:
         indexes[index_meta.name] = _index_state_from_meta(index_meta)
     state["indexes"] = indexes
 
-    storage_meta = getattr(model_cls, "_storage", None)
-    if storage_meta is not None:
+    storage_tuning = getattr(model_cls, "_storage_tuning", None)
+    custom_storage = getattr(model_cls, "_custom_storage", None)
+    if storage_tuning is not None:
         storage_state = _empty_storage_state()
-        storage_state["name"] = "CustomStorage"
-        storage_state["attrs"] = _object_state(storage_meta, STORAGE_KEYS)
+        storage_state["kind"] = "tuning"
+        storage_state["name"] = "Default"
+        storage_state["attrs"] = {
+            key: value
+            for key, value in _object_state(storage_tuning, STORAGE_KEYS).items()
+            if value not in (None, "")
+        }
+        storage_state["indices"] = {
+            str(name): {"location": str(location)}
+            for name, location in storage_tuning.index_locations.items()
+        }
+        state["storage"] = storage_state
+    elif custom_storage is not None:
+        storage_state = _empty_storage_state()
+        storage_state["kind"] = "custom"
+        storage_state["name"] = custom_storage.name
+        storage_state["attrs"] = _object_state(custom_storage, STORAGE_KEYS)
         storage_state["data"] = _named_object_mapping(
-            getattr(storage_meta, "data", None),
+            custom_storage.data,
             STORAGE_DATA_KEYS,
             extra=lambda item: {"values": _normalize_values_mapping(getattr(item, "values", None))},
         )
         storage_state["indices"] = _named_object_mapping(
-            getattr(storage_meta, "indices", None),
+            custom_storage.indices,
             STORAGE_INDEX_KEYS,
         )
         storage_state["properties"] = _named_object_mapping(
-            getattr(storage_meta, "properties", None),
+            custom_storage.properties,
             STORAGE_PROPERTY_KEYS,
         )
         storage_state["sql_maps"] = _named_object_mapping(
-            getattr(storage_meta, "sql_maps", None),
+            custom_storage.sql_maps,
             STORAGE_SQL_MAP_KEYS,
             children=_STORAGE_SQL_MAP_STATE_CHILDREN,
         )

@@ -8,7 +8,7 @@ class ClassMetadataRoundTripFixture(Model, persistent=True):
 
     class Meta:
         classname = "Demo.ClassMetadataRoundTripFixture"
-        mode = "replace"
+        mode = "managed"
         metadata = ClassMetadata(
             description="round-trip class metadata",
             deprecated=True,
@@ -35,4 +35,4 @@ class SQLProjectionRoundTripFixture(Model, persistent=True):
 
     class Meta:
         classname = "Demo.SQLProjectionRoundTripFixture"
-        mode = "replace"
+        mode = "managed"

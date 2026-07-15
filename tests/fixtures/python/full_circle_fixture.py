@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import datetime
 
-from iris_persistence import Field, Model, StorageData, StorageDefinition
+from iris_persistence import Field, Model
+from iris_persistence.advanced_storage import StorageData, StorageDefinition
 
 
 class FullCircleFixture(Model, persistent=True):
@@ -20,8 +21,8 @@ class FullCircleFixture(Model, persistent=True):
 
     class Meta:
         classname = "Demo.FullCircleFixture"
-        mode = "replace"
-        storage = StorageDefinition(
+        mode = "managed"
+        custom_storage = StorageDefinition(
             data_location="^Demo.FullCircleFixtureD",
             default_data="FullCircleFixtureDefaultData",
             type="%Storage.Persistent",

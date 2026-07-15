@@ -8,6 +8,7 @@ import pytest
 
 from iris_persistence.migrations import (
     BackupRestoreError,
+    MigrationOperation,
     MigrationPlan,
     StaleMigrationPlanError,
     UnsafeMigrationError,
@@ -80,15 +81,30 @@ def test_apply_plan_rejects_stale_live_schema_fingerprint(recording_runtime):
     assert recording_runtime.transaction_events == []
 
 
-def test_apply_plan_blocks_unsafe_operations_without_mutation(recording_runtime, tmp_path):
+def test_apply_plan_creates_custom_storage_with_new_class(recording_runtime, tmp_path):
     plan = create_plan([SchemaMetadataFixture], target_revision="storage")
 
-    assert any(operation.safety == "manual-review" for operation in plan.operations)
     result = apply_plan(plan, backup_dir=tmp_path)
 
+    assert result.status == "applied"
+    assert any(operation.op_type == "add_storage" for operation in plan.operations)
+
+
+def test_blocked_storage_change_cannot_be_bypassed(recording_runtime, tmp_path):
+    plan = create_plan([ParameterFixture], target_revision="storage-move")
+    blocked = MigrationOperation(
+        op_type="blocked_storage_change",
+        classname="Demo.ParameterFixture",
+        path="storage",
+        safety="blocked",
+    )
+    plan = replace(plan, operations=(blocked,))
+
+    result = apply_plan(plan, backup_dir=tmp_path, allow_destructive=True)
+
     assert result.status == "blocked"
+    assert result.skipped_operations == (blocked,)
     assert result.backup_dir is None
-    assert result.skipped_operations
     assert recording_runtime.transaction_events == []
 
 

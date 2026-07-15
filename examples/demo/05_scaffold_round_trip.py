@@ -25,7 +25,7 @@ class ExampleScaffoldCustomer(Model, persistent=True):
 
     class Meta:
         classname = "Demo.ExampleScaffoldCustomer"
-        mode = "replace"
+        mode = "managed"
 
 
 class ExampleScaffoldAddress(Model, serial=True):
@@ -34,7 +34,7 @@ class ExampleScaffoldAddress(Model, serial=True):
 
     class Meta:
         classname = "Demo.ExampleScaffoldAddress"
-        mode = "replace"
+        mode = "managed"
 
 
 class ExampleScaffoldOrder(Model, persistent=True):
@@ -45,7 +45,7 @@ class ExampleScaffoldOrder(Model, persistent=True):
 
     class Meta:
         classname = "Demo.ExampleScaffoldOrder"
-        mode = "replace"
+        mode = "managed"
 
 
 def run_demo(*, backend: str | None = None) -> dict[str, Any]:

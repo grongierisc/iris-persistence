@@ -14,7 +14,7 @@ class DemoFixture(Model, persistent=True):
 
     class Meta:
         classname = "Demo.Demo"
-        mode = "extend"
+        mode = "managed"
         parameters = {"TITI": "TOTO"}
 
 

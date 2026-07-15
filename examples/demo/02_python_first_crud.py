@@ -25,7 +25,7 @@ class ProductDemo(Model, persistent=True):
 
     class Meta:
         classname = "Demo.Demo"
-        mode = "extend"
+        mode = "managed"
         parameters = {"OWNER": "examples/demo"}
 
 

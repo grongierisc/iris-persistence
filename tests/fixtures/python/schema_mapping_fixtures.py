@@ -5,6 +5,8 @@ from iris_persistence import (
     Field,
     Index,
     Model,
+)
+from iris_persistence.advanced_storage import (
     StorageData,
     StorageDefinition,
     StorageIndex,
@@ -29,11 +31,11 @@ class SchemaMetadataFixture(Model, persistent=True):
 
     class Meta:
         classname = "Demo.SchemaMetadataFixture"
-        mode = "replace"
+        mode = "managed"
         indexes = [
             Index("PayloadIdx", properties="Payload", unique=True, primary_key=True, type="bitmap")
         ]
-        storage = StorageDefinition(
+        custom_storage = StorageDefinition(
             data_location="^Demo.SchemaMetadataFixtureD",
             default_data="SchemaMetadataFixtureDefaultData",
             extent_location="^Demo.SchemaMetadataFixtureExtent",
@@ -148,7 +150,7 @@ class ExtendIndexFixture(Model, persistent=True):
 
     class Meta:
         classname = "Demo.ExtendIndexFixture"
-        mode = "extend"
+        mode = "managed"
         indexes = [
             Index("ExistingIdx", properties="Payload"),
             Index("PayloadIdx", properties="Payload", unique=True),
@@ -160,7 +162,7 @@ class ParameterFixture(Model, persistent=True):
 
     class Meta:
         classname = "Demo.ParameterFixture"
-        mode = "replace"
+        mode = "managed"
         parameters = {"TITI": "TOTO"}
 
 
@@ -179,7 +181,7 @@ class RelationshipMetadataFixture(Model, persistent=True):
 
     class Meta:
         classname = "Demo.RelationshipMetadataFixture"
-        mode = "replace"
+        mode = "managed"
 
 
 class SQLProjectionMetadataFixture(Model, persistent=True):
@@ -198,7 +200,7 @@ class SQLProjectionMetadataFixture(Model, persistent=True):
 
     class Meta:
         classname = "Demo.SQLProjectionMetadataFixture"
-        mode = "replace"
+        mode = "managed"
 
 
 class ClassMetadataFixture(Model, persistent=True):
@@ -206,7 +208,7 @@ class ClassMetadataFixture(Model, persistent=True):
 
     class Meta:
         classname = "Demo.ClassMetadataFixture"
-        mode = "replace"
+        mode = "managed"
         metadata = ClassMetadata(
             description="schema metadata fixture",
             deprecated=True,

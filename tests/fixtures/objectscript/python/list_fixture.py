@@ -10,7 +10,7 @@ class ListFixtureItem(Model, serial=True):
 
     class Meta:
         classname = "Demo.ListFixtureItem"
-        mode = "replace"
+        mode = "managed"
 
 
 class ListFixture(Model, persistent=True):
@@ -33,7 +33,7 @@ class ListFixture(Model, persistent=True):
 
     class Meta:
         classname = "Demo.ListFixture"
-        mode = "replace"
+        mode = "managed"
 
 
 FIXTURE_MODELS = [ListFixtureItem, ListFixture]

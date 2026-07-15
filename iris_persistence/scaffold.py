@@ -2,28 +2,12 @@ from __future__ import annotations
 
 import re
 import warnings as py_warnings
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from iris_persistence.field_utils import (
-    collection_kind_from_iris_type,
-    is_application_iris_class,
-)
-from iris_persistence.runtime import get_runtime
-from iris_persistence.scaffold_reader import (
-    STORAGE_SCALAR_KEYS,
-    ScaffoldResult,
-    ScaffoldWarning,
-    _CompiledClass,
-    _CompiledDictionaryReader,
-    _CompiledIndex,
-    _CompiledParameter,
-    _CompiledProperty,
-    _CompiledStorage,
-)
-from iris_persistence.types import (
-    STORAGE_PROPERTY_SCALAR_KEYS,
+from iris_persistence.advanced_storage import (
+    STORAGE_DEFINITION_SCALAR_KEYS,
     STORAGE_SQL_MAP_DATA_SCALAR_KEYS,
     STORAGE_SQL_MAP_ROW_ID_SPEC_SCALAR_KEYS,
     STORAGE_SQL_MAP_SCALAR_KEYS,
@@ -31,10 +15,27 @@ from iris_persistence.types import (
     STORAGE_SQL_MAP_SUB_INVALID_CONDITION_SCALAR_KEYS,
     STORAGE_SQL_MAP_SUB_SCALAR_KEYS,
     StorageData,
+    StorageDefinition,
     StorageIndex,
     StorageProperty,
     StorageSQLMap,
 )
+from iris_persistence.field_utils import (
+    collection_kind_from_iris_type,
+    is_application_iris_class,
+)
+from iris_persistence.runtime import get_runtime
+from iris_persistence.scaffold_reader import (
+    ScaffoldResult,
+    ScaffoldWarning,
+    _CompiledClass,
+    _CompiledDictionaryReader,
+    _CompiledIndex,
+    _CompiledParameter,
+    _CompiledProperty,
+)
+from iris_persistence.schema import _storage_meta_from_state
+from iris_persistence.schema_inspection import _collect_live_schema_state
 
 
 def _python_default_literal(prop: _CompiledProperty) -> tuple[str | None, str | None]:
@@ -197,7 +198,7 @@ def _render_args(item: Any, specs: tuple[tuple[str, str, str], ...]) -> list[str
     return [
         arg
         for attr_name, arg_name, style in specs
-        if (arg := _format_arg(arg_name, getattr(item, attr_name), style)) is not None
+        if (arg := _format_arg(arg_name, getattr(item, attr_name, None), style)) is not None
     ]
 
 
@@ -318,7 +319,7 @@ def _collect_model_imports(
     class_info: _CompiledClass,
     properties: list[_CompiledProperty],
     indexes: list[_CompiledIndex],
-    storage: _CompiledStorage | None,
+    storage: StorageDefinition | None,
     storage_data: list[StorageData],
     storage_indices: list[StorageIndex],
     storage_properties: list[StorageProperty],
@@ -346,16 +347,17 @@ def _collect_model_imports(
         iris_imports.add("ClassMetadata")
     if indexes:
         iris_imports.add("Index")
+    advanced_imports: set[str] = set()
     if storage is not None:
-        iris_imports.add("StorageDefinition")
+        advanced_imports.add("StorageDefinition")
     if storage_data:
-        iris_imports.add("StorageData")
+        advanced_imports.add("StorageData")
     if storage_indices:
-        iris_imports.add("StorageIndex")
+        advanced_imports.add("StorageIndex")
     if storage_properties:
-        iris_imports.add("StorageProperty")
+        advanced_imports.add("StorageProperty")
     if storage_sql_maps:
-        iris_imports.update(
+        advanced_imports.update(
             {
                 "StorageSQLMap",
                 "StorageSQLMapData",
@@ -366,6 +368,11 @@ def _collect_model_imports(
             }
         )
 
+    if advanced_imports:
+        custom_imports.append(
+            "from iris_persistence.advanced_storage import "
+            + ", ".join(sorted(advanced_imports))
+        )
     return (sorted(set(custom_imports)), typing_imports, needs_datetime, iris_imports)
 
 
@@ -466,7 +473,7 @@ _STORAGE_PROPERTY_ARG_SPECS: tuple[tuple[str, str, str], ...] = (
     ("stream_location", "stream_location", "double"),
 )
 
-_STORAGE_RENDER_KEYS = (*STORAGE_SCALAR_KEYS[1:], "type")
+_STORAGE_RENDER_KEYS = ("name", *STORAGE_DEFINITION_SCALAR_KEYS)
 
 
 _STORAGE_DATA_ARG_SPECS: tuple[tuple[str, str, str], ...] = (
@@ -479,15 +486,15 @@ _STORAGE_DATA_ARG_SPECS: tuple[tuple[str, str, str], ...] = (
 
 
 def _render_storage_lines(
-    storage: _CompiledStorage,
+    storage: StorageDefinition,
     storage_data: list[StorageData],
     storage_indices: list[StorageIndex],
     storage_properties: list[StorageProperty],
     storage_sql_maps: list[StorageSQLMap],
 ) -> list[str]:
-    lines = ["        storage = StorageDefinition("]
+    lines = ["        custom_storage = StorageDefinition("]
     for attr_name in _STORAGE_RENDER_KEYS:
-        value = getattr(storage, attr_name)
+        value = getattr(storage, attr_name, None)
         if value is not None:
             lines.append(f"            {attr_name}={_double_quoted_literal(value)},")
 
@@ -535,7 +542,7 @@ def _render_meta_lines(
     emit_meta_superclasses: bool,
     parameters: list[_CompiledParameter],
     indexes: list[_CompiledIndex],
-    storage: _CompiledStorage | None,
+    storage: StorageDefinition | None,
     storage_data: list[StorageData],
     storage_indices: list[StorageIndex],
     storage_properties: list[StorageProperty],
@@ -574,7 +581,7 @@ def _render_model(
     mode: str,
     parameters: list[_CompiledParameter],
     indexes: list[_CompiledIndex],
-    storage: _CompiledStorage | None,
+    storage: StorageDefinition | None,
     storage_data: list[StorageData],
     storage_indices: list[StorageIndex],
     storage_properties: list[StorageProperty],
@@ -633,28 +640,6 @@ def _render_model(
     return "\n".join(lines) + "\n"
 
 
-def _merge_storage_properties(
-    compiled_properties: list[StorageProperty],
-    defined_properties: list[StorageProperty],
-) -> list[StorageProperty]:
-    merged = {item.name: item for item in compiled_properties}
-    for item in defined_properties:
-        current = merged.get(item.name)
-        if current is None:
-            merged[item.name] = item
-            continue
-        merged[item.name] = replace(
-            current,
-            **{
-                name: value
-                if (value := getattr(item, name)) not in (None, "")
-                else getattr(current, name)
-                for name in STORAGE_PROPERTY_SCALAR_KEYS
-            },
-        )
-    return sorted(merged.values(), key=lambda item: item.name)
-
-
 def _record_warning(result: ScaffoldResult, code: str, classname: str, exc: Exception) -> None:
     message = f"Failed to scaffold {code} for {classname}: {exc}"
     result.warnings.append(ScaffoldWarning(code=code, message=message, classname=classname))
@@ -666,13 +651,18 @@ def scaffold_from_iris(
     output_dir: str,
     mode: str = "observe",
     extract_meta: bool = False,
-    extract_hidden_meta: bool = False,
     include_related: bool = False,
-    scaffold_selectivity: bool = False,
+    storage: str = "ignore",
     return_result: bool = False,
     best_effort: bool = False,
 ) -> list[str] | ScaffoldResult:
     """Scaffold typed models from live IRIS classes."""
+    if mode not in {"managed", "observe"}:
+        raise ValueError("mode must be 'managed' or 'observe'")
+    if storage not in {"ignore", "custom"}:
+        raise ValueError("storage must be 'ignore' or 'custom'")
+    if storage == "custom" and mode != "managed":
+        raise ValueError("storage='custom' requires mode='managed'")
     runtime = get_runtime()
     conn = runtime.get_dbapi_connection()
     reader = _CompiledDictionaryReader(conn, runtime)
@@ -712,7 +702,7 @@ def scaffold_from_iris(
 
             parameters: list[_CompiledParameter] = []
             indexes: list[_CompiledIndex] = []
-            storage: _CompiledStorage | None = None
+            storage_definition: StorageDefinition | None = None
             storage_data: list[StorageData] = []
             storage_indices: list[StorageIndex] = []
             storage_properties: list[StorageProperty] = []
@@ -731,28 +721,17 @@ def scaffold_from_iris(
                     if not best_effort:
                         raise
                     _record_warning(result, "indexes", class_info.name, exc)
+            if storage == "custom":
                 try:
-                    storage = reader.get_storage(
-                        class_info.name,
-                        include_hidden=extract_hidden_meta,
-                    )
-                    if storage:
-                        storage_parent = f"{class_info.name}||{storage.name}"
-                        storage_data = reader.list_storage_data(storage_parent)
-                        storage_indices = reader.list_storage_indices(storage_parent)
-                        storage_properties = reader.list_storage_properties(
-                            storage_parent,
-                            include_hidden=extract_hidden_meta,
-                        )
-                        if scaffold_selectivity:
-                            storage_properties = _merge_storage_properties(
-                                storage_properties,
-                                reader.list_storage_property_definitions(
-                                    storage_parent,
-                                    include_hidden=extract_hidden_meta,
-                                ),
-                            )
-                        storage_sql_maps = reader.list_storage_sql_maps(storage_parent)
+                    storage_state = _collect_live_schema_state(
+                        runtime, class_info.name, include_storage=True
+                    ).storage
+                    storage_definition = _storage_meta_from_state(storage_state)
+                    if storage_definition is not None:
+                        storage_data = list(storage_definition.data)
+                        storage_indices = list(storage_definition.indices)
+                        storage_properties = list(storage_definition.properties)
+                        storage_sql_maps = list(storage_definition.sql_maps)
                 except Exception as exc:
                     if not best_effort:
                         raise
@@ -765,7 +744,7 @@ def scaffold_from_iris(
                 mode=mode,
                 parameters=parameters,
                 indexes=indexes,
-                storage=storage,
+                storage=storage_definition,
                 storage_data=storage_data,
                 storage_indices=storage_indices,
                 storage_properties=storage_properties,

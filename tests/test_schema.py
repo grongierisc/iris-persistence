@@ -3,7 +3,7 @@ import decimal
 import pytest
 
 import iris_persistence.schema as schema_module
-from iris_persistence import Field, Index, Model
+from iris_persistence import Field, Index, Model, StorageMigrationRequired, StorageTuning
 from iris_persistence.schema import _map_python_type_to_iris
 from tests.fixtures.python.schema_mapping_fixtures import (
     ClassMetadataFixture,
@@ -248,7 +248,7 @@ def test_sync_schema_writes_decimal_scale_for_decimal(monkeypatch):
 
         class Meta:
             classname = "Demo.DecimalScaleModel"
-            mode = "replace"
+            mode = "managed"
 
     runtime = _RecordingRuntime()
     monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
@@ -267,7 +267,7 @@ def test_sync_schema_writes_decimal_scale_for_explicit_float_decimal(monkeypatch
 
         class Meta:
             classname = "Demo.ExplicitFloatDecimalScaleModel"
-            mode = "replace"
+            mode = "managed"
 
     runtime = _RecordingRuntime()
     monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
@@ -305,6 +305,8 @@ def test_sync_schema_writes_extended_metadata(monkeypatch):
     assert index.PrimaryKey == 1
 
     storage = class_def.Storages.items[0]
+    assert storage.Name == "CustomStorage"
+    assert class_def.StorageStrategy == "CustomStorage"
     assert storage.DataLocation == "^Demo.SchemaMetadataFixtureD"
     assert storage.DefaultData == "SchemaMetadataFixtureDefaultData"
     assert storage.ExtentLocation == "^Demo.SchemaMetadataFixtureExtent"
@@ -455,6 +457,87 @@ def test_sync_schema_writes_class_metadata(monkeypatch):
     assert class_def.Final == 1
     assert class_def.SqlTableName == "Demo_ClassMetadataFixture"
     assert class_def.ProcedureBlock == 1
+
+
+def test_sync_schema_preseeds_minimal_default_storage_tuning(monkeypatch):
+    class TunedModel(Model, persistent=True):
+        Name: str | None = None
+
+        class Meta:
+            classname = "Demo.TunedModel"
+            mode = "managed"
+            storage_tuning = StorageTuning(
+                data_location="^Demo.TunedD",
+                index_location="^Demo.TunedI",
+                index_locations={"NameIdx": '^Demo.TunedI("NameIdx")'},
+            )
+
+    runtime = _RecordingRuntime()
+    monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
+
+    TunedModel.sync_schema()
+
+    storage = runtime.class_definition.Storages.items[0]
+    assert storage.Name == "Default"
+    assert storage.Type == "%Storage.Persistent"
+    assert storage.DataLocation == "^Demo.TunedD"
+    assert storage.IndexLocation == "^Demo.TunedI"
+    assert not hasattr(storage, "Data") or storage.Data.items == []
+    assert storage.Indices.items[0].Name == "NameIdx"
+    assert storage.Indices.items[0].Location == '^Demo.TunedI("NameIdx")'
+    assert not hasattr(runtime.class_definition, "StorageStrategy")
+
+
+def test_sync_schema_blocks_post_compile_storage_relocation_before_mutation(monkeypatch):
+    class RelocatedModel(Model, persistent=True):
+        Name: str | None = None
+
+        class Meta:
+            classname = "Demo.RelocatedModel"
+            mode = "managed"
+            storage_tuning = StorageTuning(data_location="^Demo.NewD")
+
+    runtime = _ExistingClassRuntime()
+    runtime.class_definition.Name = "Demo.RelocatedModel"
+    runtime.class_definition.Super = "%Persistent"
+    storage = _RecordingObject("%Dictionary.StorageDefinition")
+    storage.Name = "Default"
+    storage.Type = "%Storage.Persistent"
+    storage.DataLocation = "^Demo.OldD"
+    runtime.class_definition.Storages.Insert(storage)
+    monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
+
+    with pytest.raises(StorageMigrationRequired, match="explicit data migration"):
+        RelocatedModel.sync_schema()
+
+    assert runtime.saved == []
+    assert runtime.created == []
+    diff = schema_module.diff_schema(RelocatedModel)
+    assert any(operation.op_type == "blocked_storage_change" for operation in diff.operations)
+
+
+def test_generated_default_storage_is_excluded_without_declaration(monkeypatch):
+    class CompilerOwnedModel(Model, persistent=True):
+        Name: str | None = None
+
+        class Meta:
+            classname = "Demo.CompilerOwnedModel"
+            mode = "managed"
+
+    runtime = _ExistingClassRuntime()
+    runtime.class_definition.Name = "Demo.CompilerOwnedModel"
+    runtime.class_definition.Super = "%Persistent"
+    generated = _RecordingObject("%Dictionary.StorageDefinition")
+    generated.Name = "Default"
+    generated.DataLocation = "^Compiler.GeneratedD"
+    runtime.class_definition.Storages.Insert(generated)
+    monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
+
+    diff = schema_module.diff_schema(CompilerOwnedModel)
+
+    assert diff.before_state.storage is None
+    assert diff.after_state.storage is None
+    assert all(operation.path != "storage" for operation in diff.operations)
 
 
 def test_sync_schema_extend_adds_missing_indexes_without_duplication(monkeypatch):

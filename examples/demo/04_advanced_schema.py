@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from iris_persistence import ClassMetadata, Field, Index, Model, StorageData, StorageDefinition
+from iris_persistence import ClassMetadata, Field, Index, Model
+from iris_persistence.advanced_storage import StorageData, StorageDefinition
 
 from examples.demo.support import configure_demo_runtime, maybe_sync_schema, unique_suffix
 
@@ -27,7 +28,7 @@ class ShowcaseRecord(Model, persistent=True):
 
     class Meta:
         classname = "Demo.ExampleShowcaseRecord"
-        mode = "replace"
+        mode = "managed"
         indexes = [Index("TitleIdx", properties="Title")]
         parameters = {"DEFAULTGLOBAL": "^Demo.ExampleShowcaseRecordD"}
         metadata = ClassMetadata(
@@ -36,7 +37,7 @@ class ShowcaseRecord(Model, persistent=True):
             sql_table_name="Demo_ExampleShowcaseRecord",
             procedure_block=True,
         )
-        storage = StorageDefinition(
+        custom_storage = StorageDefinition(
             data_location="^Demo.ExampleShowcaseRecordD",
             default_data="ExampleShowcaseRecordDefaultData",
             type="%Storage.Persistent",
@@ -82,7 +83,7 @@ def run_demo(*, backend: str | None = None) -> dict[str, Any]:
         "backend": runtime_backend,
         "saved_pk": record.pk,
         "loaded": loaded,
-        "storage": ShowcaseRecord._storage,
+        "storage": ShowcaseRecord._custom_storage,
         "metadata": ShowcaseRecord._class_metadata,
         "matching": ShowcaseRecord.where(Title=title).all(),
     }

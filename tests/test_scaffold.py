@@ -4,6 +4,7 @@ import importlib.util
 import sys
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -173,123 +174,6 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
             ("TitleIdx", "Title", 1, "bitmap", 1),
             ("IDKEY", "ID", 1, "key", 0),
         ],
-        (
-            (
-                "SELECT Name, DataLocation, DefaultData, ExtentSize, IdLocation, "
-                "IndexLocation, State, StreamLocation, Type "
-                "FROM %Dictionary.CompiledStorage WHERE parent = ?"
-            ),
-            ("Demo.StubFixture",),
-        ): [
-            (
-                "Default",
-                "^Demo.StubFixtureD",
-                "StubDefaultData",
-                "17",
-                "^Demo.StubFixtureD",
-                "^Demo.StubFixtureI",
-                "StubState",
-                "^Demo.StubFixtureS",
-                "%Storage.Persistent",
-            ),
-        ],
-        (
-            "SELECT Name, Structure, Attribute, Subscript "
-            "FROM %Dictionary.CompiledStorageData WHERE parent = ?",
-            ("Demo.StubFixture||Default",),
-        ): [
-            ("StubDefaultData", "listnode", None, '"Stub"'),
-            ("Payload", "node", "Payload", '"Payload"'),
-        ],
-        (
-            "SELECT Name, Location, SmallChunkSize "
-            "FROM %Dictionary.CompiledStorageIndex WHERE parent = ?",
-            ("Demo.StubFixture||Default",),
-        ): [
-            ("IDKEY", '^Demo.StubFixtureI("IDKEY")', "0"),
-            ("TitleIdx", '^Demo.StubFixtureI("TitleIdx")', "32"),
-        ],
-        (
-            "SELECT Name, Value FROM %Dictionary.CompiledStorageDataValue WHERE parent = ?",
-            ("Demo.StubFixture||Default||StubDefaultData",),
-        ): [
-            ("1", "%%CLASSNAME"),
-            ("2", "Title"),
-            ("3", "Enabled"),
-        ],
-        (
-            "SELECT Name, Value FROM %Dictionary.CompiledStorageDataValue WHERE parent = ?",
-            ("Demo.StubFixture||Default||Payload",),
-        ): [],
-        (
-            (
-                "SELECT Name, AverageFieldSize, Selectivity, OutlierSelectivity "
-                "FROM %Dictionary.CompiledStorageProperty WHERE parent = ?"
-            ),
-            ("Demo.StubFixture||Default",),
-        ): [
-            ("Title", "10", "0.001%", '.999999:"stub"'),
-            ("%Internal", "999", "1", None),
-        ],
-        (
-            (
-                "SELECT Name, BlockCount, Condition, ConditionFields, ConditionalWithHostVars, "
-                "_Global, PopulationPct, PopulationType, RowReference, Structure, Type "
-                "FROM %Dictionary.CompiledStorageSQLMap WHERE parent = ?"
-            ),
-            ("Demo.StubFixture||Default",),
-        ): [
-            (
-                "PrimaryMap",
-                "-4",
-                "x>0",
-                "Title",
-                1,
-                "^Demo.MapI",
-                "100",
-                "FULL",
-                "RowRef",
-                "tree",
-                "index",
-            ),
-        ],
-        (
-            "SELECT Name, Node, Piece, Delimiter, RetrievalCode "
-            "FROM %Dictionary.CompiledStorageSQLMapData WHERE parent = ?",
-            ("Demo.StubFixture||Default||PrimaryMap",),
-        ): [
-            ("TitleData", "1", "2", "^", "set {*}=$piece(x,^,2)"),
-        ],
-        (
-            "SELECT Name, Field, Expression "
-            "FROM %Dictionary.CompiledStorageSQLMapRowIdSpec WHERE parent = ?",
-            ("Demo.StubFixture||Default||PrimaryMap",),
-        ): [
-            ("1", "ID", "{ID}"),
-        ],
-        (
-            "SELECT Name, AccessType, DataAccess, Delimiter, Expression, "
-            "LoopInitValue, NextCode, NullMarker, StartValue, StopExpression, StopValue "
-            "FROM %Dictionary.CompiledStorageSQLMapSub WHERE parent = ?",
-            ("Demo.StubFixture||Default||PrimaryMap",),
-        ): [
-            ("1", "piece", "Read", "^", "{Title}", "1", "set i=i+1", "", "1", "i>10", "10"),
-        ],
-        (
-            "SELECT Name, Variable, Code "
-            "FROM %Dictionary.CompiledStorageSQLMapSubAccessvar WHERE parent = ?",
-            ("Demo.StubFixture||Default||PrimaryMap||1",),
-        ): [
-            ("1", "i", "set i=1"),
-        ],
-        (
-            "SELECT Name, Expression "
-            "FROM %Dictionary.CompiledStorageSQLMapSubInvalidcondition "
-            "WHERE parent = ?",
-            ("Demo.StubFixture||Default||PrimaryMap||1",),
-        ): [
-            ("1", "i<1"),
-        ],
     }
 
     monkeypatch.setattr(scaffold_module, "get_runtime", lambda: _StubRuntime(rows_by_query))
@@ -317,139 +201,9 @@ def test_scaffold_from_iris_with_stubbed_dictionary(monkeypatch, tmp_path: Path)
     assert StubFixture._fields["Payload"].sql_field_name == "payload_json"
     assert StubFixture._fields["Tags"].collection == "list"
 
-    storage = StubFixture._storage
-    assert storage is not None
-    assert storage.data_location == "^Demo.StubFixtureD"
-    assert storage.default_data == "StubDefaultData"
-    assert storage.extent_size == "17"
-    assert storage.id_location == "^Demo.StubFixtureD"
-    assert storage.index_location == "^Demo.StubFixtureI"
-    assert storage.state == "StubState"
-    assert storage.stream_location == "^Demo.StubFixtureS"
-    assert storage.extent_location is None
-    assert storage.counter_location is None
-    assert storage.version_location is None
-    assert storage.id_expression is None
-    assert storage.id_function is None
-    assert storage.sql_child_sub is None
-    assert storage.sql_id_expression is None
-    assert storage.sql_row_id_name is None
-    assert storage.sql_row_id_property is None
-    assert storage.sql_table_number is None
-    assert storage.sequence_number is None
-
-    storage_data = {item.name: item for item in storage.data}
-    assert storage_data["StubDefaultData"].subscript == '"Stub"'
-    assert storage_data["StubDefaultData"].values == {
-        "1": "%%CLASSNAME",
-        "2": "Title",
-        "3": "Enabled",
-    }
-    assert storage_data["Payload"].attribute == "Payload"
-    assert storage_data["Payload"].subscript == '"Payload"'
-    assert storage_data["Payload"].values == {}
-
-    storage_indices = {item.name: item for item in storage.indices}
-    assert storage_indices["IDKEY"].location == '^Demo.StubFixtureI("IDKEY")'
-    assert storage_indices["IDKEY"].small_chunk_size == "0"
-    assert storage_indices["TitleIdx"].location == '^Demo.StubFixtureI("TitleIdx")'
-    assert storage_indices["TitleIdx"].small_chunk_size == "32"
-
-    assert len(storage.properties) == 1
-    assert storage.properties[0].name == "Title"
-    assert storage.properties[0].average_field_size == "10"
-    assert storage.properties[0].selectivity == "0.001%"
-    assert storage.properties[0].outlier_selectivity == '.999999:"stub"'
-    assert storage.properties[0].histogram is None
-    assert storage.properties[0].child_block_count is None
-    assert storage.properties[0].child_extent_size is None
-    assert storage.properties[0].bias_queries_as_outlier is None
-    assert storage.properties[0].stream_location is None
-    assert len(storage.sql_maps) == 1
-    assert storage.sql_maps[0].name == "PrimaryMap"
-    assert storage.sql_maps[0].condition == "x>0"
-    assert storage.sql_maps[0].condition_fields == "Title"
-    assert storage.sql_maps[0].conditional_with_host_vars is True
-    assert storage.sql_maps[0].global_name == "^Demo.MapI"
-    assert storage.sql_maps[0].population_pct == "100"
-    assert storage.sql_maps[0].population_type == "FULL"
-    assert storage.sql_maps[0].row_reference == "RowRef"
-    assert storage.sql_maps[0].structure == "tree"
-    assert storage.sql_maps[0].type == "index"
-    assert storage.sql_maps[0].data is not None
-    assert storage.sql_maps[0].data[0].name == "TitleData"
-    assert storage.sql_maps[0].data[0].node == "1"
-    assert storage.sql_maps[0].data[0].piece == "2"
-    assert storage.sql_maps[0].data[0].delimiter == "^"
-    assert storage.sql_maps[0].data[0].retrieval_code == "set {*}=$piece(x,^,2)"
-    assert storage.sql_maps[0].row_id_specs[0].name == "1"
-    assert storage.sql_maps[0].row_id_specs[0].field == "ID"
-    assert storage.sql_maps[0].row_id_specs[0].expression == "{ID}"
-    assert storage.sql_maps[0].subscripts[0].name == "1"
-    assert storage.sql_maps[0].subscripts[0].access_type == "piece"
-    assert storage.sql_maps[0].subscripts[0].data_access == "Read"
-    assert storage.sql_maps[0].subscripts[0].expression == "{Title}"
-    assert storage.sql_maps[0].subscripts[0].access_vars[0].variable == "i"
-    assert storage.sql_maps[0].subscripts[0].invalid_conditions[0].expression == "i<1"
-
-    assert len(StubFixture._indexes) == 1
-    assert StubFixture._indexes[0].name == "TitleIdx"
-    assert StubFixture._indexes[0].unique is True
-    assert StubFixture._indexes[0].type == "bitmap"
-    assert StubFixture._indexes[0].primary_key is True
-
-    generated_text = (tmp_path / "stubfixture.py").read_text(encoding="utf-8")
-    assert "class StubFixture(Model, persistent=True):" in generated_text
-    assert 'Field(iris_type="%Library.String", required=True, max_length=120)' in generated_text
-    assert 'Field(iris_type="%Library.Boolean", default=True)' in generated_text
-    assert (
-        'Field(iris_type="%Library.DynamicObject", readonly=True, '
-        "sql_field_name='payload_json', default=None)" in generated_text
-    )
-    assert "Field(iris_type=\"%Library.String\", collection='list', default=None)" in generated_text
-    assert 'id_location="^Demo.StubFixtureD"' in generated_text
-    assert 'index_location="^Demo.StubFixtureI"' in generated_text
-    assert 'state="StubState"' in generated_text
-    assert 'stream_location="^Demo.StubFixtureS"' in generated_text
-    assert 'extent_size="17"' in generated_text
-    assert (
-        'StorageIndex(name="IDKEY", location="^Demo.StubFixtureI(\\"IDKEY\\")", '
-        'small_chunk_size="0")' in generated_text
-    )
-    assert (
-        'StorageIndex(name="TitleIdx", location="^Demo.StubFixtureI(\\"TitleIdx\\")", '
-        'small_chunk_size="32")' in generated_text
-    )
-    assert "extent_location=" not in generated_text
-    assert "counter_location=" not in generated_text
-    assert "version_location=" not in generated_text
-    assert "id_expression=" not in generated_text
-    assert "id_function=" not in generated_text
-    assert "sql_child_sub=" not in generated_text
-    assert "sql_id_expression=" not in generated_text
-    assert "sql_row_id_name=" not in generated_text
-    assert "sql_row_id_property=" not in generated_text
-    assert "sql_table_number=" not in generated_text
-    assert "sequence_number=" not in generated_text
-    assert "subscript='\"Stub\"'" in generated_text
-    assert "attribute='Payload'" in generated_text
-    assert (
-        'StorageProperty(name="Title", average_field_size="10", selectivity="0.001%", '
-        'outlier_selectivity=".999999:\\"stub\\"")' in generated_text
-    )
-    assert (
-        'Index("TitleIdx", properties="Title", unique=True, type="bitmap", primary_key=True)'
-        in generated_text
-    )
-    assert (
-        "StorageSQLMapData(name='TitleData', node='1', piece='2', delimiter='^'" in generated_text
-    )
-    assert "StorageSQLMapRowIdSpec(name='1', field='ID', expression='{ID}')" in generated_text
-    assert "StorageSQLMapSub(name='1', access_type='piece', data_access='Read'" in generated_text
-    assert "StorageSQLMapSubAccessVar(name='1', variable='i', code='set i=1')" in generated_text
-    assert "StorageSQLMapSubInvalidCondition(name='1', expression='i<1')" in generated_text
-    assert "StorageData(" in generated_text
-    assert "values={}" in generated_text
+    assert StubFixture._custom_storage is None
+    generated = (tmp_path / "stubfixture.py").read_text(encoding="utf-8")
+    assert "StorageDefinition" not in generated
 
 
 def test_scaffold_reads_property_relationship_metadata(monkeypatch, tmp_path: Path):
@@ -776,265 +530,65 @@ def test_scaffold_parameter_fallback_excludes_inherited_parameters(monkeypatch, 
     assert "INHERITED" not in generated_text
 
 
-def test_scaffold_selectivity_merges_storage_property_definitions(monkeypatch, tmp_path: Path):
+def test_scaffold_custom_storage_snapshots_writable_definition(monkeypatch, tmp_path: Path):
     rows_by_query = {
         (
             "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name LIKE ?",
-            ("Demo.SelectivityFixture",),
-        ): [
-            ("Demo.SelectivityFixture", "%Persistent"),
-        ],
+            ("Demo.CustomFixture",),
+        ): [("Demo.CustomFixture", "%Persistent")],
         (
-            (
-                "SELECT Name, Type, Required, InitialExpression, Parameters, "
-                "Collection, SqlFieldName, ReadOnly "
-                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
-            ),
-            ("Demo.SelectivityFixture",),
-        ): [
-            ("Title", "%Library.String", 1, None, _iris_dict({"MAXLEN": "120"}), "", "Title", 0),
-            ("Count", "%Library.Integer", 0, None, None, "", "Count", 0),
-        ],
-        (
-            "SELECT Name, _Default, Origin FROM %Dictionary.CompiledParameter WHERE parent = ?",
-            ("Demo.SelectivityFixture",),
-        ): [],
-        (
-            "SELECT Name, Properties, _Unique, Type, PrimaryKey "
-            "FROM %Dictionary.CompiledIndex WHERE parent = ?",
-            ("Demo.SelectivityFixture",),
-        ): [],
-        (
-            (
-                "SELECT Name, DataLocation, DefaultData, ExtentSize, IdLocation, "
-                "IndexLocation, State, StreamLocation, Type "
-                "FROM %Dictionary.CompiledStorage WHERE parent = ?"
-            ),
-            ("Demo.SelectivityFixture",),
+            "SELECT Name, Type, Required, InitialExpression, Parameters, Collection, "
+            "SqlFieldName, ReadOnly FROM %Dictionary.CompiledProperty WHERE parent = ?",
+            ("Demo.CustomFixture",),
         ): [
             (
-                "Default",
-                "^Demo.SelectivityFixtureD",
-                "SelectivityFixtureDefaultData",
-                "21",
-                "^Demo.SelectivityFixtureD",
-                "^Demo.SelectivityFixtureI",
-                None,
-                "^Demo.SelectivityFixtureS",
-                "%Storage.Persistent",
-            ),
-        ],
-        (
-            "SELECT Name, Structure, Attribute, Subscript "
-            "FROM %Dictionary.CompiledStorageData WHERE parent = ?",
-            ("Demo.SelectivityFixture||Default",),
-        ): [
-            ("SelectivityFixtureDefaultData", "listnode", None, None),
-        ],
-        (
-            "SELECT Name, Value FROM %Dictionary.CompiledStorageDataValue WHERE parent = ?",
-            ("Demo.SelectivityFixture||Default||SelectivityFixtureDefaultData",),
-        ): [
-            ("1", "%%CLASSNAME"),
-            ("2", "Title"),
-            ("3", "Count"),
-        ],
-        (
-            (
-                "SELECT Name, AverageFieldSize, Selectivity, OutlierSelectivity "
-                "FROM %Dictionary.CompiledStorageProperty WHERE parent = ?"
-            ),
-            ("Demo.SelectivityFixture||Default",),
-        ): [
-            ("Count", "", "", None),
-        ],
-        (
-            (
-                "SELECT Name, AverageFieldSize, Selectivity, OutlierSelectivity "
-                "FROM %Dictionary.StoragePropertyDefinition WHERE parent = ?"
-            ),
-            ("Demo.SelectivityFixture||Default",),
-        ): [
-            ("%%CLASSNAME", "2", "0.0001%", None),
-            ("Title", "7.09", "9.3220%", '.999999:"Title"'),
-            ("Count", "2.73", "13.5593%", ".999999:4"),
-        ],
-        (
-            "SELECT Name, BlockCount, Condition, ConditionFields, ConditionalWithHostVars, "
-            "Global, PopulationPct, PopulationType, RowReference, Structure, Type "
-            "FROM %Dictionary.CompiledStorageSQLMap WHERE parent = ?",
-            ("Demo.SelectivityFixture||Default",),
-        ): [],
-    }
-
-    monkeypatch.setattr(scaffold_module, "get_runtime", lambda: _StubRuntime(rows_by_query))
-
-    result = scaffold_module.scaffold_from_iris(
-        "Demo.SelectivityFixture",
-        str(tmp_path),
-        extract_meta=True,
-        scaffold_selectivity=True,
-        return_result=True,
-    )
-
-    module = _load_module(tmp_path / "selectivityfixture.py")
-    SelectivityFixture = module.SelectivityFixture
-
-    assert result.warnings == []
-    assert SelectivityFixture._storage is not None
-    properties = {item.name: item for item in SelectivityFixture._storage.properties}
-    assert SelectivityFixture._storage.extent_size == "21"
-    assert properties["Title"].average_field_size == "7.09"
-    assert properties["Title"].selectivity == "9.3220%"
-    assert properties["Title"].outlier_selectivity == '.999999:"Title"'
-    assert properties["Title"].histogram is None
-    assert properties["Title"].child_block_count is None
-    assert properties["Title"].child_extent_size is None
-    assert properties["Title"].bias_queries_as_outlier is None
-    assert properties["Title"].stream_location is None
-    assert properties["Count"].average_field_size == "2.73"
-    assert properties["Count"].selectivity == "13.5593%"
-    assert properties["Count"].outlier_selectivity == ".999999:4"
-    assert properties["Count"].histogram is None
-    assert properties["Count"].child_block_count is None
-    assert properties["Count"].child_extent_size is None
-    assert properties["Count"].bias_queries_as_outlier is None
-    assert properties["Count"].stream_location is None
-
-
-def test_scaffold_can_extract_hidden_storage_metadata(monkeypatch, tmp_path: Path):
-    rows_by_query = {
-        (
-            "SELECT Name, Super FROM %Dictionary.CompiledClass WHERE Name LIKE ?",
-            ("Demo.HiddenFixture",),
-        ): [
-            ("Demo.HiddenFixture", "%Persistent"),
-        ],
-        (
-            (
-                "SELECT Name, Type, Required, InitialExpression, Parameters, "
-                "Collection, SqlFieldName, ReadOnly "
-                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
-            ),
-            ("Demo.HiddenFixture",),
-        ): [
-            ("Title", "%Library.String", 1, None, _iris_dict({"MAXLEN": "120"}), "", "Title", 0),
-        ],
-        (
-            "SELECT Name, _Default, Origin FROM %Dictionary.CompiledParameter WHERE parent = ?",
-            ("Demo.HiddenFixture",),
-        ): [],
-        (
-            "SELECT Name, Properties, _Unique, Type, PrimaryKey "
-            "FROM %Dictionary.CompiledIndex WHERE parent = ?",
-            ("Demo.HiddenFixture",),
-        ): [],
-        (
-            (
-                "SELECT Name, DataLocation, DefaultData, ExtentLocation, ExtentSize, "
-                "CounterLocation, VersionLocation, IdLocation, IdExpression, IdFunction, "
-                "IndexLocation, State, StreamLocation, SqlChildSub, SqlIdExpression, "
-                "SqlRowIdName, SqlRowIdProperty, SqlTableNumber, SequenceNumber, Type "
-                "FROM %Dictionary.CompiledStorage WHERE parent = ?"
-            ),
-            ("Demo.HiddenFixture",),
-        ): [
-            (
-                "Default",
-                "^Demo.HiddenFixtureD",
-                "HiddenFixtureDefaultData",
-                "^Demo.HiddenFixtureExtent",
-                "31",
-                "^Demo.HiddenFixtureCounter",
-                "^Demo.HiddenFixtureVersion",
-                "^Demo.HiddenFixtureD",
-                "{Title}",
-                "Demo.HiddenFixtureId",
-                "^Demo.HiddenFixtureI",
-                "HiddenState",
-                "^Demo.HiddenFixtureS",
-                "child",
-                "{%%ID}+99",
-                "RowID",
                 "Title",
-                "451",
-                "12",
-                "%Storage.Persistent",
-            ),
+                "%Library.String",
+                1,
+                None,
+                _iris_dict({"MAXLEN": "120"}),
+                "",
+                "Title",
+                0,
+            )
         ],
         (
-            "SELECT Name, Structure, Attribute, Subscript "
-            "FROM %Dictionary.CompiledStorageData WHERE parent = ?",
-            ("Demo.HiddenFixture||Default",),
+            "SELECT Name, _Default, Origin FROM %Dictionary.CompiledParameter WHERE parent = ?",
+            ("Demo.CustomFixture",),
         ): [],
         (
-            (
-                "SELECT Name, AverageFieldSize, Selectivity, OutlierSelectivity, Histogram, "
-                "ChildBlockCount, ChildExtentSize, BiasQueriesAsOutlier, StreamLocation "
-                "FROM %Dictionary.CompiledStorageProperty WHERE parent = ?"
-            ),
-            ("Demo.HiddenFixture||Default",),
-        ): [
-            ("Title", "10", "0.001%", '.999999:"hidden"', "1:5,2:8", "4", "16", 1, "^Demo.TitleS"),
-        ],
-        (
-            "SELECT Name, BlockCount, Condition, ConditionFields, ConditionalWithHostVars, "
-            "Global, PopulationPct, PopulationType, RowReference, Structure, Type "
-            "FROM %Dictionary.CompiledStorageSQLMap WHERE parent = ?",
-            ("Demo.HiddenFixture||Default",),
+            "SELECT Name, Properties, _Unique, Type, PrimaryKey "
+            "FROM %Dictionary.CompiledIndex WHERE parent = ?",
+            ("Demo.CustomFixture",),
         ): [],
     }
-
-    monkeypatch.setattr(scaffold_module, "get_runtime", lambda: _StubRuntime(rows_by_query))
+    runtime = _StubRuntime(rows_by_query)
+    storage_state = {
+        "kind": None,
+        "name": "CustomStorage",
+        "attrs": {"type": "%Storage.Persistent", "data_location": "^Demo.CustomD"},
+        "data": {"DefaultData": {"structure": "listnode", "values": {"1": "Title"}}},
+        "indices": {},
+        "properties": {},
+        "sql_maps": {},
+    }
+    monkeypatch.setattr(scaffold_module, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        scaffold_module,
+        "_collect_live_schema_state",
+        lambda *_args, **_kwargs: SimpleNamespace(storage=storage_state),
+    )
 
     result = scaffold_module.scaffold_from_iris(
-        "Demo.HiddenFixture",
-        str(tmp_path),
-        extract_meta=True,
-        extract_hidden_meta=True,
-        return_result=True,
+        "Demo.CustomFixture", str(tmp_path), mode="managed", storage="custom", return_result=True
     )
 
-    assert result.warnings == []
-    module = _load_module(tmp_path / "hiddenfixture.py")
-    HiddenFixture = module.HiddenFixture
-
-    assert HiddenFixture._storage is not None
-    assert HiddenFixture._storage.extent_location == "^Demo.HiddenFixtureExtent"
-    assert HiddenFixture._storage.counter_location == "^Demo.HiddenFixtureCounter"
-    assert HiddenFixture._storage.version_location == "^Demo.HiddenFixtureVersion"
-    assert HiddenFixture._storage.id_expression == "{Title}"
-    assert HiddenFixture._storage.id_function == "Demo.HiddenFixtureId"
-    assert HiddenFixture._storage.sql_child_sub == "child"
-    assert HiddenFixture._storage.sql_id_expression == "{%%ID}+99"
-    assert HiddenFixture._storage.sql_row_id_name == "RowID"
-    assert HiddenFixture._storage.sql_row_id_property == "Title"
-    assert HiddenFixture._storage.sql_table_number == "451"
-    assert HiddenFixture._storage.sequence_number == "12"
-    assert HiddenFixture._storage.properties[0].histogram == "1:5,2:8"
-    assert HiddenFixture._storage.properties[0].child_block_count == "4"
-    assert HiddenFixture._storage.properties[0].child_extent_size == "16"
-    assert HiddenFixture._storage.properties[0].bias_queries_as_outlier is True
-    assert HiddenFixture._storage.properties[0].stream_location == "^Demo.TitleS"
-
-    generated_text = (tmp_path / "hiddenfixture.py").read_text(encoding="utf-8")
-    assert 'extent_location="^Demo.HiddenFixtureExtent"' in generated_text
-    assert 'counter_location="^Demo.HiddenFixtureCounter"' in generated_text
-    assert 'version_location="^Demo.HiddenFixtureVersion"' in generated_text
-    assert 'id_expression="{Title}"' in generated_text
-    assert 'id_function="Demo.HiddenFixtureId"' in generated_text
-    assert 'sql_child_sub="child"' in generated_text
-    assert 'sql_id_expression="{%%ID}+99"' in generated_text
-    assert 'sql_row_id_name="RowID"' in generated_text
-    assert 'sql_row_id_property="Title"' in generated_text
-    assert 'sql_table_number="451"' in generated_text
-    assert 'sequence_number="12"' in generated_text
-    assert (
-        'StorageProperty(name="Title", average_field_size="10", selectivity="0.001%", '
-        'outlier_selectivity=".999999:\\"hidden\\"", histogram="1:5,2:8", '
-        'child_block_count="4", child_extent_size="16", '
-        'bias_queries_as_outlier=True, stream_location="^Demo.TitleS")' in generated_text
-    )
+    module = _load_module(Path(result.files[0]))
+    assert module.CustomFixture._custom_storage.name == "CustomStorage"
+    assert module.CustomFixture._custom_storage.data_location == "^Demo.CustomD"
+    generated = Path(result.files[0]).read_text(encoding="utf-8")
+    assert "from iris_persistence.advanced_storage import" in generated
+    assert "custom_storage = StorageDefinition(" in generated
 
 
 def test_scaffold_preserves_objectscript_initial_expression_and_can_follow_related_classes(

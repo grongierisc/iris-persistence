@@ -9,7 +9,7 @@ import os
 import socket
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Sequence, cast
 
 from iris_persistence.models import Model
 from iris_persistence.runtime import get_runtime
@@ -350,7 +350,7 @@ def create_plan(
     )
     live_states = tuple(diff.before_state for diff in diffs if diff.before_state is not None)
     target_states = tuple(diff.after_state for diff in diffs if diff.after_state is not None)
-    live_fingerprint = _states_fingerprint(live_states)
+    live_fingerprint = _states_fingerprint(cast(tuple[SchemaState, ...], live_states))
     target_fingerprint = _states_fingerprint(target_states)
     resolved_target_revision = target_revision or f"schema-{target_fingerprint[:12]}"
     return MigrationPlan(
@@ -373,9 +373,13 @@ def _plan_models(plan: MigrationPlan) -> tuple[type[Model], ...]:
 
 def _assert_plan_is_fresh(plan: MigrationPlan) -> tuple[type[Model], ...]:
     models = _plan_models(plan)
-    live_states = tuple(
-        _collect_live_schema_state(get_runtime(), model._classname) for model in models
-    )
+    inspected_states = []
+    for model in models:
+        state = diff_schema(model).before_state
+        if state is None:
+            raise StaleMigrationPlanError("Unable to inspect live schema")
+        inspected_states.append(state)
+    live_states = tuple(inspected_states)
     live_fingerprint = _states_fingerprint(live_states)
     if plan.fail_on_drift and live_fingerprint != plan.live_schema_fingerprint:
         raise StaleMigrationPlanError("Live schema changed since planning")
@@ -393,6 +397,16 @@ def apply_plan(
         plan = MigrationPlan.from_dict(plan)
     if yes is not None:
         allow_destructive = yes
+
+    blocked = tuple(
+        operation for operation in plan.operations if operation.safety == "blocked"
+    )
+    if blocked:
+        return ApplyResult(
+            status="blocked",
+            target_revision=plan.target_revision,
+            skipped_operations=blocked,
+        )
 
     unsafe = tuple(
         operation

@@ -4,7 +4,9 @@ from typing import Annotated, Optional
 
 import pytest
 
-from iris_persistence import ClassMetadata, Field, Index, Model
+import iris_persistence
+from iris_persistence import ClassMetadata, Field, Index, Model, StorageTuning
+from iris_persistence.advanced_storage import StorageDefinition
 from iris_persistence.runtime import configure_default_runtime
 from iris_persistence.testing import InMemoryAdapter
 from tests.fixtures.python.model_behavior_fixtures import (
@@ -16,7 +18,6 @@ from tests.fixtures.python.model_behavior_fixtures import (
     Product,
     QueryAliasModel,
     ReadonlyModel,
-    ReplaceAutoSyncModel,
 )
 
 
@@ -29,7 +30,7 @@ class LiteProduct(Model, persistent=True):
 
     class Meta:
         classname = "Demo.LiteProduct"
-        mode = "replace"
+        mode = "managed"
 
 
 class IndexedProduct(Model, persistent=True):
@@ -39,7 +40,7 @@ class IndexedProduct(Model, persistent=True):
 
     class Meta:
         classname = "Demo.IndexedProduct"
-        mode = "replace"
+        mode = "managed"
 
 
 class BaseInventoryItem(Model):
@@ -221,7 +222,7 @@ def test_auto_sync_calls_sync_schema_before_save(monkeypatch):
     assert model.pk is not None
 
 
-def test_auto_sync_runs_once_per_model_process_cache(monkeypatch):
+def test_managed_auto_sync_runs_for_each_materialization(monkeypatch):
     calls = []
 
     def fake_sync_schema(cls):
@@ -235,7 +236,7 @@ def test_auto_sync_runs_once_per_model_process_cache(monkeypatch):
     second.save()
     first.to_iris()
 
-    assert calls == [AutoSyncModel]
+    assert calls == [AutoSyncModel, AutoSyncModel, AutoSyncModel]
     assert first.pk is not None
     assert second.pk is not None
 
@@ -245,9 +246,68 @@ def test_auto_sync_rejects_observe_mode():
         ObserveAutoSyncModel(Name="demo").save()
 
 
-def test_auto_sync_rejects_replace_mode():
-    with pytest.raises(RuntimeError, match="mode='replace'"):
-        ReplaceAutoSyncModel(Name="demo").save()
+@pytest.mark.parametrize("mode", ["extend", "replace"])
+def test_removed_schema_modes_fail_with_migration_guidance(mode):
+    class RemovedMeta:
+        pass
+
+    RemovedMeta.mode = mode
+    with pytest.raises(TypeError, match="removed in 0.3"):
+        type(Model)(
+            "RemovedModeModel",
+            (Model,),
+            {"__module__": __name__, "Meta": RemovedMeta},
+            persistent=True,
+        )
+
+
+def test_storage_tuning_and_custom_storage_are_mutually_exclusive():
+    with pytest.raises(TypeError, match="mutually exclusive"):
+        class ConflictingStorageModel(Model, persistent=True):
+            class Meta:
+                mode = "managed"
+                storage_tuning = StorageTuning(data_location="^Demo.D")
+                custom_storage = StorageDefinition()
+
+
+@pytest.mark.parametrize("option", ["storage_tuning", "custom_storage"])
+def test_observe_mode_rejects_storage_declarations(option):
+    class StorageMeta:
+        mode = "observe"
+
+    setattr(
+        StorageMeta,
+        option,
+        StorageTuning() if option == "storage_tuning" else StorageDefinition(),
+    )
+    with pytest.raises(TypeError, match="require mode='managed'"):
+        type(Model)(
+            "ObservedStorageModel",
+            (Model,),
+            {"__module__": __name__, "Meta": StorageMeta},
+            persistent=True,
+        )
+
+
+def test_serial_model_rejects_storage_declarations():
+    with pytest.raises(TypeError, match="serial models"):
+        class SerialStorageModel(Model, serial=True):
+            class Meta:
+                mode = "managed"
+                storage_tuning = StorageTuning()
+
+
+def test_removed_meta_storage_has_migration_guidance():
+    with pytest.raises(TypeError, match="Meta.storage was removed"):
+        class LegacyStorageModel(Model, persistent=True):
+            class Meta:
+                mode = "managed"
+                storage = StorageDefinition()
+
+
+def test_advanced_storage_types_are_not_exported_from_package_root():
+    assert not hasattr(iris_persistence, "StorageDefinition")
+    assert not hasattr(iris_persistence, "StorageData")
 
 
 def test_auto_sync_allows_managed_mode_without_process_cache(monkeypatch):
@@ -465,7 +525,7 @@ def test_field_index_metadata_conflicts_with_meta_indexes():
 
             class Meta:
                 classname = "Demo.BadIndexedModel"
-                mode = "replace"
+                mode = "managed"
                 indexes = [Index("ExistingNameIdx", properties="Name")]
 
 

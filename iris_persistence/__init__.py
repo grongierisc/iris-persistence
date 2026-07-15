@@ -2,7 +2,7 @@
 iris_persistence core package
 """
 
-__version__ = "0.2.3"
+__version__ = "0.3.0"
 
 from iris_persistence.migrations import (
     ApplyResult,
@@ -21,22 +21,13 @@ from iris_persistence.models import Model
 from iris_persistence.query import from_iris, materialize
 from iris_persistence.runtime import configure
 from iris_persistence.scaffold import ScaffoldResult, ScaffoldWarning, scaffold_from_iris
-from iris_persistence.schema import SchemaDiff, diff_schema
+from iris_persistence.schema import SchemaDiff, StorageMigrationRequired, diff_schema
 from iris_persistence.types import (
     UNSET,
     ClassMetadata,
     Field,
     Index,
-    StorageData,
-    StorageDefinition,
-    StorageIndex,
-    StorageProperty,
-    StorageSQLMap,
-    StorageSQLMapData,
-    StorageSQLMapRowIdSpec,
-    StorageSQLMapSub,
-    StorageSQLMapSubAccessVar,
-    StorageSQLMapSubInvalidCondition,
+    StorageTuning,
 )
 
 __all__ = [
@@ -48,18 +39,10 @@ __all__ = [
     "MigrationOperation",
     "MigrationPlan",
     "RollbackResult",
-    "StorageDefinition",
-    "StorageData",
-    "StorageIndex",
-    "StorageProperty",
-    "StorageSQLMap",
-    "StorageSQLMapData",
-    "StorageSQLMapRowIdSpec",
-    "StorageSQLMapSub",
-    "StorageSQLMapSubAccessVar",
-    "StorageSQLMapSubInvalidCondition",
+    "StorageTuning",
     "Model",
     "SchemaDiff",
+    "StorageMigrationRequired",
     "UNSET",
     "VerifyResult",
     "apply_plan",

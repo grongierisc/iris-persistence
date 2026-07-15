@@ -17,6 +17,7 @@ from typing import (
     get_type_hints,
 )
 
+from iris_persistence.advanced_storage import StorageDefinition
 from iris_persistence.codecs import SCALAR_CODECS, resolve_declared_type
 from iris_persistence.field_utils import (
     IRIS_COLLECTION_TYPES,
@@ -45,7 +46,14 @@ from iris_persistence.model_codegen import (
 from iris_persistence.model_codegen import (
     build_signature as _build_signature,
 )
-from iris_persistence.types import UNSET, ClassMetadata, FieldInfo, Index, ModelField
+from iris_persistence.types import (
+    UNSET,
+    ClassMetadata,
+    FieldInfo,
+    Index,
+    ModelField,
+    StorageTuning,
+)
 
 if TYPE_CHECKING:
     from iris_persistence.query import QuerySet
@@ -67,9 +75,7 @@ class SyncPolicy:
 
 SYNC_POLICIES = {
     "observe": SyncPolicy(False, "live"),
-    "extend": SyncPolicy(True, "extend", cache_auto_sync=True),
     "managed": SyncPolicy(True, "managed"),
-    "replace": SyncPolicy(False, "replace"),
 }
 
 
@@ -489,7 +495,32 @@ class ModelMeta(type):
         validate_on_init = getattr(meta_inner, "validate_on_init", True)
         sync_mode = getattr(meta_inner, "mode", DEFAULT_SYNC_MODE)
         if sync_mode not in SYNC_POLICIES:
+            if sync_mode in {"extend", "replace"}:
+                raise TypeError(
+                    f"Schema sync mode {sync_mode!r} was removed in 0.3; "
+                    "use 'managed' or 'observe'"
+                )
             raise TypeError(f"Unknown schema sync mode: {sync_mode!r}")
+        if meta_inner is not None and hasattr(meta_inner, "storage"):
+            raise TypeError(
+                "Meta.storage was removed in 0.3; use Meta.storage_tuning or "
+                "Meta.custom_storage"
+            )
+        storage_tuning = getattr(meta_inner, "storage_tuning", None)
+        custom_storage = getattr(meta_inner, "custom_storage", None)
+        if storage_tuning is not None and not isinstance(storage_tuning, StorageTuning):
+            raise TypeError("Meta.storage_tuning must be a StorageTuning instance")
+        if custom_storage is not None and not isinstance(custom_storage, StorageDefinition):
+            raise TypeError(
+                "Meta.custom_storage must be an advanced_storage.StorageDefinition instance"
+            )
+        if storage_tuning is not None and custom_storage is not None:
+            raise TypeError("Meta.storage_tuning and Meta.custom_storage are mutually exclusive")
+        if sync_mode == "observe" and (storage_tuning is not None or custom_storage is not None):
+            raise TypeError("Storage declarations require mode='managed'")
+        is_serial = "SerialObject" in (_normalize_superclasses(superclasses) or "")
+        if is_serial and (storage_tuning is not None or custom_storage is not None):
+            raise TypeError("Storage declarations are not supported for serial models")
         for attr_name, value in {
             "_classname": getattr(meta_inner, "classname", name),
             "_sync_mode": sync_mode,
@@ -497,7 +528,8 @@ class ModelMeta(type):
             "_validate_on_init": validate_on_init,
             "_superclasses": _normalize_superclasses(superclasses),
             "_class_metadata": _parse_class_metadata(meta_inner),
-            "_storage": getattr(meta_inner, "storage", None),
+            "_storage_tuning": storage_tuning,
+            "_custom_storage": custom_storage,
             "_parameters": getattr(meta_inner, "parameters", {}),
         }.items():
             setattr(cls, attr_name, value)
@@ -550,6 +582,8 @@ class Model(metaclass=ModelMeta):
     _auto_sync: bool
     _validate_on_init: bool
     _class_metadata: ClassMetadata | None
+    _storage_tuning: StorageTuning | None
+    _custom_storage: StorageDefinition | None
     _field_plans: tuple[_FieldPlan, ...]
     _read_fields: dict[str, tuple[_FieldPlan, ...]]
     _save_fields: dict[str, tuple[_FieldPlan, ...]]

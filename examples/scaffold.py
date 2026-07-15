@@ -17,11 +17,10 @@ def main() -> None:
         for path in scaffold_from_iris(
             "User.Simple",
             generated_root / "from_iris",
-            mode="observe",
+            mode="managed",
             extract_meta=True,
             include_related=True,
-            scaffold_selectivity=True,
-            extract_hidden_meta=True,
+            storage="custom",
         ):
             print(" ", path)
         # scaffold HS.FHIRServer.Interop.Request

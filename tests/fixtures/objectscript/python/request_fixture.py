@@ -11,7 +11,7 @@ class SourceRequestFixture(Model):
     class Meta:
         classname = "Demo.SourceRequestFixture"
         superclasses = "Ens.Request"
-        mode = "replace"
+        mode = "managed"
 
 
 FIXTURE_MODELS = [SourceRequestFixture]

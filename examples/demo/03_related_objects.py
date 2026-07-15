@@ -20,7 +20,7 @@ class DemoCustomer(Model, persistent=True):
 
     class Meta:
         classname = "Demo.ExampleDemoCustomer"
-        mode = "replace"
+        mode = "managed"
 
 
 class DemoAddress(Model, serial=True):
@@ -29,7 +29,7 @@ class DemoAddress(Model, serial=True):
 
     class Meta:
         classname = "Demo.ExampleDemoAddress"
-        mode = "replace"
+        mode = "managed"
 
 
 class DemoOrderLine(Model, serial=True):
@@ -38,7 +38,7 @@ class DemoOrderLine(Model, serial=True):
 
     class Meta:
         classname = "Demo.ExampleDemoOrderLine"
-        mode = "replace"
+        mode = "managed"
 
 
 class DemoOrder(Model, persistent=True):
@@ -58,7 +58,7 @@ class DemoOrder(Model, persistent=True):
 
     class Meta:
         classname = "Demo.ExampleDemoOrder"
-        mode = "replace"
+        mode = "managed"
 
 
 def run_demo(*, backend: str | None = None) -> dict[str, Any]:

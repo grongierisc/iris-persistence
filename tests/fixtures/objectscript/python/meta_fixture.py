@@ -8,7 +8,7 @@ class SourceMetaFixture(Model, persistent=True):
 
     class Meta:
         classname = "Demo.SourceMetaFixture"
-        mode = "replace"
+        mode = "managed"
         metadata = ClassMetadata(
             deprecated=True,
             final=True,

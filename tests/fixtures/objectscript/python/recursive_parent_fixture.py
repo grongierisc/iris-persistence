@@ -12,7 +12,7 @@ class SourceRecursiveParent(Model, persistent=True):
 
     class Meta:
         classname = "Demo.SourceRecursiveParent"
-        mode = "replace"
+        mode = "managed"
 
 
 FIXTURE_MODELS = [SourceRecursiveParent]

@@ -222,7 +222,12 @@ def _collect_live_members(
     return members
 
 
-def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
+def _collect_live_schema_state(
+    runtime: Any,
+    classname: str,
+    *,
+    include_storage: bool = False,
+) -> SchemaState:
     state = _empty_schema_state(_schema_classname_for_save(classname))
     existing_classname = _find_existing_classname(runtime, classname)
     if existing_classname is None:
@@ -288,7 +293,10 @@ def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
         sql_fallback=_collect_live_indexes_from_sql(runtime, existing_classname),
     )
 
-    storage_strategy = _safe_get_property(runtime, class_def, "StorageStrategy")
+    if not include_storage:
+        return SchemaState.from_dict(state)
+
+    storage_strategy = _safe_get_property(runtime, class_def, "StorageStrategy") or "Default"
     storages = _iter_runtime_list(runtime, _safe_get_property(runtime, class_def, "Storages"))
     selected_storage = None
     for item in storages:
@@ -365,6 +373,26 @@ def _collect_live_schema_state(runtime: Any, classname: str) -> SchemaState:
     return SchemaState.from_dict(state)
 
 
+def _project_storage_state(
+    live_storage: dict[str, Any] | None,
+    desired_storage: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if desired_storage is None:
+        return None
+    if live_storage is None:
+        return None
+    def project(live: Any, desired: Any) -> Any:
+        if not isinstance(desired, dict):
+            return live
+        live_mapping = live if isinstance(live, dict) else {}
+        return {key: project(live_mapping.get(key), value) for key, value in desired.items()}
+
+    projected = project(live_storage, desired_storage)
+    # ``kind`` describes the Python declaration and has no IRIS dictionary field.
+    projected["kind"] = desired_storage.get("kind")
+    return projected
+
+
 def _merge_schema_state_for_sync(
     *,
     mode: str,
@@ -376,7 +404,7 @@ def _merge_schema_state_for_sync(
     merge = iris_persistence.models.SYNC_POLICIES[mode].merge
     if merge == "live":
         return SchemaState.from_dict(live_mapping)
-    if not live_mapping["super"] or merge == "replace":
+    if not live_mapping["super"]:
         return SchemaState.from_dict(desired_mapping)
 
     planned = deepcopy(live_mapping)
@@ -390,10 +418,6 @@ def _merge_schema_state_for_sync(
             planned[section] = deepcopy(desired_mapping[section])
         if desired_mapping["storage"] is not None:
             planned["storage"] = deepcopy(desired_mapping["storage"])
-    else:
-        for section in ("parameters", "properties", "indexes"):
-            for key, value in desired_mapping[section].items():
-                planned[section].setdefault(key, value)
     return SchemaState.from_dict(planned)
 
 
@@ -489,10 +513,10 @@ def _operation_safety(op_type: str, before: Any, after: Any, mode: str) -> str:
         "update_index",
     }:
         return "managed-update"
-    if op_type in {"delete_parameter", "delete_property", "delete_index", "delete_storage"}:
+    if op_type in {"delete_parameter", "delete_property", "delete_index"}:
         return "destructive"
-    if op_type in {"add_storage", "replace_storage"}:
-        return "manual-review"
+    if op_type == "add_storage":
+        return "safe"
     if before in (None, {}, []) and after not in (None, {}, []):
         return "safe"
     if op_type in {"update_property", "update_index", "update_super"}:
@@ -511,7 +535,7 @@ def _operation_type(path: str, before: Any, after: Any) -> str:
     if path.startswith("metadata."):
         return "update_class_metadata"
     if path == "storage" or path.startswith("storage."):
-        noun, update = "storage", "replace_storage"
+        noun, update = "storage", "update_storage"
     else:
         nouns = {
             "parameters": "parameter",
@@ -620,14 +644,27 @@ def diff_schema_operations(
             after=after.get(prefix, {}),
             mode=mode,
         )
-    _append_operation(
-        operations,
-        classname=classname,
-        path="storage",
-        before=before.get("storage"),
-        after=after.get("storage"),
-        mode=mode,
-    )
+    if before.get("storage") != after.get("storage"):
+        if before.get("super"):
+            operations.append(
+                SchemaOperation(
+                    classname=classname,
+                    op_type="blocked_storage_change",
+                    path="storage",
+                    before=deepcopy(before.get("storage")),
+                    after=deepcopy(after.get("storage")),
+                    safety="blocked",
+                )
+            )
+        else:
+            _append_operation(
+                operations,
+                classname=classname,
+                path="storage",
+                before=before.get("storage"),
+                after=after.get("storage"),
+                mode=mode,
+            )
     if operations:
         operations.append(
             SchemaOperation(
@@ -644,8 +681,19 @@ def diff_schema(model_cls: Type[Any], *, runtime: Any | None = None) -> SchemaDi
     runtime = runtime or get_runtime()
     classname = getattr(model_cls, "_classname", model_cls.__name__)
     mode = getattr(model_cls, "_sync_mode", iris_persistence.models.DEFAULT_SYNC_MODE)
-    live_state = _collect_live_schema_state(runtime, classname)
     desired_state = _collect_model_schema_state(model_cls)
+    live_state = _collect_live_schema_state(
+        runtime,
+        classname,
+        include_storage=desired_state.storage is not None,
+    )
+    if desired_state.storage is not None:
+        live_mapping = _state_to_dict(live_state)
+        live_mapping["storage"] = _project_storage_state(
+            live_mapping.get("storage"),
+            desired_state.storage,
+        )
+        live_state = SchemaState.from_dict(live_mapping)
     planned_state = _merge_schema_state_for_sync(
         mode=mode,
         live_state=live_state,

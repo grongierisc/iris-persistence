@@ -12,7 +12,7 @@ class Product(Model, persistent=True):
 
     class Meta:
         classname = "Demo.Product"
-        mode = "replace"
+        mode = "managed"
 
 
 class QueryAliasModel(Model):
@@ -29,7 +29,7 @@ class ReadonlyModel(Model, persistent=True):
 
     class Meta:
         classname = "Demo.ReadonlyModel"
-        mode = "replace"
+        mode = "managed"
 
 
 class AutoSyncModel(Model, persistent=True):
@@ -37,7 +37,7 @@ class AutoSyncModel(Model, persistent=True):
 
     class Meta:
         classname = "Demo.AutoSyncModel"
-        mode = "extend"
+        mode = "managed"
         auto_sync = True
 
 
@@ -47,15 +47,6 @@ class ObserveAutoSyncModel(Model):
     class Meta:
         classname = "Demo.ObserveAutoSyncModel"
         mode = "observe"
-        auto_sync = True
-
-
-class ReplaceAutoSyncModel(Model, persistent=True):
-    Name: str | None = None
-
-    class Meta:
-        classname = "Demo.ReplaceAutoSyncModel"
-        mode = "replace"
         auto_sync = True
 
 

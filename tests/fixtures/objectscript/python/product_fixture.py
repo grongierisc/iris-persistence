@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from iris_persistence import Field, Model, StorageDefinition, StorageProperty
+from iris_persistence import Field, Model
+from iris_persistence.advanced_storage import StorageDefinition, StorageProperty
 
 
 class DemoProductFixture(Model, persistent=True):
@@ -12,8 +13,8 @@ class DemoProductFixture(Model, persistent=True):
 
     class Meta:
         classname = "Demo.Product"
-        mode = "replace"
-        storage = StorageDefinition(
+        mode = "managed"
+        custom_storage = StorageDefinition(
             extent_size="2",
             properties=(
                 StorageProperty(

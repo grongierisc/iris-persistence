@@ -39,7 +39,6 @@ from iris_persistence.schema_state import (
     _index_state_from_meta,
     _owned_schema_member_entries,
     _remove_owned_schema_member_entries,
-    _remove_runtime_list_indices,
     _resolve_model_type,
     _schema_classname_for_save,
     _state_to_dict,
@@ -56,6 +55,10 @@ from iris_persistence.schema_state import (
 from iris_persistence.schema_state import (
     _map_python_type_to_iris as _map_python_type_to_iris,
 )
+
+
+class StorageMigrationRequired(RuntimeError):
+    """Raised when a compiled class would require physical storage migration."""
 
 
 def diff_schema(model_cls: Type[Any]) -> SchemaDiff:
@@ -140,15 +143,9 @@ def _mapping_or_attr_value(source: Any, name: str) -> Any:
 def _ensure_class_definition(
     runtime: Any,
     classname: str,
-    mode: str,
 ) -> tuple[Any, bool, str]:
     existing_classname = _find_existing_classname(runtime, classname)
     schema_classname = existing_classname or _schema_classname_for_save(classname)
-
-    if mode == "replace" and existing_classname is not None:
-        runtime.call_classmethod("%SYSTEM.OBJ", "Delete", existing_classname, "-d")
-        existing_classname = None
-        schema_classname = _schema_classname_for_save(classname)
 
     if existing_classname is not None:
         return (
@@ -198,7 +195,7 @@ def _sync_members(
     `update(existing_obj, state)` mutates an owned member in managed mode;
     `insert(name, state)` builds a new member definition to append to the list.
     """
-    if mode not in {"extend", "managed", "replace"}:
+    if mode != "managed":
         return
 
     member_list = runtime.get_property(class_definition, list_property)
@@ -221,11 +218,8 @@ def _sync_members(
 
     for name, state in desired.items():
         if name in owned_entries:
-            if mode == "extend":
-                continue
-            if mode == "managed":
-                update(owned_entries[name][1], state)
-                continue
+            update(owned_entries[name][1], state)
+            continue
         runtime.invoke_method(member_list, "Insert", insert(name, state))
 
 
@@ -372,7 +366,7 @@ def _sync_properties_from_state(
         class_definition,
         classname,
         dict(sorted(properties.items())),
-        "replace",
+        "managed",
     )
 
 
@@ -451,7 +445,7 @@ def _sync_indexes_from_state(
         class_definition,
         classname,
         dict(sorted(indexes.items())),
-        "replace",
+        "managed",
     )
 
 
@@ -611,36 +605,43 @@ def _sync_storage(
     runtime: Any,
     class_definition: Any,
     classname: str,
-    storage_meta: Any,
-    mode: str,
+    storage_tuning: Any,
+    custom_storage: Any,
+    *,
+    exists: bool,
 ) -> None:
-    if not storage_meta or mode not in {"managed", "replace"}:
+    storage_meta = custom_storage or storage_tuning
+    if storage_meta is None or exists:
         return
 
     storage_list = runtime.get_property(class_definition, "Storages")
     if storage_list is None:
         return
-    if mode == "managed":
-        owned_entries = _owned_schema_member_entries(
-            runtime,
-            storage_list,
-            classname,
-            skip_system_names=False,
-        )
-        _remove_runtime_list_indices(
-            runtime,
-            storage_list,
-            [entry[0] for entry in owned_entries.values()],
-            context=f"{classname}.Storages",
-        )
     storage_definition = runtime.new_object("%Dictionary.StorageDefinition")
-    storage_name = getattr(storage_meta, "name", None) or "CustomStorage"
+    storage_name = custom_storage.name if custom_storage is not None else "Default"
     runtime.set_property(storage_definition, "Name", storage_name)
     runtime.set_property(storage_definition, "parent", classname)
-    runtime.set_property(class_definition, "StorageStrategy", storage_name)
+    if storage_name != "Default":
+        runtime.set_property(class_definition, "StorageStrategy", storage_name)
 
-    _apply_state_attrs(runtime, storage_definition, storage_meta, STORAGE_KEYS)
-    _insert_storage_data(runtime, storage_definition, classname, storage_name, storage_meta)
+    if storage_tuning is not None:
+        runtime.set_property(storage_definition, "Type", "%Storage.Persistent")
+        _apply_state_attrs(runtime, storage_definition, storage_tuning, STORAGE_KEYS)
+        index_list = runtime.get_property(storage_definition, "Indices")
+        for name, location in storage_tuning.index_locations.items():
+            index_definition = _new_schema_member(
+                runtime,
+                "%Dictionary.StorageIndexDefinition",
+                str(name),
+                f"{classname}||Default",
+            )
+            runtime.set_property(index_definition, "Location", str(location))
+            runtime.invoke_method(index_list, "Insert", index_definition)
+        runtime.invoke_method(storage_list, "Insert", storage_definition)
+        return
+
+    _apply_state_attrs(runtime, storage_definition, custom_storage, STORAGE_KEYS)
+    _insert_storage_data(runtime, storage_definition, classname, storage_name, custom_storage)
     storage_parent = f"{classname}||{storage_name}"
     for list_property, dictionary_class, attr_name, storage_keys in _STORAGE_MEMBER_INSERT_SPECS:
         _insert_schema_members(
@@ -648,10 +649,10 @@ def _sync_storage(
             runtime.get_property(storage_definition, list_property),
             dictionary_class,
             storage_parent,
-            getattr(storage_meta, attr_name, ()) or (),
+            getattr(custom_storage, attr_name, ()) or (),
             storage_keys,
         )
-    _insert_storage_sql_maps(runtime, storage_definition, classname, storage_name, storage_meta)
+    _insert_storage_sql_maps(runtime, storage_definition, classname, storage_name, custom_storage)
 
     runtime.invoke_method(storage_list, "Insert", storage_definition)
 
@@ -714,12 +715,11 @@ def _sync_schema_state(runtime: Any, state: SchemaState | dict[str, Any]) -> Non
     if not state.superclasses:
         return
 
-    cd, _exists, schema_classname = _ensure_class_definition(runtime, state.classname, "replace")
+    cd, _exists, schema_classname = _ensure_class_definition(runtime, state.classname)
     _apply_class_definition(runtime, cd, schema_classname, state.superclasses, state.metadata)
-    _sync_parameters(runtime, cd, schema_classname, state.parameters, "replace")
+    _sync_parameters(runtime, cd, schema_classname, state.parameters, "managed")
     _sync_properties_from_state(runtime, cd, schema_classname, state.properties)
     _sync_indexes_from_state(runtime, cd, schema_classname, state.indexes)
-    _sync_storage(runtime, cd, schema_classname, _storage_meta_from_state(state.storage), "replace")
     _save_and_compile_schema_class(runtime, cd, schema_classname)
 
 
@@ -765,7 +765,14 @@ def _sync_schema_model(
         return
     seen.add(schema_classname)
 
-    cd, _exists, schema_classname = _ensure_class_definition(runtime, classname, mode)
+    schema_diff = _diff_schema(model_cls, runtime=runtime)
+    if any(operation.safety == "blocked" for operation in schema_diff.operations):
+        raise StorageMigrationRequired(
+            f"Storage for {schema_classname} differs from its creation-time declaration; "
+            "an explicit data migration is required"
+        )
+
+    cd, exists, schema_classname = _ensure_class_definition(runtime, classname)
     class_metadata = getattr(model_cls, "_class_metadata", None)
     _apply_class_definition(runtime, cd, schema_classname, superclasses, class_metadata)
 
@@ -779,8 +786,14 @@ def _sync_schema_model(
     indexes = getattr(model_cls, "_indexes", [])
     _sync_indexes(runtime, cd, schema_classname, indexes, mode)
 
-    storage_meta = getattr(model_cls, "_storage", None)
-    _sync_storage(runtime, cd, schema_classname, storage_meta, mode)
+    _sync_storage(
+        runtime,
+        cd,
+        schema_classname,
+        getattr(model_cls, "_storage_tuning", None),
+        getattr(model_cls, "_custom_storage", None),
+        exists=exists,
+    )
     _save_and_compile_schema_class(runtime, cd, schema_classname)
 
 

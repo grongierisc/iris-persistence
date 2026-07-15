@@ -10,7 +10,7 @@ class SourceSerialFixture(Model, serial=True):
 
     class Meta:
         classname = "Demo.SourceSerialFixture"
-        mode = "replace"
+        mode = "managed"
 
 
 FIXTURE_MODELS = [SourceSerialFixture]

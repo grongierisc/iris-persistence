@@ -4,7 +4,7 @@ import importlib.util
 
 import pytest
 
-from iris_persistence import Field, Model
+from iris_persistence import Field, Index, Model, StorageMigrationRequired, StorageTuning
 from iris_persistence.migrations import apply_plan, create_plan, verify_plan
 from iris_persistence.runtime import get_runtime
 from tests.fixture_support import delete_iris_classes
@@ -23,6 +23,7 @@ pytestmark = [
 
 CLASSNAME = "Demo.ManagedCollisionFixture"
 COLLECTION_CLASSNAME = "Demo.ManagedCollectionFixture"
+TUNED_CLASSNAME = "Demo.ManagedTunedStorageFixture"
 
 
 class ManagedCollisionBefore(Model, persistent=True):
@@ -33,7 +34,7 @@ class ManagedCollisionBefore(Model, persistent=True):
 
     class Meta:
         classname = CLASSNAME
-        mode = "replace"
+        mode = "managed"
 
 
 class ManagedCollisionAfter(Model, persistent=True):
@@ -49,7 +50,7 @@ class ManagedCollectionBefore(Model, persistent=True):
 
     class Meta:
         classname = COLLECTION_CLASSNAME
-        mode = "replace"
+        mode = "managed"
 
 
 class ManagedCollectionAfter(Model, persistent=True):
@@ -58,6 +59,30 @@ class ManagedCollectionAfter(Model, persistent=True):
     class Meta:
         classname = COLLECTION_CLASSNAME
         mode = "managed"
+
+
+class ManagedTunedStorage(Model, persistent=True):
+    Name: str | None = None
+
+    class Meta:
+        classname = TUNED_CLASSNAME
+        mode = "managed"
+        indexes = [Index("NameIdx", properties="Name")]
+        storage_tuning = StorageTuning(
+            data_location="^Demo.ManagedTunedD",
+            id_location="^Demo.ManagedTunedD",
+            index_location="^Demo.ManagedTunedI",
+            index_locations={"NameIdx": '^Demo.ManagedTunedI("NameIdx")'},
+        )
+
+
+class ManagedRelocatedStorage(Model, persistent=True):
+    Name: str | None = None
+
+    class Meta:
+        classname = TUNED_CLASSNAME
+        mode = "managed"
+        storage_tuning = StorageTuning(data_location="^Demo.RelocatedD")
 
 
 def _property_names(classname: str) -> set[str]:
@@ -133,3 +158,33 @@ def test_managed_migration_updates_scalar_property_to_list_collection(tmp_path):
         assert verify_plan(plan).converged is True
     finally:
         delete_iris_classes([COLLECTION_CLASSNAME])
+
+
+def test_tuned_default_is_completed_by_compiler_and_then_immutable():
+    delete_iris_classes([TUNED_CLASSNAME])
+    try:
+        ManagedTunedStorage.sync_schema()
+        cursor = get_runtime().get_dbapi_connection().cursor()
+        cursor.execute(
+            "SELECT Name, DataLocation, IdLocation, IndexLocation "
+            "FROM %Dictionary.StorageDefinition WHERE parent = ?",
+            (TUNED_CLASSNAME,),
+        )
+        assert cursor.fetchone() == (
+            "Default",
+            "^Demo.ManagedTunedD",
+            "^Demo.ManagedTunedD",
+            "^Demo.ManagedTunedI",
+        )
+        cursor.execute(
+            "SELECT COUNT(*) FROM %Dictionary.StorageDataDefinition WHERE parent = ?",
+            (f"{TUNED_CLASSNAME}||Default",),
+        )
+        assert cursor.fetchone()[0] > 0
+
+        assert ManagedTunedStorage.diff_schema().has_changes is False
+        ManagedTunedStorage.sync_schema()
+        with pytest.raises(StorageMigrationRequired):
+            ManagedRelocatedStorage.sync_schema()
+    finally:
+        delete_iris_classes([TUNED_CLASSNAME])

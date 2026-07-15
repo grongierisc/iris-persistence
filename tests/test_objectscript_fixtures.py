@@ -160,28 +160,21 @@ def test_objectscript_fixture_scaffold_e2e(loaded_objectscript_fixtures, tmp_pat
     assert any(index.name == "TitleIdx" for index in PersistentFixture._indexes)
     assert PersistentFixture._fields["Title"].iris_type == "%Library.String"
     assert PersistentFixture._fields["Enabled"].iris_type == "%Library.Boolean"
-    assert PersistentFixture._storage is not None
-    assert PersistentFixture._storage.id_location == "^Demo.SourcePersistentFixtureD"
-    assert PersistentFixture._storage.index_location == "^Demo.SourcePersistentFixtureI"
-    assert PersistentFixture._storage.stream_location == "^Demo.SourcePersistentFixtureS"
+    assert PersistentFixture._custom_storage is None
 
     assert RequestFixture._superclasses == "Ens.Request"
     assert RequestFixture._fields["CorrelationId"].required is True
     assert RequestFixture._fields["CorrelationId"].max_length == 64
     assert RequestFixture._fields["CorrelationId"].iris_type == "%Library.String"
     assert RequestFixture._fields["SourceSystem"].default == "ERP"
-    assert RequestFixture._storage is not None
-    request_data = {item.name: item for item in RequestFixture._storage.data}
-    assert request_data["SourceRequestFixtureDefaultData"].subscript == '"SourceRequestFixture"'
+    assert RequestFixture._custom_storage is None
 
     assert SerialFixture._superclasses in {"%SerialObject", "%Library.SerialObject"}
     assert SerialFixture._fields["Street"].required is True
     assert SerialFixture._fields["Street"].max_length == 120
     assert SerialFixture._fields["Street"].iris_type == "%Library.String"
     assert SerialFixture._fields["Country"].default == "FR"
-    assert SerialFixture._storage is not None
-    assert SerialFixture._storage.state == "SourceSerialFixtureState"
-    assert SerialFixture._storage.stream_location == "^Demo.SourceSerialFixtureS"
+    assert SerialFixture._custom_storage is None
 
 
 def test_meta_fixture_reverse_engineers_query_level_metadata(
@@ -298,10 +291,7 @@ def test_recursive_object_reference_scaffold_e2e(loaded_objectscript_fixtures, t
         assert SourceRecursiveParent._fields["Address"].required is False
         assert SourceRecursiveParent._fields["Child"].iris_type == "Demo.SourceRecursiveChild"
         assert SourceRecursiveParent._fields["Address"].iris_type == "Demo.SourceRecursiveAddress"
-        assert SourceRecursiveParent._storage is not None
-        assert SourceRecursiveParent._storage.id_location == "^Demo.SourceRecursiveParentD"
-        assert SourceRecursiveParent._storage.index_location == "^Demo.SourceRecursiveParentI"
-        assert SourceRecursiveParent._storage.stream_location == "^Demo.SourceRecursiveParentS"
+        assert SourceRecursiveParent._custom_storage is None
     finally:
         sys.path.remove(str(tmp_path))
         for module_name in (
@@ -423,8 +413,9 @@ def test_objectscript_storage_property_selectivity_scaffold(
     result = scaffold_from_iris(
         "Demo.SourcePersistentFixture",
         str(tmp_path),
+        mode="managed",
         extract_meta=True,
-        scaffold_selectivity=True,
+        storage="custom",
         return_result=True,
     )
     assert result.warnings == []
@@ -432,8 +423,8 @@ def test_objectscript_storage_property_selectivity_scaffold(
     module = load_module_from_path(Path(result.files[0]))
     PersistentFixture = module.SourcePersistentFixture
 
-    assert PersistentFixture._storage is not None
-    properties = {item.name: item for item in PersistentFixture._storage.properties}
+    assert PersistentFixture._custom_storage is not None
+    properties = {item.name: item for item in PersistentFixture._custom_storage.properties}
     assert expected_rows.keys() <= properties.keys()
     for name, (average_field_size, selectivity) in expected_rows.items():
         if average_field_size not in (None, ""):
@@ -470,8 +461,9 @@ def test_scaffold_selectivity_option_for_demo_demo(
     result = scaffold_from_iris(
         "Demo.Demo",
         str(tmp_path),
+        mode="managed",
         extract_meta=True,
-        scaffold_selectivity=True,
+        storage="custom",
         return_result=True,
     )
     assert result.warnings == []
@@ -480,8 +472,8 @@ def test_scaffold_selectivity_option_for_demo_demo(
     module = load_module_from_path(Path(result.files[0]))
     Demo = module.Demo
 
-    assert Demo._storage is not None
-    properties = {item.name: item for item in Demo._storage.properties}
+    assert Demo._custom_storage is not None
+    properties = {item.name: item for item in Demo._custom_storage.properties}
     assert expected_rows.keys() <= properties.keys()
     for name, selectivity in expected_rows.items():
         assert properties[name].selectivity == selectivity
@@ -517,8 +509,9 @@ def test_scaffold_storage_statistics_for_demo_product(
     result = scaffold_from_iris(
         "Demo.Product",
         str(tmp_path),
+        mode="managed",
         extract_meta=True,
-        scaffold_selectivity=True,
+        storage="custom",
         return_result=True,
     )
     assert result.warnings == []
@@ -526,9 +519,9 @@ def test_scaffold_storage_statistics_for_demo_product(
     module = load_module_from_path(Path(result.files[0]))
     Product = module.Product
 
-    assert Product._storage is not None
-    assert Product._storage.extent_size == "2"
-    properties = {item.name: item for item in Product._storage.properties}
+    assert Product._custom_storage is not None
+    assert Product._custom_storage.extent_size == "2"
+    properties = {item.name: item for item in Product._custom_storage.properties}
     assert properties["InStock"].outlier_selectivity == ".999999:1"
     assert properties["Name"].outlier_selectivity == '.999999:"Widget"'
     assert properties["Price"].outlier_selectivity == ".999999:12.5"

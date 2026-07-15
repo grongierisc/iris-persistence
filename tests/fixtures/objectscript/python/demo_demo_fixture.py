@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from iris_persistence import Field, Model, StorageDefinition, StorageProperty
+from iris_persistence import Field, Model
+from iris_persistence.advanced_storage import StorageDefinition, StorageProperty
 
 
 class DemoBaseFixture(Model, persistent=True):
     class Meta:
         classname = "Demo.DemoBase"
-        mode = "replace"
+        mode = "managed"
         parameters = {"BASEONLY": "BASE"}
 
 
@@ -20,9 +21,9 @@ class DemoNamespaceFixture(Model):
     class Meta:
         classname = "Demo.Demo"
         superclasses = "Demo.DemoBase"
-        mode = "replace"
+        mode = "managed"
         parameters = {"TITI": "TOTO"}
-        storage = StorageDefinition(
+        custom_storage = StorageDefinition(
             extent_size="5",
             properties=(
                 StorageProperty(name="Titi", selectivity="50.0000%"),

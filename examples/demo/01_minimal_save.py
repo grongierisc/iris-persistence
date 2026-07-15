@@ -19,7 +19,7 @@ class HelloRecord(Model, persistent=True):
 
     class Meta:
         classname = "Demo.ExampleHelloRecord"
-        mode = "extend"
+        mode = "managed"
 
 
 def run_demo(*, backend: str | None = None) -> dict[str, Any]:

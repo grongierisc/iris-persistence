@@ -10,7 +10,7 @@ class SourcePersistentFixture(Model, persistent=True):
 
     class Meta:
         classname = "Demo.SourcePersistentFixture"
-        mode = "replace"
+        mode = "managed"
 
 
 FIXTURE_MODELS = [SourcePersistentFixture]

@@ -138,15 +138,7 @@ def test_full_circle_round_trip(tmp_path: Path):
     assert ScaffoldedFullCircleFixture._fields["CreatedAt"].iris_type == "%Library.TimeStamp"
     assert any(index.name == "TitleIdx" for index in ScaffoldedFullCircleFixture._indexes)
 
-    storage = ScaffoldedFullCircleFixture._storage
-    assert storage is not None
-    assert storage.data_location == "^Demo.FullCircleFixtureD"
-    assert storage.default_data == "FullCircleFixtureDefaultData"
-    default_data = next(
-        item for item in storage.data if item.name == "FullCircleFixtureDefaultData"
-    )
-    assert default_data.structure == "listnode"
-    assert default_data.values["9"] == "Title"
+    assert ScaffoldedFullCircleFixture._custom_storage is None
 
 
 def test_class_metadata_round_trip(tmp_path: Path):

@@ -10,7 +10,7 @@ class SourceRecursiveAddress(Model, serial=True):
 
     class Meta:
         classname = "Demo.SourceRecursiveAddress"
-        mode = "replace"
+        mode = "managed"
 
 
 FIXTURE_MODELS = [SourceRecursiveAddress]

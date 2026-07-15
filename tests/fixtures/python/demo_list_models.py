@@ -10,7 +10,7 @@ class DemoListFixtureItem(Model, serial=True):
 
     class Meta:
         classname = "Demo.DemoListFixtureItem"
-        mode = "replace"
+        mode = "managed"
 
 
 class DemoListFixture(Model, persistent=True):
@@ -33,4 +33,4 @@ class DemoListFixture(Model, persistent=True):
 
     class Meta:
         classname = "Demo.DemoListFixture"
-        mode = "replace"
+        mode = "managed"

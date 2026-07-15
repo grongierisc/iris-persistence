@@ -298,14 +298,12 @@ def _clear_nullable_reference(context: _SaveContext, plan: Any, value: Any) -> b
         and _nullable_reference_has_no_initial_value(model_field)
     ):
         return True
-    if context.runtime.clear_reference(
+    context.runtime.clear_reference(
         context.iris_obj,
         plan.name,
         serial=is_serial_model_type(model_field.declared_type),
-    ):
-        return True
-    cls = context.instance.__class__
-    raise RuntimeError(f"Could not clear nullable object reference {plan.name!r} on {cls.__name__}")
+    )
+    return True
 
 
 def _save_complex_field(context: _SaveContext, plan: Any) -> None:
@@ -342,31 +340,11 @@ def _save_complex_fields(context: _SaveContext) -> None:
         _save_complex_field(context, plan)
 
 
-def _populate_iris_object(
-    instance: TModel,
-    iris_obj: Any,
-    runtime: Any,
-    *,
-    is_update: bool,
-    had_existing_iris_obj: bool,
-    persist_related: bool,
-    auto_sync: bool,
-    validate: bool,
-) -> None:
-    cls = instance.__class__
+def _populate_iris_object(context: _SaveContext) -> None:
+    cls = context.instance.__class__
     if cls._fast_save:
-        cls._fast_save(iris_obj, instance.__dict__)
+        cls._fast_save(context.iris_obj, context.instance.__dict__)
         return
-    context = _SaveContext(
-        instance,
-        iris_obj,
-        runtime,
-        is_update,
-        had_existing_iris_obj,
-        persist_related,
-        auto_sync,
-        validate,
-    )
     _save_fast_scalar_fields(context)
     _save_coerced_scalar_fields(context)
     _save_complex_fields(context)
@@ -401,14 +379,16 @@ def _materialize_model(
 
     instance._iris_obj = iris_obj
     _populate_iris_object(
-        instance,
-        iris_obj,
-        runtime,
-        is_update=is_update,
-        had_existing_iris_obj=had_existing_iris_obj,
-        persist_related=persist_related,
-        auto_sync=auto_sync,
-        validate=validate,
+        _SaveContext(
+            instance,
+            iris_obj,
+            runtime,
+            is_update,
+            had_existing_iris_obj,
+            persist_related,
+            auto_sync,
+            validate,
+        )
     )
     return iris_obj
 
@@ -450,10 +430,8 @@ def save_model(instance: TModel) -> None:
         persist_related=True,
     )
 
-    st = runtime.save_object(iris_obj)
-
-    if not runtime.is_ok(st):
-        raise RuntimeError(f"Save failed for {classname}: {runtime.format_status(st)}")
+    status = runtime.save_object(iris_obj)
+    runtime.check_status(status, f"save {classname}")
 
     pk = runtime.get_object_id(iris_obj)
     if pk:

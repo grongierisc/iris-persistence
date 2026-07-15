@@ -1,17 +1,11 @@
 from __future__ import annotations
 
-from iris_persistence.advanced_storage import (
-    StorageData,
-    StorageDefinition,
-    StorageIndex,
-    StorageProperty,
-    StorageSQLMap,
-)
 from iris_persistence.field_utils import (
     collection_kind_from_iris_type,
     is_application_iris_class,
 )
-from iris_persistence.scaffold.reader import _CompiledClass, _CompiledIndex, _CompiledProperty
+from iris_persistence.scaffold.reader import _CompiledClass, _CompiledProperty
+from iris_persistence.scaffold.specs import ModelRenderSpec, RenderContext
 
 
 def _rendered_property_type(prop: _CompiledProperty, python_class_names: dict[str, str]) -> str:
@@ -42,27 +36,26 @@ def _has_class_metadata(class_info: _CompiledClass) -> bool:
 
 
 def _collect_model_imports(
-    class_info: _CompiledClass,
-    properties: list[_CompiledProperty],
-    indexes: list[_CompiledIndex],
-    storage: StorageDefinition | None,
-    storage_data: list[StorageData],
-    storage_indices: list[StorageIndex],
-    storage_properties: list[StorageProperty],
-    storage_sql_maps: list[StorageSQLMap],
-    python_class_names: dict[str, str],
-    module_names: dict[str, str],
+    spec: ModelRenderSpec,
+    context: RenderContext,
 ) -> tuple[list[str], set[str], bool, set[str]]:
     custom_imports, typing_imports, needs_datetime = _property_imports(
-        class_info, properties, python_class_names, module_names
+        spec.class_info,
+        spec.properties,
+        context.python_class_names,
+        context.module_names,
     )
     iris_imports = {"Field", "Model"}
-    if _has_class_metadata(class_info):
+    if _has_class_metadata(spec.class_info):
         iris_imports.add("ClassMetadata")
-    if indexes:
+    if spec.indexes:
         iris_imports.add("Index")
     advanced_imports = _advanced_storage_imports(
-        storage, storage_data, storage_indices, storage_properties, storage_sql_maps
+        spec.storage,
+        spec.storage_data,
+        spec.storage_indices,
+        spec.storage_properties,
+        spec.storage_sql_maps,
     )
     if advanced_imports:
         custom_imports.append(

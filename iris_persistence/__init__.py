@@ -23,7 +23,13 @@ from iris_persistence.migrations import (
 from iris_persistence.models import Model
 from iris_persistence.query import from_iris as _from_iris
 from iris_persistence.query import materialize as _materialize
-from iris_persistence.runtime import configure_runtime
+from iris_persistence.runtime import (
+    Runtime,
+    RuntimeConfig,
+    configure_runtime,
+    get_runtime,
+    install_runtime,
+)
 from iris_persistence.scaffold import ScaffoldResult, ScaffoldWarning, scaffold_from_iris
 from iris_persistence.schema import SchemaDiff, StorageMigrationRequired, diff_schema
 from iris_persistence.types import (
@@ -33,29 +39,6 @@ from iris_persistence.types import (
     Index,
     StorageTuning,
 )
-
-
-def configure(
-    native_connection: Any | None = None,
-    *,
-    dbapi_connection: Any | None = None,
-    iris_handle: Any | None = None,
-    mode: str | None = None,
-    install_dir: str | None = None,
-) -> None:
-    """Deprecated alias for :func:`configure_runtime`."""
-    warnings.warn(
-        "iris_persistence.configure() is deprecated; use configure_runtime() instead",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    configure_runtime(
-        native_connection,
-        dbapi_connection=dbapi_connection,
-        iris_handle=iris_handle,
-        mode=mode,
-        install_dir=install_dir,
-    )
 
 
 def materialize(*args: Any, **kwargs: Any) -> Any:
@@ -95,12 +78,15 @@ __all__ = [
     "VerifyResult",
     "apply_plan",
     "check_drift",
-    "configure",
+    "Runtime",
+    "RuntimeConfig",
     "configure_runtime",
     "create_plan",
     "diff_schema",
     "from_iris",
     "materialize",
+    "get_runtime",
+    "install_runtime",
     "rollback_backup",
     "ScaffoldResult",
     "ScaffoldWarning",

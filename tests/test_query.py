@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from typing import Any
 
 import pytest
@@ -12,7 +13,7 @@ from iris_persistence.query import (
     materialize,
     save_model,
 )
-from iris_persistence.runtime import configure_default_runtime
+from iris_persistence.runtime import install_runtime
 from iris_persistence.testing import InMemoryAdapter
 
 
@@ -54,10 +55,22 @@ class _FakeRuntime:
     def get_dbapi_connection(self):
         return _FakeConnection()
 
+    @contextmanager
+    def connection(self):
+        connection = self.get_dbapi_connection()
+        try:
+            yield connection
+        finally:
+            connection.close()
+
 
 class _FailingMetadataRuntime:
     def get_dbapi_connection(self):
         raise RuntimeError("metadata unavailable")
+
+    @contextmanager
+    def connection(self):
+        yield self.get_dbapi_connection()
 
 
 class _ClosingCursor:
@@ -128,6 +141,10 @@ class _SaveRuntime:
     def format_status(self, status):
         return str(status)
 
+    def check_status(self, status, operation):
+        if not self.is_ok(status):
+            raise RuntimeError(f"{operation} failed: {self.format_status(status)}")
+
     def get_object_id(self, obj):
         return "1"
 
@@ -164,7 +181,7 @@ class _NativeHandleObject:
         self._db = object()
 
 
-class _NativeEmptyReferenceRuntime(runtime_module.IRISRuntimeAdapter):
+class _NativeEmptyReferenceRuntime(runtime_module.IRISRuntime):
     def __init__(self):
         self.obj = _NativeHandleObject()
 
@@ -224,7 +241,7 @@ class _NativeAndReferenceClearRuntime(_ReferenceClearRuntime):
         self.obj = _NativeAndReferenceClearObject()
 
     def clear_reference(self, obj, field_name, *, serial=False):
-        return runtime_module.IRISRuntimeAdapter.clear_reference(
+        return runtime_module.IRISRuntime.clear_reference(
             self,
             obj,
             field_name,
@@ -257,7 +274,7 @@ class _NativeReferenceMethodRuntime(_NativeEmptyReferenceRuntime):
 
 def test_resolve_sql_table_name_materializes_remote_rows_before_cursor_close():
     previous_runtime = runtime_module._active_runtime
-    configure_default_runtime(_FakeRuntime())
+    install_runtime(_FakeRuntime())
     QueryFixture._sql_table_name = None
 
     try:
@@ -269,7 +286,7 @@ def test_resolve_sql_table_name_materializes_remote_rows_before_cursor_close():
 
 def test_resolve_sql_table_name_warns_when_metadata_lookup_fails():
     previous_runtime = runtime_module._active_runtime
-    configure_default_runtime(_FailingMetadataRuntime())
+    install_runtime(_FailingMetadataRuntime())
     QueryFixture._sql_table_name = None
 
     try:
@@ -308,8 +325,15 @@ def test_queryset_all_closes_cursor_and_connection(monkeypatch):
         def get_dbapi_connection(self):
             return connection
 
+        @contextmanager
+        def connection(self):
+            try:
+                yield connection
+            finally:
+                connection.close()
+
     previous_runtime = runtime_module._active_runtime
-    configure_default_runtime(_Runtime())
+    install_runtime(_Runtime())
     QueryFixture._sql_table_name = "User.Simple"
     monkeypatch.setattr(QueryFixture, "get", classmethod(lambda cls, pk: f"obj-{pk}"))
 
@@ -335,7 +359,7 @@ def test_save_casts_string_none_to_iris_empty_string_marker_generic_path():
 
     previous_runtime = runtime_module._active_runtime
     runtime = _SaveRuntime()
-    configure_default_runtime(runtime)
+    install_runtime(runtime)
 
     try:
         save_model(NullableStringFixture(Name=None))
@@ -400,7 +424,7 @@ def test_generic_load_casts_iris_empty_string_marker_to_none():
         CreatedAt: datetime.datetime | None = None
 
     previous_runtime = runtime_module._active_runtime
-    configure_default_runtime(_SaveRuntime())
+    install_runtime(_SaveRuntime())
     iris_obj = type("FakeIRISObject", (), {"Name": chr(0), "CreatedAt": ""})()
 
     try:
@@ -428,7 +452,7 @@ def test_load_casts_empty_related_object_reference_to_none(raw_null):
         birth_address: NullableRelatedAddress | None = None
 
     previous_runtime = runtime_module._active_runtime
-    configure_default_runtime(InMemoryAdapter())
+    install_runtime(InMemoryAdapter())
     iris_obj = type(
         "FakeIRISObject",
         (),
@@ -460,7 +484,7 @@ def test_materialize_does_not_save_related_persistent_models():
 
     previous_runtime = runtime_module._active_runtime
     adapter = InMemoryAdapter()
-    configure_default_runtime(adapter)
+    install_runtime(adapter)
 
     try:
         child = MaterializeChild(Name="nested")
@@ -487,7 +511,7 @@ def test_materialize_uses_shared_population_path_for_serial_objects(monkeypatch)
 
     previous_runtime = runtime_module._active_runtime
     adapter = InMemoryAdapter()
-    configure_default_runtime(adapter)
+    install_runtime(adapter)
     calls = []
     original_fast_save = FastSerialChild._fast_save
 
@@ -514,7 +538,7 @@ def test_save_none_clears_nullable_complex_field():
 
     previous_runtime = runtime_module._active_runtime
     adapter = InMemoryAdapter()
-    configure_default_runtime(adapter)
+    install_runtime(adapter)
 
     try:
         model = NullableComplexFixture(Payload={"a": "b"})
@@ -537,7 +561,7 @@ def test_save_none_leaves_new_nullable_related_model_unset():
 
     previous_runtime = runtime_module._active_runtime
     runtime = _NativeEmptyReferenceRuntime()
-    configure_default_runtime(runtime)
+    install_runtime(runtime)
 
     try:
         save_model(NativeNullParent(Child=None))
@@ -556,7 +580,7 @@ def test_save_empty_string_leaves_new_nullable_related_model_unset():
 
     previous_runtime = runtime_module._active_runtime
     runtime = _NativeEmptyReferenceRuntime()
-    configure_default_runtime(runtime)
+    install_runtime(runtime)
 
     try:
         model = NativeNullParent()
@@ -577,7 +601,7 @@ def test_save_none_clears_existing_nullable_related_model_with_native_empty_refe
 
     previous_runtime = runtime_module._active_runtime
     runtime = _NativeEmptyReferenceRuntime()
-    configure_default_runtime(runtime)
+    install_runtime(runtime)
 
     try:
         model = ExistingNativeNullParent(Child=None)
@@ -598,7 +622,7 @@ def test_save_empty_string_clears_existing_nullable_related_model_with_native_em
 
     previous_runtime = runtime_module._active_runtime
     runtime = _NativeEmptyReferenceRuntime()
-    configure_default_runtime(runtime)
+    install_runtime(runtime)
 
     try:
         model = ExistingNativeNullParent()
@@ -617,7 +641,7 @@ def test_save_empty_string_clears_scaffold_style_nullable_reference_with_native_
 
     previous_runtime = runtime_module._active_runtime
     runtime = _NativeEmptyReferenceRuntime()
-    configure_default_runtime(runtime)
+    install_runtime(runtime)
 
     try:
         model = ExistingScaffoldStyleParent()
@@ -640,7 +664,7 @@ def test_save_none_clears_existing_nullable_related_model_with_object_id_setter(
 
     previous_runtime = runtime_module._active_runtime
     runtime = _ReferenceClearRuntime()
-    configure_default_runtime(runtime)
+    install_runtime(runtime)
 
     try:
         model = ExistingClearParent(Child=None)
@@ -662,7 +686,7 @@ def test_save_empty_string_prefers_object_id_clear_over_native_empty_reference()
 
     previous_runtime = runtime_module._active_runtime
     runtime = _NativeAndReferenceClearRuntime()
-    configure_default_runtime(runtime)
+    install_runtime(runtime)
 
     try:
         model = ExistingClearParent()
@@ -685,7 +709,7 @@ def test_save_empty_string_invokes_native_object_id_clear_before_native_empty_re
 
     previous_runtime = runtime_module._active_runtime
     runtime = _NativeReferenceMethodRuntime()
-    configure_default_runtime(runtime)
+    install_runtime(runtime)
 
     try:
         model = ExistingClearParent()
@@ -707,7 +731,7 @@ def test_save_none_clears_nullable_date_with_empty_scalar_null():
 
     previous_runtime = runtime_module._active_runtime
     runtime = _SaveRuntime()
-    configure_default_runtime(runtime)
+    install_runtime(runtime)
 
     try:
         save_model(NullableDateFixture(EventDate=None))
@@ -726,7 +750,7 @@ def test_save_reuses_materialized_iris_object_and_saves_related_model():
 
     previous_runtime = runtime_module._active_runtime
     adapter = InMemoryAdapter()
-    configure_default_runtime(adapter)
+    install_runtime(adapter)
 
     try:
         child = ReuseChild(Name="nested")

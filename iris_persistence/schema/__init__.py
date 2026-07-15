@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Callable, Type
 
 import iris_persistence.models
@@ -99,49 +100,52 @@ def _apply_class_definition(
             _set_runtime_property_if_not_none(runtime, class_definition, property_name, value)
 
 
+@dataclass(frozen=True)
+class _MemberSyncSpec:
+    list_property: str
+    dictionary_class_name: str
+    desired: dict[str, Any]
+    mode: str
+    update: Callable[[Any, Any], None]
+    insert: Callable[[str, Any], Any]
+
+
 def _sync_members(
     runtime: Any,
     class_definition: Any,
     classname: str,
-    *,
-    list_property: str,
-    dictionary_class_name: str,
-    desired: dict[str, Any],
-    mode: str,
-    update: Callable[[Any, Any], None],
-    insert: Callable[[str, Any], Any],
+    spec: _MemberSyncSpec,
 ) -> None:
     """Sync one kind of owned schema member (parameters, properties, indexes).
 
     `update(existing_obj, state)` mutates an owned member in managed mode;
     `insert(name, state)` builds a new member definition to append to the list.
     """
-    if mode != "managed":
+    if spec.mode != "managed":
         return
 
-    member_list = runtime.get_property(class_definition, list_property)
+    member_list = runtime.get_property(class_definition, spec.list_property)
     if member_list is None:
         return
     owned_entries = _owned_schema_member_entries(
         runtime,
         member_list,
         classname,
-        dictionary_class_name=dictionary_class_name,
+        dictionary_class_name=spec.dictionary_class_name,
     )
-    if mode == "managed":
-        _remove_owned_schema_member_entries(
-            runtime,
-            member_list,
-            [entry for name, entry in owned_entries.items() if name not in desired],
-            dictionary_class_name=dictionary_class_name,
-            context=f"{classname}.{list_property}",
-        )
+    _remove_owned_schema_member_entries(
+        runtime,
+        member_list,
+        [entry for name, entry in owned_entries.items() if name not in spec.desired],
+        dictionary_class_name=spec.dictionary_class_name,
+        context=f"{classname}.{spec.list_property}",
+    )
 
-    for name, state in desired.items():
+    for name, state in spec.desired.items():
         if name in owned_entries:
-            update(owned_entries[name][1], state)
+            spec.update(owned_entries[name][1], state)
             continue
-        runtime.invoke_method(member_list, "Insert", insert(name, state))
+        runtime.invoke_method(member_list, "Insert", spec.insert(name, state))
 
 
 def _new_parameter_definition(runtime: Any, classname: str, name: str, default: Any) -> Any:
@@ -163,12 +167,16 @@ def _sync_parameters(
         runtime,
         class_definition,
         classname,
-        list_property="Parameters",
-        dictionary_class_name="%Dictionary.ParameterDefinition",
-        desired=parameters,
-        mode=mode,
-        update=lambda obj, default: runtime.set_property(obj, "Default", str(default)),
-        insert=lambda name, default: _new_parameter_definition(runtime, classname, name, default),
+        _MemberSyncSpec(
+            list_property="Parameters",
+            dictionary_class_name="%Dictionary.ParameterDefinition",
+            desired=parameters,
+            mode=mode,
+            update=lambda obj, default: runtime.set_property(obj, "Default", str(default)),
+            insert=lambda name, default: _new_parameter_definition(
+                runtime, classname, name, default
+            ),
+        ),
     )
 
 
@@ -251,13 +259,17 @@ def _sync_property_states(
         runtime,
         class_definition,
         classname,
-        list_property="Properties",
-        dictionary_class_name="%Dictionary.PropertyDefinition",
-        desired=properties,
-        mode=mode,
-        update=lambda obj, state: _apply_property_definition_state(runtime, obj, state, exact=True),
-        insert=lambda name, state: _build_property_definition_from_state(
-            runtime, classname, name, state
+        _MemberSyncSpec(
+            list_property="Properties",
+            dictionary_class_name="%Dictionary.PropertyDefinition",
+            desired=properties,
+            mode=mode,
+            update=lambda obj, state: _apply_property_definition_state(
+                runtime, obj, state, exact=True
+            ),
+            insert=lambda name, state: _build_property_definition_from_state(
+                runtime, classname, name, state
+            ),
         ),
     )
 
@@ -331,13 +343,17 @@ def _sync_index_states(
         runtime,
         class_definition,
         classname,
-        list_property="Indices",
-        dictionary_class_name="%Dictionary.IndexDefinition",
-        desired=indexes,
-        mode=mode,
-        update=lambda obj, state: _apply_index_definition_state(runtime, obj, state, exact=True),
-        insert=lambda name, state: _build_index_definition_from_state(
-            runtime, classname, name, state
+        _MemberSyncSpec(
+            list_property="Indices",
+            dictionary_class_name="%Dictionary.IndexDefinition",
+            desired=indexes,
+            mode=mode,
+            update=lambda obj, state: _apply_index_definition_state(
+                runtime, obj, state, exact=True
+            ),
+            insert=lambda name, state: _build_index_definition_from_state(
+                runtime, classname, name, state
+            ),
         ),
     )
 
@@ -375,22 +391,9 @@ def _save_and_compile_schema_class(
     class_definition: Any,
     schema_classname: str,
 ) -> None:
-    st = runtime.save_object(class_definition)
-    if not runtime.is_ok(st):
-        raise RuntimeError(
-            f"Schema save failed for {schema_classname}: {runtime.format_status(st)}"
-        )
-
-    compile_status = runtime.call_classmethod(
-        "%SYSTEM.OBJ",
-        "Compile",
-        schema_classname,
-        "fc /display=none",
-    )
-    if not runtime.is_ok(compile_status):
-        raise RuntimeError(
-            f"Schema compile failed for {schema_classname}: {runtime.format_status(compile_status)}"
-        )
+    status = runtime.save_object(class_definition)
+    runtime.check_status(status, f"schema save {schema_classname}")
+    runtime.compile_class(schema_classname)
 
 
 def _sync_schema_state(runtime: Any, state: SchemaState | dict[str, Any]) -> None:
@@ -404,28 +407,6 @@ def _sync_schema_state(runtime: Any, state: SchemaState | dict[str, Any]) -> Non
     _sync_properties_from_state(runtime, cd, schema_classname, state.properties)
     _sync_indexes_from_state(runtime, cd, schema_classname, state.indexes)
     _save_and_compile_schema_class(runtime, cd, schema_classname)
-
-
-def _run_with_schema_transaction(runtime: Any, action: Callable[[], Any]) -> Any:
-    runtime.begin_transaction()
-    try:
-        result = action()
-    except Exception:
-        try:
-            runtime.rollback_transaction()
-        except Exception:
-            pass
-        raise
-
-    try:
-        runtime.commit_transaction()
-    except Exception:
-        try:
-            runtime.rollback_transaction()
-        except Exception:
-            pass
-        raise
-    return result
 
 
 def _sync_schema_model(
@@ -489,4 +470,5 @@ def sync_schema(model_cls: Type[Any], _seen: set[str] | None = None) -> None:
         _sync_schema_model(runtime, model_cls, _seen)
         return
 
-    _run_with_schema_transaction(runtime, lambda: _sync_schema_model(runtime, model_cls, set()))
+    with runtime.transaction():
+        _sync_schema_model(runtime, model_cls, set())

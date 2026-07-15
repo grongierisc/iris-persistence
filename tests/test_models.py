@@ -7,7 +7,7 @@ import pytest
 import iris_persistence
 from iris_persistence import ClassMetadata, Field, Index, Model, StorageTuning
 from iris_persistence.advanced_storage import StorageDefinition
-from iris_persistence.runtime import configure_default_runtime
+from iris_persistence.runtime import install_runtime
 from iris_persistence.testing import InMemoryAdapter
 from tests.fixtures.python.model_behavior_fixtures import (
     AutoSyncModel,
@@ -79,7 +79,7 @@ class OrderDTO:
 @pytest.fixture(autouse=True)
 def setup_fake_backend():
     adapter = InMemoryAdapter()
-    configure_default_runtime(adapter)
+    install_runtime(adapter)
 
 
 def test_save_and_get():
@@ -112,7 +112,7 @@ def test_query_all():
 
 def test_query_uses_sql_field_name():
     adapter = InMemoryAdapter()
-    configure_default_runtime(adapter)
+    install_runtime(adapter)
 
     QueryAliasModel.where(Payload="x").order_by("Payload").all()
 
@@ -340,12 +340,12 @@ def test_save_failure_uses_formatted_status_message(monkeypatch):
             assert status == "0 raw-status"
             return "ERROR #5808: Key not unique"
 
-    configure_default_runtime(FailingAdapter())
+    install_runtime(FailingAdapter())
     monkeypatch.setattr(FailingSaveModel, "sync_schema", classmethod(lambda cls: None))
 
     with pytest.raises(
         RuntimeError,
-        match=r"Save failed for Demo\.FailingSaveModel: ERROR #5808: Key not unique",
+        match=r"save Demo\.FailingSaveModel failed \(memory\): ERROR #5808: Key not unique",
     ):
         FailingSaveModel(Name="demo").save()
 

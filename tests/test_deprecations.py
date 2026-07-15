@@ -15,20 +15,8 @@ def _deprecated_call(call):
     return result
 
 
-def test_root_configure_warns_and_delegates(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        iris_persistence, "configure_runtime", lambda *args, **kwargs: calls.append((args, kwargs))
-    )
-
-    _deprecated_call(lambda: iris_persistence.configure("native", mode="auto"))
-
-    assert calls == [
-        (
-            ("native",),
-            {"dbapi_connection": None, "iris_handle": None, "mode": "auto", "install_dir": None},
-        )
-    ]
+def test_root_configure_is_removed():
+    assert not hasattr(iris_persistence, "configure")
 
 
 def test_root_conversion_wrappers_warn_and_delegate(monkeypatch):

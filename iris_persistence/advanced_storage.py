@@ -183,8 +183,7 @@ def tune_existing_storage_statistics(
         raise ValueError("stream_location is physical storage and cannot be tuned in place")
 
     runtime = get_runtime()
-    runtime.begin_transaction()
-    try:
+    with runtime.transaction():
         class_definition = runtime.get_object("%Dictionary.ClassDefinition", classname)
         if class_definition is None:
             raise ValueError(f"IRIS class {classname!r} does not exist")
@@ -233,17 +232,8 @@ def tune_existing_storage_statistics(
                 )
 
         status = runtime.save_object(class_definition)
-        if not runtime.is_ok(status):
-            raise RuntimeError(f"Storage tuning save failed: {runtime.format_status(status)}")
-        status = runtime.call_classmethod(
-            "%SYSTEM.OBJ", "Compile", classname, "fc /display=none"
-        )
-        if not runtime.is_ok(status):
-            raise RuntimeError(f"Storage tuning compile failed: {runtime.format_status(status)}")
-        runtime.commit_transaction()
-    except Exception:
-        runtime.rollback_transaction()
-        raise
+        runtime.check_status(status, "storage tuning save")
+        runtime.compile_class(classname)
 
     return ExistingStorageTuningResult(
         classname=classname,

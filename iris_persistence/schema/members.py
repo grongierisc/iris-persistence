@@ -13,7 +13,7 @@ def _item_belongs_to_class(runtime: Any, item: Any, classname: str) -> bool:
 
 def _row_value(row: dict[str, Any], name: str) -> Any:
     for key, value in row.items():
-        if key.lower() == name.lower():
+        if key.lower().lstrip("_") == name.lower().lstrip("_"):
             return value
         if name == "%ID" and key.lower() == "id":
             return value
@@ -29,13 +29,13 @@ def _iter_runtime_list_with_indices(runtime: Any, list_obj: Any) -> list[tuple[i
         return []
     try:
         count = runtime.invoke_method(list_obj, "Count")
-    except Exception:
+    except (AttributeError, RuntimeError, TypeError, ValueError):
         return []
     items = []
     for index in range(1, count + 1):
         try:
             items.append((index, runtime.invoke_method(list_obj, "GetAt", index)))
-        except Exception:
+        except (AttributeError, RuntimeError, TypeError, ValueError):
             continue
     return items
 
@@ -53,7 +53,7 @@ def _remove_runtime_list_indices(
             try:
                 runtime.invoke_method(list_obj, method_name, index)
                 break
-            except Exception as exc:
+            except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
                 last_error = exc
         else:
             raise RuntimeError(f"Could not remove schema member from {context}") from last_error
@@ -110,7 +110,7 @@ def _merge_dictionary_entries(
             continue
         try:
             obj = runtime.get_object(dictionary_class_name, str(object_id))
-        except Exception:
+        except (AttributeError, RuntimeError, TypeError, ValueError):
             continue
         existing = entries.get(name)
         if existing is None:
@@ -138,5 +138,5 @@ def _remove_owned_schema_member_entries(
             continue
         try:
             runtime.delete_object(dictionary_class_name, object_id)
-        except Exception:
-            pass
+        except (AttributeError, RuntimeError, TypeError):
+            continue

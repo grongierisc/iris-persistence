@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -83,6 +84,14 @@ class _StubRuntime:
 
     def get_dbapi_connection(self):
         return _StubConnection(self._rows_by_query)
+
+    @contextmanager
+    def connection(self):
+        connection = self.get_dbapi_connection()
+        try:
+            yield connection
+        finally:
+            connection.close()
 
 
 class _StubCollection:
@@ -228,7 +237,7 @@ def test_scaffold_reads_property_relationship_metadata(monkeypatch, tmp_path: Pa
         ],
         (
             (
-                "SELECT Name, Identity, Relationship, OnDelete, Inverse, Transient, "
+                    "SELECT Name, _Identity, Relationship, OnDelete, Inverse, Transient, "
                 "Storable, MultiDimensional "
                 "FROM %Dictionary.CompiledProperty WHERE parent = ?"
             ),

@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 
 from iris_persistence.field_utils import coerce_bool
+from iris_persistence.runtime import RuntimeOperationError
 
 
 class DictionarySession:
@@ -31,21 +32,19 @@ class DictionarySession:
 @contextmanager
 def dbapi_cursor(runtime: Any) -> Iterator[Any]:
     """Yield a DB-API cursor and close every handle owned by the call."""
-    connection = runtime.get_dbapi_connection()
-    cursor = connection.cursor()
-    try:
-        yield cursor
-    finally:
-        for handle in (cursor, connection):
-            close = getattr(handle, "close", None)
-            if callable(close):
+    with runtime.connection() as connection:
+        cursor = connection.cursor()
+        try:
+            yield cursor
+        finally:
+            if callable(close := getattr(cursor, "close", None)):
                 close()
 
 
 def safe_get_property(runtime: Any, obj: Any, name: str) -> Any:
     try:
         return runtime.get_property(obj, name)
-    except Exception:
+    except (AttributeError, RuntimeError, TypeError, ValueError):
         return None
 
 
@@ -72,13 +71,11 @@ def item_belongs_to_class(
 
 
 def dictionary_rows(runtime: Any, sql: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
-    """Execute a dictionary query, returning an empty fallback for unsupported projections."""
+    """Execute a dictionary query with one normalized compatibility fallback."""
     try:
         with dbapi_cursor(runtime) as cursor:
             cursor.execute(sql, params)
             columns = [str(column[0]) for column in cursor.description]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
-    except Exception:
-        # Dictionary columns differ between supported IRIS releases. Callers
-        # combine this result with the object API, which is the compatibility fallback.
+    except (AttributeError, RuntimeOperationError):
         return []

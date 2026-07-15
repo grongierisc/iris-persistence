@@ -83,11 +83,12 @@ def resolve_declared_type(hint: Any) -> Any:
 
 
 def _convert_with_iris(class_name: str, method_name: str, value: str) -> Any:
+    from iris_persistence.runtime import RuntimeConfigurationError, get_runtime
+
     try:
-        import iris
-    except ImportError:
+        return get_runtime().call_classmethod(class_name, method_name, value)
+    except RuntimeConfigurationError:
         return value
-    return getattr(iris.cls(class_name), method_name)(value)
 
 
 def _coerce_logical_time(value: Any) -> datetime.time:
@@ -115,35 +116,54 @@ def coerce_value_for_save(expected_type: Any, value: Any) -> Any:
     return value
 
 
+def _load_bool(value: Any) -> Any:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"0", "false"}:
+            return False
+        if normalized in {"1", "true"}:
+            return True
+    return value
+
+
+def _load_datetime(value: Any) -> Any:
+    return datetime.datetime.fromisoformat(value) if isinstance(value, str) else value
+
+
+def _load_date(value: Any) -> Any:
+    if isinstance(value, str) and "-" in value:
+        return datetime.date.fromisoformat(value)
+    logical_value = _convert_with_iris("%Library.Date", "LogicalToOdbc", str(value))
+    return (
+        datetime.date.fromisoformat(logical_value)
+        if isinstance(logical_value, str)
+        else value
+    )
+
+
+def _load_time(value: Any) -> Any:
+    if isinstance(value, str) and ":" in value:
+        return datetime.time.fromisoformat(value)
+    return _coerce_logical_time(value)
+
+
+_LOAD_COERCERS = {
+    bool: _load_bool,
+    datetime.datetime: _load_datetime,
+    datetime.date: _load_date,
+    datetime.time: _load_time,
+}
+
+
 def coerce_value_for_load(expected_type: Any, value: Any) -> Any:
     """Convert values loaded from IRIS back to the declared Python type."""
-    if value is None:
-        return None
-    if expected_type is str and value == NULL_STRING:
+    if value is None or (expected_type is str and value == NULL_STRING):
         return None
     if expected_type in (datetime.datetime, datetime.date, datetime.time) and value == "":
         return None
-    if expected_type is bool:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return bool(value)
-        if isinstance(value, str):
-            lowered = value.strip().lower()
-            if lowered in {"0", "false"}:
-                return False
-            if lowered in {"1", "true"}:
-                return True
-    if expected_type is datetime.datetime and isinstance(value, str):
-        return datetime.datetime.fromisoformat(value)
-    if expected_type is datetime.date:
-        if isinstance(value, str) and "-" in value:
-            return datetime.date.fromisoformat(value)
-        logical_value = _convert_with_iris("%Library.Date", "LogicalToOdbc", str(value))
-        if isinstance(logical_value, str):
-            return datetime.date.fromisoformat(logical_value)
-    if expected_type is datetime.time:
-        if isinstance(value, str) and ":" in value:
-            return datetime.time.fromisoformat(value)
-        return _coerce_logical_time(value)
-    return value
+    coercer = _LOAD_COERCERS.get(expected_type)
+    return coercer(value) if coercer is not None else value

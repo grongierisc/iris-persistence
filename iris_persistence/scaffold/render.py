@@ -29,6 +29,7 @@ from iris_persistence.scaffold.reader import (
     _CompiledParameter,
     _CompiledProperty,
 )
+from iris_persistence.scaffold.specs import ModelRenderSpec, RenderContext
 
 
 def _python_default_literal(prop: _CompiledProperty) -> tuple[str | None, str | None]:
@@ -389,74 +390,50 @@ def _append_storage_sql_maps(lines: list[str], items: list[StorageSQLMap]) -> No
 
 
 def _render_meta_lines(
-    class_info: _CompiledClass,
-    mode: str,
+    spec: ModelRenderSpec,
+    context: RenderContext,
     emit_meta_superclasses: bool,
-    parameters: list[_CompiledParameter],
-    indexes: list[_CompiledIndex],
-    storage: StorageDefinition | None,
-    storage_data: list[StorageData],
-    storage_indices: list[StorageIndex],
-    storage_properties: list[StorageProperty],
-    storage_sql_maps: list[StorageSQLMap],
 ) -> list[str]:
+    class_info = spec.class_info
     lines = [
         "",
         "    class Meta:",
         f'        classname = "{class_info.name}"',
-        f'        mode = "{mode}"',
+        f'        mode = "{context.mode}"',
     ]
     if emit_meta_superclasses:
         lines.append(f'        superclasses = "{class_info.superclasses}"')
     if _has_class_metadata(class_info):
         lines.extend(_render_class_metadata_lines(class_info))
-    if parameters:
-        lines.extend(_render_parameter_lines(parameters))
-    if indexes:
-        lines.extend(_render_index_lines(indexes))
-    if storage:
+    if spec.parameters:
+        lines.extend(_render_parameter_lines(spec.parameters))
+    if spec.indexes:
+        lines.extend(_render_index_lines(spec.indexes))
+    if spec.storage:
         lines.extend(
             _render_storage_lines(
-                storage,
-                storage_data,
-                storage_indices,
-                storage_properties,
-                storage_sql_maps,
+                spec.storage,
+                spec.storage_data,
+                spec.storage_indices,
+                spec.storage_properties,
+                spec.storage_sql_maps,
             )
         )
     return lines
 
 
 def _render_model(
-    class_info: _CompiledClass,
-    properties: list[_CompiledProperty],
-    mode: str,
-    parameters: list[_CompiledParameter],
-    indexes: list[_CompiledIndex],
-    storage: StorageDefinition | None,
-    storage_data: list[StorageData],
-    storage_indices: list[StorageIndex],
-    storage_properties: list[StorageProperty],
-    storage_sql_maps: list[StorageSQLMap],
-    python_class_names: dict[str, str],
-    module_names: dict[str, str],
+    spec: ModelRenderSpec,
+    context: RenderContext,
 ) -> str:
+    class_info = spec.class_info
     custom_imports, typing_imports, needs_datetime, iris_imports = _collect_model_imports(
-        class_info,
-        properties,
-        indexes,
-        storage,
-        storage_data,
-        storage_indices,
-        storage_properties,
-        storage_sql_maps,
-        python_class_names,
-        module_names,
+        spec, context
     )
 
     model_declaration, emit_meta_superclasses = _render_model_declaration(
         class_info,
-        python_class_names[class_info.name],
+        context.python_class_names[class_info.name],
     )
 
     lines = ["from __future__ import annotations"]
@@ -469,23 +446,18 @@ def _render_model(
         lines.extend(["", *custom_imports])
     lines.extend(["", model_declaration])
 
-    if not properties:
+    if not spec.properties:
         lines.append("    pass")
     else:
-        lines.extend(_render_property_field(prop, python_class_names) for prop in properties)
+        lines.extend(
+            _render_property_field(prop, context.python_class_names) for prop in spec.properties
+        )
 
     lines.extend(
         _render_meta_lines(
-            class_info,
-            mode,
+            spec,
+            context,
             emit_meta_superclasses,
-            parameters,
-            indexes,
-            storage,
-            storage_data,
-            storage_indices,
-            storage_properties,
-            storage_sql_maps,
         )
     )
 

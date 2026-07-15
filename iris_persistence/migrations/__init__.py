@@ -9,11 +9,10 @@ from typing import Any, Iterable, Sequence, cast
 
 from iris_persistence.migrations.backup import _write_apply_backup
 from iris_persistence.models import Model
-from iris_persistence.runtime import get_runtime
+from iris_persistence.runtime import RuntimeStatusError, get_runtime
 from iris_persistence.schema import (
     SchemaOperation,
     SchemaState,
-    _run_with_schema_transaction,
     _sync_schema_model,
     _sync_schema_state,
     diff_schema,
@@ -247,8 +246,10 @@ def _states_fingerprint(states: Sequence[SchemaState]) -> str:
 
 def _call_status(runtime: Any, class_name: str, method_name: str, *args: Any) -> Any:
     status = runtime.call_classmethod(class_name, method_name, *args)
-    if not runtime.is_ok(status):
-        raise BackupRestoreError(runtime.format_status(status))
+    try:
+        runtime.check_status(status, f"{class_name}.{method_name}")
+    except RuntimeStatusError as exc:
+        raise BackupRestoreError(str(exc)) from exc
     return status
 
 
@@ -338,10 +339,8 @@ def apply_plan(
         models=models,
         backup_dir=backup_dir,
     )
-    _run_with_schema_transaction(
-        runtime,
-        lambda: _apply_plan_without_transaction(runtime, models),
-    )
+    with runtime.transaction():
+        _apply_plan_without_transaction(runtime, models)
     return ApplyResult(
         status="applied",
         target_revision=plan.target_revision,
@@ -404,10 +403,8 @@ def rollback_backup(backup_dir: str | Path) -> RollbackResult:
     )
 
     runtime = get_runtime()
-    restored, deleted = _run_with_schema_transaction(
-        runtime,
-        lambda: _rollback_backup_without_transaction(runtime, states),
-    )
+    with runtime.transaction():
+        restored, deleted = _rollback_backup_without_transaction(runtime, states)
 
     return RollbackResult(
         status="rolled_back",

@@ -4,12 +4,17 @@ from unittest.mock import MagicMock, patch
 
 import iris_persistence.runtime as runtime_module
 from iris_persistence import Field, Model
-from iris_persistence.runtime import IRISRuntimeAdapter, configure_default_runtime
+from iris_persistence.runtime import (
+    IRISRuntime,
+    RuntimeConfig,
+    RuntimeOperationError,
+    install_runtime,
+)
 
 
-class TestIRISRuntimeAdapter(unittest.TestCase):
+class TestIRISRuntime(unittest.TestCase):
     def setUp(self):
-        self.adapter = IRISRuntimeAdapter()
+        self.adapter = IRISRuntime()
 
         # Mock OREF (the raw intersystems object)
         self.mock_oref = MagicMock()
@@ -341,7 +346,8 @@ class TestIRISRuntimeAdapter(unittest.TestCase):
         self.assertEqual(plain_obj.MyList, "encoded-list")
 
     def test_get_dbapi_connection_uses_explicit_remote_credentials(self):
-        fake_dbapi = SimpleNamespace(connect=MagicMock(return_value="dbapi-conn"))
+        dbapi_connection = SimpleNamespace(close=MagicMock())
+        fake_dbapi = SimpleNamespace(connect=MagicMock(return_value=dbapi_connection))
         connection = SimpleNamespace(hostname="localhost", port=1972, namespace="IRISAPP")
         fake_iris = SimpleNamespace(
             dbapi=fake_dbapi,
@@ -353,7 +359,7 @@ class TestIRISRuntimeAdapter(unittest.TestCase):
                 )
             ),
         )
-        adapter = IRISRuntimeAdapter()
+        adapter = IRISRuntime()
 
         with patch.dict(
             "os.environ",
@@ -371,11 +377,13 @@ class TestIRISRuntimeAdapter(unittest.TestCase):
             username="SuperUser",
             password="SYS",
         )
-        self.assertEqual(result, "dbapi-conn")
+        result.close()
+        dbapi_connection.close.assert_called_once_with()
 
     def test_get_dbapi_connection_reuses_native_connection_cursor(self):
-        connection = SimpleNamespace(cursor=MagicMock(return_value="cursor"), close=MagicMock())
-        adapter = IRISRuntimeAdapter()
+        cursor = SimpleNamespace(marker="cursor")
+        connection = SimpleNamespace(cursor=MagicMock(return_value=cursor), close=MagicMock())
+        adapter = IRISRuntime()
 
         fake_iris = SimpleNamespace(
             runtime=SimpleNamespace(
@@ -390,17 +398,45 @@ class TestIRISRuntimeAdapter(unittest.TestCase):
         with patch.dict("sys.modules", {"iris": fake_iris}):
             result = adapter.get_dbapi_connection()
 
-        self.assertEqual(result.cursor(), "cursor")
+        self.assertEqual(result.cursor().marker, "cursor")
         result.close()
         connection.close.assert_not_called()
 
-    def test_configure_default_runtime_clears_model_runtime_caches(self):
+    def test_transaction_attaches_rollback_failure_to_commit_error(self):
+        class _FailingBackend:
+            @staticmethod
+            def begin_transaction():
+                return None
+
+            @staticmethod
+            def commit_transaction():
+                raise RuntimeError("commit failed")
+
+            @staticmethod
+            def rollback_transaction():
+                raise ValueError("rollback failed")
+
+            @staticmethod
+            def backend_name():
+                return "test"
+
+        adapter = IRISRuntime(_FailingBackend())
+
+        with self.assertRaises(RuntimeOperationError) as caught:
+            with adapter.transaction():
+                pass
+
+        commit_error = caught.exception.__cause__
+        self.assertIsInstance(commit_error, RuntimeError)
+        self.assertIsInstance(getattr(commit_error, "rollback_error"), ValueError)
+
+    def test_install_runtime_clears_model_runtime_caches(self):
         class CacheResetModel(Model):
             Name: str | None = None
 
         CacheResetModel._sql_table_name = "Cached.Table"
 
-        configure_default_runtime(self.adapter)
+        install_runtime(self.adapter)
 
         self.assertFalse(hasattr(CacheResetModel, "_sql_table_name"))
 
@@ -409,18 +445,15 @@ class TestIRISRuntimeAdapter(unittest.TestCase):
             runtime=SimpleNamespace(configure=MagicMock()),
         )
         previous_runtime = runtime_module._active_runtime
-        previous_wrapper_runtime = runtime_module._wrapper_runtime
         runtime_module._active_runtime = None
-        runtime_module._wrapper_runtime = None
 
         try:
             with patch.dict("sys.modules", {"iris": fake_iris}):
                 runtime = runtime_module.get_runtime()
         finally:
             runtime_module._active_runtime = previous_runtime
-            runtime_module._wrapper_runtime = previous_wrapper_runtime
 
-        self.assertIsInstance(runtime, IRISRuntimeAdapter)
+        self.assertIsInstance(runtime, IRISRuntime)
         fake_iris.runtime.configure.assert_not_called()
 
     def test_configure_delegates_to_wrapper_runtime_and_clears_override(self):
@@ -431,14 +464,17 @@ class TestIRISRuntimeAdapter(unittest.TestCase):
         try:
             with patch.dict("sys.modules", {"iris": fake_iris}):
                 runtime_module.configure_runtime(
-                    native_connection="native-conn",
-                    dbapi_connection="dbapi-conn",
+                    RuntimeConfig(
+                        native_connection="native-conn",
+                        dbapi_connection="dbapi-conn",
+                    )
                 )
-                self.assertIsNone(runtime_module._active_runtime)
+                self.assertIsInstance(runtime_module._active_runtime, IRISRuntime)
         finally:
             runtime_module._active_runtime = previous_runtime
 
         fake_iris.runtime.configure.assert_called_once_with(
+            mode="auto",
             native_connection="native-conn",
             dbapi="dbapi-conn",
         )

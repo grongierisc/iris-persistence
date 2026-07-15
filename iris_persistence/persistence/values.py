@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from iris_persistence.field_utils import (
     PYTHON_SCALAR_TYPES,
@@ -21,21 +21,28 @@ _STREAM_CLASSES = frozenset(
     }
 )
 
+if TYPE_CHECKING:
+    from iris_persistence._runtime_backend import WrapperBackend
 
-class IRISValueAdapterMixin:
-    """Persistence-specific IRIS value conversion shared by runtime adapters."""
+
+class IRISValueCodec:
+    """Backend-neutral persistence value conversion used by :class:`IRISRuntime`."""
+
+    def __init__(self, backend: WrapperBackend, operations: Any):
+        self._backend = backend
+        self._operations = operations
 
     def call_classmethod(self, class_name: str, method_name: str, *args: Any) -> Any:
-        raise NotImplementedError
+        return self._operations.call_classmethod(class_name, method_name, *args)
 
     def set_property(self, obj: Any, prop_name: str, value: Any) -> None:
-        raise NotImplementedError
+        self._operations.set_property(obj, prop_name, value)
 
     def get_property(self, obj: Any, prop_name: str) -> Any:
-        raise NotImplementedError
+        return self._operations.get_property(obj, prop_name)
 
     def invoke_method(self, obj: Any, method_name: str, *args: Any) -> Any:
-        raise NotImplementedError
+        return self._operations.invoke_method(obj, method_name, *args)
 
     def _populate_collection_property(
         self,
@@ -60,7 +67,7 @@ class IRISValueAdapterMixin:
                 return self._populate_list(current_prop, val)
             if collection_kind == "array" and isinstance(val, dict):
                 return self._populate_array(current_prop, val)
-        except Exception:
+        except (AttributeError, RuntimeError, TypeError, ValueError):
             return False
         return False
 
@@ -80,94 +87,57 @@ class IRISValueAdapterMixin:
             getattr(target, "SetAt")(item, str(key))
         return True
 
-    def _native_handles(self, obj: Any) -> tuple[Any, Any, bool] | None:
-        oref = obj._oref if hasattr(obj, "_oref") else obj
-        db = obj._db if hasattr(obj, "_db") else None
-        if db is None:
-            return None
-        return (oref, db, hasattr(oref, "invoke"))
-
-    @staticmethod
-    def _native_get(handles: tuple[Any, Any, bool], field_name: str) -> Any:
-        oref, db, use_core_methods = handles
-        return oref.get(field_name) if use_core_methods else db.get(oref, field_name)
-
-    @staticmethod
-    def _native_set(handles: tuple[Any, Any, bool], field_name: str, value: Any) -> None:
-        oref, db, use_core_methods = handles
-        if use_core_methods:
-            oref.set(field_name, value)
-        else:
-            db.set(oref, field_name, value)
-
-    @staticmethod
-    def _native_invoke(
-        handles: tuple[Any, Any, bool],
-        target: Any,
-        method_name: str,
-        *args: Any,
-    ) -> None:
-        _oref, db, use_core_methods = handles
-        if use_core_methods:
-            target.invoke(method_name, *args)
-        else:
-            db.invoke(target, method_name, *args)
-
-    def try_native_set(self, obj: Any, field_name: str, value: Any) -> tuple[bool, bool]:
-        handles = self._native_handles(obj)
-        if handles is None:
-            return (False, False)
-        try:
-            self._native_set(handles, field_name, value)
-            return (True, True)
-        except Exception:
-            return (False, True)
-
-    def try_native_invoke(self, obj: Any, method_name: str, *args: Any) -> bool:
-        handles = self._native_handles(obj)
-        if handles is None:
-            return False
-        try:
-            self._native_invoke(handles, handles[0], method_name, *args)
-            return True
-        except Exception:
-            return False
-
-    def clear_reference(self, obj: Any, field_name: str, *, serial: bool = False) -> bool:
+    def clear_reference(self, obj: Any, field_name: str, *, serial: bool = False) -> None:
         """Clear an object reference across embedded and native IRIS APIs."""
-        if not serial:
-            for method_name, value in (
-                (f"{field_name}SetObjectId", ""),
-                (f"{field_name}SetObjectId", None),
-                (f"{field_name}SetObject", None),
-            ):
-                try:
-                    self.invoke_method(obj, method_name, value)
-                    return True
-                except Exception:
-                    if self.try_native_invoke(obj, method_name, value):
-                        return True
-
-        cleared, native_attempted = self.try_native_set(obj, field_name, "")
+        if not serial and self._clear_reference_with_method(obj, field_name):
+            return
+        cleared, native_attempted = self._backend.try_native_set(obj, field_name, "")
         if cleared:
-            return True
+            return
         if native_attempted:
-            return False
+            self._raise_clear_reference_error(field_name)
+        self._clear_reference_property(obj, field_name)
+
+    def _clear_reference_with_method(self, obj: Any, field_name: str) -> bool:
+        attempts = (
+            (f"{field_name}SetObjectId", ""),
+            (f"{field_name}SetObjectId", None),
+            (f"{field_name}SetObject", None),
+        )
+        for method_name, value in attempts:
+            try:
+                self.invoke_method(obj, method_name, value)
+                return True
+            except (AttributeError, RuntimeError, TypeError):
+                if self._backend.try_native_invoke(obj, method_name, value):
+                    return True
+        return False
+
+    def _clear_reference_property(self, obj: Any, field_name: str) -> None:
         try:
             self.set_property(obj, field_name, "")
-            return True
-        except Exception:
-            return False
+        except (AttributeError, RuntimeError, TypeError) as exc:
+            from iris_persistence._runtime_backend import RuntimeOperationError
+
+            raise RuntimeOperationError(
+                "clear_reference", str(exc), backend=self._backend.backend_name()
+            ) from exc
+
+    def _raise_clear_reference_error(self, field_name: str) -> None:
+        from iris_persistence._runtime_backend import RuntimeOperationError
+
+        raise RuntimeOperationError(
+            "clear_reference",
+            f"unable to clear {field_name!r}",
+            backend=self._backend.backend_name(),
+        )
 
     def _clear_property_value(self, obj: Any, field_name: str) -> bool:
-        handles = self._native_handles(obj)
-        if handles is not None:
-            try:
-                stream_oref = self._native_get(handles, field_name)
-                self._native_invoke(handles, stream_oref, "Clear")
-                return True
-            except Exception:
-                return False
+        native, stream_ref = self._backend.try_native_get(obj, field_name)
+        if native:
+            return stream_ref is not None and self._backend.try_native_invoke_target(
+                obj, stream_ref, "Clear"
+            )
 
         current_prop = self.get_property(obj, field_name)
         if not hasattr(current_prop, "Clear"):
@@ -176,26 +146,17 @@ class IRISValueAdapterMixin:
         return True
 
     def _set_null_property_value(self, obj: Any, field_name: str) -> bool:
-        handles = self._native_handles(obj)
-        if handles is None:
-            return False
-
-        try:
-            self._native_set(handles, field_name, "")
-            return True
-        except Exception:
-            return False
+        cleared, _attempted = self._backend.try_native_set(obj, field_name, "")
+        return cleared
 
     def _write_stream_property(self, obj: Any, field_name: str, val: bytes | bytearray) -> bool:
-        handles = self._native_handles(obj)
-        if handles is not None:
-            try:
-                stream_oref = self._native_get(handles, field_name)
-                self._native_invoke(handles, stream_oref, "Clear")
-                self._native_invoke(handles, stream_oref, "Write", val)
-                return True
-            except Exception:
+        native, stream_ref = self._backend.try_native_get(obj, field_name)
+        if native:
+            if stream_ref is None or not self._backend.try_native_invoke_target(
+                obj, stream_ref, "Clear"
+            ):
                 return False
+            return self._backend.try_native_invoke_target(obj, stream_ref, "Write", val)
 
         current_prop = self.get_property(obj, field_name)
         if not hasattr(current_prop, "Write"):
@@ -211,11 +172,13 @@ class IRISValueAdapterMixin:
         iris_class_name: str,
         val: Any,
     ) -> bool:
-        handles = self._native_handles(obj)
-        if handles is not None:
-            _oref, db, _use_core_methods = handles
-            dyn_value = db.classMethodValue(iris_class_name, "%FromJSON", json.dumps(val))
-            self._native_set(handles, field_name, dyn_value)
+        native, dyn_value = self._backend.dynamic_json_value(
+            obj, iris_class_name, json.dumps(val)
+        )
+        if native:
+            written, _attempted = self._backend.try_native_set(obj, field_name, dyn_value)
+            if not written:
+                return False
             return True
 
         dyn_value = self.call_classmethod(iris_class_name, "_FromJSON", json.dumps(val))
@@ -243,10 +206,11 @@ class IRISValueAdapterMixin:
             return
         dynamic_class = "%Library.DynamicArray" if kind == "list" else "%Library.DynamicObject"
         try:
-            if self._set_dynamic_json_value(obj, field_name, dynamic_class, val):
-                return
-        except Exception:
-            pass
+            dynamic_written = self._set_dynamic_json_value(obj, field_name, dynamic_class, val)
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            dynamic_written = False
+        if dynamic_written:
+            return
         self.set_property(obj, field_name, val)
 
     def _encode_percent_list(self, values: list[Any]) -> Any:
@@ -275,7 +239,7 @@ class IRISValueAdapterMixin:
                 items[str(key)] = self.extract_python_value(value.GetAt(key))
                 key = value.Next(key)
             return items
-        except Exception:
+        except (AttributeError, RuntimeError, TypeError, ValueError):
             return None
 
     def _extract_list_value(self, value: Any) -> list[Any] | None:
@@ -284,7 +248,7 @@ class IRISValueAdapterMixin:
             if not isinstance(total, int):
                 return None
             return [self.extract_python_value(value.GetAt(index)) for index in range(1, total + 1)]
-        except Exception:
+        except (AttributeError, RuntimeError, TypeError, ValueError):
             return None
 
     @staticmethod
@@ -293,7 +257,7 @@ class IRISValueAdapterMixin:
             return type(value).__name__
         try:
             return value._ClassName(1)
-        except Exception:
+        except (AttributeError, RuntimeError, TypeError, ValueError):
             return None
 
     def _extract_dynamic_json(self, value: Any) -> Any:
@@ -302,7 +266,7 @@ class IRISValueAdapterMixin:
             value._ToJSON(stream)
             stream.Rewind()
             return json.loads(stream.Read())
-        except Exception:
+        except (AttributeError, RuntimeError, TypeError, ValueError):
             return value
 
     @staticmethod
@@ -315,7 +279,7 @@ class IRISValueAdapterMixin:
             if isinstance(content, str) and "Binary" in iris_class:
                 return content.encode("latin1")
             return content
-        except Exception:
+        except (AttributeError, RuntimeError, TypeError, ValueError, UnicodeError):
             return value
 
     def extract_python_value(self, val: Any, expected_collection_kind: str | None = None) -> Any:
@@ -339,11 +303,7 @@ class IRISValueAdapterMixin:
         if value in (None, ""):
             return []
 
-        import iris
-
-        logical_bytes = value if isinstance(value, bytes) else str(value).encode("latin1")
-        iris_list = iris.IRISList(logical_bytes)
-        return [iris_list.get(index) for index in range(1, iris_list.count() + 1)]
+        return self._backend.decode_percent_list(value)
 
     def inject_iris_value(
         self,

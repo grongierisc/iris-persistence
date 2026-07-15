@@ -2,14 +2,10 @@ from __future__ import annotations
 
 import re
 import warnings as py_warnings
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from iris_persistence.advanced_storage import (
-    StorageDefinition,
-    inspect_existing_storage,
-)
+from iris_persistence.advanced_storage import inspect_existing_storage
 from iris_persistence.field_utils import (
     is_application_iris_class,
 )
@@ -19,11 +15,14 @@ from iris_persistence.scaffold.reader import (
     ScaffoldWarning,
     _CompiledClass,
     _CompiledDictionaryReader,
-    _CompiledIndex,
-    _CompiledParameter,
     _CompiledProperty,
 )
 from iris_persistence.scaffold.render import _render_model
+from iris_persistence.scaffold.specs import (
+    ModelRenderSpec,
+    RenderContext,
+    ScaffoldBuildContext,
+)
 
 
 def _safe_identifier_part(part: str) -> str:
@@ -123,15 +122,6 @@ def _record_warning(result: ScaffoldResult, code: str, classname: str, exc: Exce
     py_warnings.warn(message, RuntimeWarning, stacklevel=2)
 
 
-@dataclass(frozen=True)
-class _ScaffoldClassSpec:
-    class_info: _CompiledClass
-    properties: list[_CompiledProperty]
-    parameters: list[_CompiledParameter]
-    indexes: list[_CompiledIndex]
-    storage: StorageDefinition | None
-
-
 def _validate_scaffold_options(mode: str, storage: str) -> None:
     if mode not in {"managed", "observe"}:
         raise ValueError("mode must be 'managed' or 'observe'")
@@ -176,82 +166,64 @@ def _class_with_metadata(
 
 
 def _build_class_spec(
-    reader: _CompiledDictionaryReader,
-    runtime: Any,
-    result: ScaffoldResult,
+    context: ScaffoldBuildContext,
     class_info: _CompiledClass,
     properties: list[_CompiledProperty] | None,
-    *,
-    extract_meta: bool,
-    storage: str,
-    best_effort: bool,
-) -> _ScaffoldClassSpec:
-    if extract_meta:
-        class_info = _class_with_metadata(reader, class_info)
-    properties = properties if properties is not None else reader.list_properties(class_info.name)
+) -> ModelRenderSpec:
+    if context.extract_meta:
+        class_info = _class_with_metadata(context.reader, class_info)
+    properties = (
+        properties
+        if properties is not None
+        else context.reader.list_properties(class_info.name)
+    )
     parameters = (
         _read_optional(
-            result,
+            context.result,
             "parameters",
             class_info.name,
-            lambda: reader.list_parameters(class_info.name),
+            lambda: context.reader.list_parameters(class_info.name),
             [],
-            best_effort,
+            context.best_effort,
         )
-        if extract_meta
+        if context.extract_meta
         else []
     )
     indexes = (
         _read_optional(
-            result,
+            context.result,
             "indexes",
             class_info.name,
-            lambda: reader.list_indexes(class_info.name),
+            lambda: context.reader.list_indexes(class_info.name),
             [],
-            best_effort,
+            context.best_effort,
         )
-        if extract_meta
+        if context.extract_meta
         else []
     )
     storage_definition = (
         _read_optional(
-            result,
+            context.result,
             "storage",
             class_info.name,
-            lambda: inspect_existing_storage(class_info.name, _runtime=runtime),
+            lambda: inspect_existing_storage(class_info.name, _runtime=context.runtime),
             None,
-            best_effort,
+            context.best_effort,
         )
-        if storage == "custom"
+        if context.storage == "custom"
         else None
     )
-    return _ScaffoldClassSpec(class_info, properties, parameters, indexes, storage_definition)
+    return ModelRenderSpec(class_info, properties, parameters, indexes, storage_definition)
 
 
 def _write_scaffold_module(
-    spec: _ScaffoldClassSpec,
+    spec: ModelRenderSpec,
     output_path: Path,
-    mode: str,
-    python_class_names: dict[str, str],
-    module_names: dict[str, str],
+    context: RenderContext,
 ) -> str:
-    storage = spec.storage
-    module_path = output_path / f"{module_names[spec.class_info.name]}.py"
+    module_path = output_path / f"{context.module_names[spec.class_info.name]}.py"
     module_path.write_text(
-        _render_model(
-            class_info=spec.class_info,
-            properties=spec.properties,
-            mode=mode,
-            parameters=spec.parameters,
-            indexes=spec.indexes,
-            storage=storage,
-            storage_data=list(storage.data) if storage else [],
-            storage_indices=list(storage.indices) if storage else [],
-            storage_properties=list(storage.properties) if storage else [],
-            storage_sql_maps=list(storage.sql_maps) if storage else [],
-            python_class_names=python_class_names,
-            module_names=module_names,
-        ),
+        _render_model(spec, context),
         encoding="utf-8",
     )
     return str(module_path)
@@ -270,33 +242,33 @@ def scaffold_from_iris(
     """Scaffold typed models from live IRIS classes."""
     _validate_scaffold_options(mode, storage)
     runtime = get_runtime()
-    reader = _CompiledDictionaryReader(runtime.get_dbapi_connection(), runtime)
     result = ScaffoldResult(files=[], warnings=[])
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    try:
-        classes, properties_by_class, seeds = _collect_classes(
-            reader, pattern.replace("*", "%"), include_related
-        )
-        classnames = [item.name for item in classes]
-        class_names = _assign_generated_names(classnames, seeds, _camel_case)
-        module_names = _assign_generated_names(classnames, seeds, _snake_case)
-        for class_info in classes:
-            spec = _build_class_spec(
-                reader,
-                runtime,
-                result,
-                class_info,
-                properties_by_class.get(class_info.name),
-                extract_meta=extract_meta,
-                storage=storage,
-                best_effort=best_effort,
+    with runtime.connection() as connection:
+        reader = _CompiledDictionaryReader(connection, runtime)
+        try:
+            classes, properties_by_class, seeds = _collect_classes(
+                reader, pattern.replace("*", "%"), include_related
             )
-            result.files.append(
-                _write_scaffold_module(spec, output_path, mode, class_names, module_names)
+            classnames = [item.name for item in classes]
+            class_names = _assign_generated_names(classnames, seeds, _camel_case)
+            module_names = _assign_generated_names(classnames, seeds, _snake_case)
+            render_context = RenderContext(mode, class_names, module_names)
+            build_context = ScaffoldBuildContext(
+                reader, runtime, result, extract_meta, storage, best_effort
             )
-    finally:
-        reader.close()
+            for class_info in classes:
+                spec = _build_class_spec(
+                    build_context,
+                    class_info,
+                    properties_by_class.get(class_info.name),
+                )
+                result.files.append(
+                    _write_scaffold_module(spec, output_path, render_context)
+                )
+        finally:
+            reader.close()
     return result if return_result else result.files
     """Roadmap placeholder for scaffolding from exported .cls files."""
     raise NotImplementedError("scaffold_from_cls is roadmap-only and is not implemented yet.")

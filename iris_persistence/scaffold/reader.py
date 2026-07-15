@@ -109,7 +109,7 @@ class _CompiledIndex:
 
 _PROPERTY_PROJECTIONS = (
     (
-        "Identity, Relationship, OnDelete, Inverse, Transient, Storable, MultiDimensional",
+        "_Identity, Relationship, OnDelete, Inverse, Transient, Storable, MultiDimensional",
         (
             "identity",
             "relationship",
@@ -152,7 +152,7 @@ class _CompiledDictionaryReader(DictionarySession):
     def _optional_rows(self, sql: str, params: tuple[Any, ...]) -> list[tuple[Any, ...]]:
         try:
             return self._fetchall(sql, params)
-        except Exception:
+        except (AttributeError, RuntimeError, TypeError, ValueError):
             return []
 
     def _normalize_parameters(
@@ -262,7 +262,11 @@ class _CompiledDictionaryReader(DictionarySession):
             collection=_optional_str(collection),
             sql_field_name=None if not sql_name or str(sql_name) == str(name) else str(sql_name),
             identity=coerce_bool(metadata.get("identity")),
-            relationship=_optional_str(metadata.get("relationship")),
+            relationship=(
+                None
+                if metadata.get("relationship") in (None, "", 0, "0", False)
+                else str(metadata["relationship"])
+            ),
             on_delete=_optional_str(metadata.get("on_delete")),
             inverse=_optional_str(metadata.get("inverse")),
             transient=coerce_bool(metadata.get("transient")),
@@ -284,7 +288,7 @@ class _CompiledDictionaryReader(DictionarySession):
             return properties
         try:
             max_lengths = self._runtime_max_lengths(classname)
-        except Exception:
+        except (AttributeError, RuntimeError, TypeError, ValueError):
             return properties
         return [
             item
@@ -308,7 +312,7 @@ class _CompiledDictionaryReader(DictionarySession):
                 continue
             try:
                 maxlen = runtime.invoke_method(params, "GetAt", "MAXLEN")
-            except Exception:
+            except (AttributeError, RuntimeError, TypeError, ValueError):
                 maxlen = None
             if maxlen not in (None, ""):
                 result[str(name)] = str(maxlen)
@@ -325,38 +329,50 @@ class _CompiledDictionaryReader(DictionarySession):
         )
         if params:
             return sorted(params, key=lambda item: item.name)
+        params = self._definition_parameters(classname)
+        if params:
+            return sorted(params, key=lambda item: item.name)
+        return sorted(self._runtime_parameters(classname), key=lambda item: item.name)
 
+    def _definition_parameters(self, classname: str) -> list[_CompiledParameter]:
         try:
-            params = self._normalize_parameters(
+            return self._normalize_parameters(
                 self._fetchall(
-                    "SELECT Name, Default FROM %Dictionary.ParameterDefinition WHERE parent = ?",
+                    "SELECT Name, _Default FROM %Dictionary.ParameterDefinition WHERE parent = ?",
                     (classname,),
                 )
             )
-        except Exception:
-            params = []
-        if params:
-            return sorted(params, key=lambda item: item.name)
+        except (AttributeError, RuntimeError, TypeError):
+            return []
 
+    def _runtime_parameters(self, classname: str) -> list[_CompiledParameter]:
+        runtime = self._runtime or get_runtime()
         try:
-            runtime = self._runtime or get_runtime()
             class_def = runtime.get_object("%Dictionary.ClassDefinition", classname)
-            if class_def is not None:
-                param_list = runtime.get_property(class_def, "Parameters")
-                if param_list is not None:
-                    count = runtime.invoke_method(param_list, "Count")
-                    for index in range(1, count + 1):
-                        param = runtime.invoke_method(param_list, "GetAt", index)
-                        if not self._parameter_belongs_to_class(runtime, param, classname):
-                            continue
-                        name = runtime.get_property(param, "Name")
-                        default = runtime.get_property(param, "Default")
-                        if str(name).startswith("%") or name == "GUID":
-                            continue
-                        params.append(_CompiledParameter(name=str(name), default=str(default)))
-        except Exception:
-            pass
-        return sorted(params, key=lambda item: item.name)
+            param_list = runtime.get_property(class_def, "Parameters") if class_def else None
+            count = runtime.invoke_method(param_list, "Count") if param_list else 0
+            candidates = (
+                runtime.invoke_method(param_list, "GetAt", index)
+                for index in range(1, count + 1)
+            )
+            return [
+                parameter
+                for item in candidates
+                if (parameter := self._runtime_parameter(runtime, item, classname)) is not None
+            ]
+        except (AttributeError, RuntimeError, TypeError):
+            return []
+
+    def _runtime_parameter(
+        self, runtime: Any, item: Any, classname: str
+    ) -> _CompiledParameter | None:
+        if not self._parameter_belongs_to_class(runtime, item, classname):
+            return None
+        name = runtime.get_property(item, "Name")
+        if str(name).startswith("%") or name == "GUID":
+            return None
+        default = runtime.get_property(item, "Default")
+        return _CompiledParameter(name=str(name), default=str(default))
 
     def list_indexes(self, classname: str) -> list[_CompiledIndex]:
         rows = self._fetchall(

@@ -13,7 +13,7 @@ def _set_runtime_property_exact(
 ) -> None:
     try:
         runtime.set_property(obj, prop_name, "" if value is None else value)
-    except Exception as exc:
+    except (AttributeError, RuntimeError, TypeError) as exc:
         if not _missing_dictionary_property(exc):
             raise
 
@@ -26,7 +26,7 @@ def _set_runtime_flag_exact(
 ) -> None:
     try:
         runtime.set_property(obj, prop_name, 1 if enabled else 0)
-    except Exception as exc:
+    except (AttributeError, RuntimeError, TypeError) as exc:
         if not _missing_dictionary_property(exc):
             raise
 
@@ -40,12 +40,12 @@ def _remove_runtime_parameter(runtime: Any, params: Any, key: str) -> None:
         try:
             runtime.invoke_method(params, method_name, key)
             return
-        except Exception:
+        except (AttributeError, RuntimeError, TypeError):
             continue
     try:
         runtime.invoke_method(params, "SetAt", "", key)
-    except Exception:
-        pass
+    except (AttributeError, RuntimeError, TypeError):
+        return
 
 
 def _set_runtime_flag_if_true(runtime: Any, obj: Any, prop_name: str, enabled: Any) -> None:

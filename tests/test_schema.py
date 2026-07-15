@@ -1,4 +1,5 @@
 import decimal
+from contextlib import contextmanager
 
 import pytest
 
@@ -136,6 +137,16 @@ class _RecordingRuntime:
     def rollback_transaction(self):
         pass
 
+    @contextmanager
+    def transaction(self):
+        self.begin_transaction()
+        try:
+            yield
+        except Exception:
+            self.rollback_transaction()
+            raise
+        self.commit_transaction()
+
     def get_dbapi_connection(self):
         raise AssertionError("dbapi connection not needed for schema sync test")
 
@@ -156,6 +167,14 @@ class _RecordingRuntime:
 
     def format_status(self, status):
         return str(status)
+
+    def check_status(self, status, operation):
+        if not self.is_ok(status):
+            raise RuntimeError(f"{operation} failed: {self.format_status(status)}")
+
+    def compile_class(self, class_name, flags="fc /display=none"):
+        status = self.call_classmethod("%SYSTEM.OBJ", "Compile", class_name, flags)
+        self.check_status(status, f"compile {class_name}")
 
     def extract_python_value(self, val):
         return val
@@ -944,7 +963,7 @@ def test_sync_schema_rolls_back_recursive_sync_on_failure(monkeypatch):
     runtime = _TransactionalRuntime(fail_save_for="Demo.SchemaRollbackParent")
     monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
 
-    with pytest.raises(RuntimeError, match="Schema save failed for Demo.SchemaRollbackParent"):
+    with pytest.raises(RuntimeError, match="schema save Demo.SchemaRollbackParent failed"):
         SchemaRollbackParent.sync_schema()
 
     assert runtime.transaction_events == ["begin", "rollback"]
@@ -968,7 +987,7 @@ def test_sync_schema_rolls_back_compile_failure(monkeypatch):
     runtime = _TransactionalRuntime(fail_compile_for="Demo.ParameterFixture")
     monkeypatch.setattr(schema_module, "get_runtime", lambda: runtime)
 
-    with pytest.raises(RuntimeError, match="Schema compile failed for Demo.ParameterFixture"):
+    with pytest.raises(RuntimeError, match="compile Demo.ParameterFixture failed"):
         ParameterFixture.sync_schema()
 
     assert runtime.transaction_events == ["begin", "rollback"]

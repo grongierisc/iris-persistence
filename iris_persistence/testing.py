@@ -1,9 +1,11 @@
+from contextlib import contextmanager
 from typing import Any, Dict
 
-from iris_persistence.runtime import RuntimeAdapter
+from iris_persistence._runtime_backend import RuntimeStatusError
+from iris_persistence.runtime import Runtime
 
 
-class InMemoryAdapter(RuntimeAdapter):
+class InMemoryRuntime(Runtime):
     """Simple CRUD-only test double.
 
     This adapter is intentionally narrow: it is useful for model/query tests but does
@@ -118,9 +120,8 @@ class InMemoryAdapter(RuntimeAdapter):
     def extract_typed_python_value(self, val: Any, collection_kind: str | None) -> Any:
         return val
 
-    def clear_reference(self, obj: Any, field_name: str, *, serial: bool = False) -> bool:
+    def clear_reference(self, obj: Any, field_name: str, *, serial: bool = False) -> None:
         setattr(obj, field_name, "")
-        return True
 
     def decode_percent_list(self, value: Any) -> list[Any]:
         if value is None:
@@ -141,16 +142,16 @@ class InMemoryAdapter(RuntimeAdapter):
     def get_dbapi_connection(self) -> Any:
         class _Cursor:
             def __init__(self, db, db_adapter):
-                self._db = db
-                self._db_adapter = db_adapter
+                self._data = db
+                self._adapter = db_adapter
                 self._rows = []
 
             def execute(self, sql, params=()):
-                self._db_adapter.last_sql = sql
-                self._db_adapter.last_params = tuple(params)
+                self._adapter.last_sql = sql
+                self._adapter.last_params = tuple(params)
                 table_name = sql.split("FROM ")[1].split(" ")[0].replace("_", ".")
-                if table_name in self._db:
-                    self._rows = [(k,) for k in self._db[table_name].keys()]
+                if table_name in self._data:
+                    self._rows = [(k,) for k in self._data[table_name].keys()]
                 else:
                     self._rows = []
 
@@ -165,13 +166,35 @@ class InMemoryAdapter(RuntimeAdapter):
 
         class _Connection:
             def __init__(self, db, db_adapter):
-                self._db = db
-                self._db_adapter = db_adapter
+                self._data = db
+                self._adapter = db_adapter
 
             def cursor(self):
-                return _Cursor(self._db, self._db_adapter)
+                return _Cursor(self._data, self._adapter)
 
             def close(self):
                 pass
 
         return _Connection(self.db, self)
+
+    @contextmanager
+    def connection(self):
+        connection = self.get_dbapi_connection()
+        try:
+            yield connection
+        finally:
+            connection.close()
+
+    @contextmanager
+    def transaction(self):
+        yield
+
+    def check_status(self, status: Any, operation: str) -> None:
+        if not self.is_ok(status):
+            raise RuntimeStatusError(operation, self.format_status(status), backend="memory")
+
+    def compile_class(self, class_name: str, flags: str = "fc /display=none") -> None:
+        return None
+
+
+InMemoryAdapter = InMemoryRuntime

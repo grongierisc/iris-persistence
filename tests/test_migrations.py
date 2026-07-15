@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import iris_persistence.runtime as runtime_module
 from iris_persistence.migrations import (
     BackupRestoreError,
     MigrationOperation,
@@ -16,7 +17,7 @@ from iris_persistence.migrations import (
     rollback_backup,
     verify_plan,
 )
-from iris_persistence.runtime import configure_default_runtime
+from iris_persistence.runtime import install_runtime
 from tests.fixtures.python.schema_mapping_fixtures import ParameterFixture, SchemaMetadataFixture
 from tests.test_schema import _TransactionalRuntime
 
@@ -24,11 +25,12 @@ from tests.test_schema import _TransactionalRuntime
 @pytest.fixture
 def recording_runtime():
     runtime = _TransactionalRuntime()
-    configure_default_runtime(runtime)
+    previous_runtime = runtime_module._active_runtime
+    install_runtime(runtime)
     try:
         yield runtime
     finally:
-        configure_default_runtime(None)
+        runtime_module._active_runtime = previous_runtime
 
 
 def test_migration_plan_json_is_deterministic(recording_runtime, tmp_path):

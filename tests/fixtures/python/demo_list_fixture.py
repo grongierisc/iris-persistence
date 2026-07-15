@@ -3,14 +3,14 @@ from __future__ import annotations
 from typing import Any
 
 import iris_persistence
-from iris_persistence.runtime import configure_default_runtime, get_runtime
+from iris_persistence.runtime import get_runtime, install_runtime
 from iris_persistence.testing import InMemoryAdapter
 from tests.fixtures.python.demo_list_models import DemoListFixture, DemoListFixtureItem
 
 
 def configure_fixture_runtime(*, backend: str = "auto") -> str:
     if backend == "fake":
-        configure_default_runtime(InMemoryAdapter())
+        install_runtime(InMemoryAdapter())
         return "fake"
 
     try:
@@ -18,7 +18,7 @@ def configure_fixture_runtime(*, backend: str = "auto") -> str:
         get_runtime().get_dbapi_connection()
         return "iris"
     except Exception:
-        configure_default_runtime(InMemoryAdapter())
+        install_runtime(InMemoryAdapter())
         return "fake"
 
 

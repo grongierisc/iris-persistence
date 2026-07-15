@@ -240,7 +240,7 @@ def _collect_model_fields(cls: type, namespace: dict[str, Any]) -> dict[str, Mod
 
     try:
         hints = get_type_hints(cls, include_extras=True)
-    except Exception:
+    except (NameError, TypeError):
         hints = {}
 
     declared_field_assignments = getattr(cls, "_declared_field_assignments__", {})

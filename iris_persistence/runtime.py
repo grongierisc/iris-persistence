@@ -1,32 +1,46 @@
 from __future__ import annotations
 
-import os
-import warnings
-from typing import Any, Protocol
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Any, ContextManager, Iterator, Literal, Protocol
 
-from iris_persistence.persistence.values import IRISValueAdapterMixin
+from iris_persistence._runtime_backend import (
+    RuntimeClassNotFoundError,
+    RuntimeConfigurationError,
+    RuntimeOperationError,
+    RuntimeStatusError,
+    UnsupportedRuntimeOperation,
+    WrapperBackend,
+)
+from iris_persistence.persistence.values import IRISValueCodec
 
 
-class RuntimeAdapter(Protocol):
+@dataclass(frozen=True)
+class RuntimeConfig:
+    mode: Literal["auto", "embedded", "native"] = "auto"
+    install_dir: str | None = None
+    native_connection: Any | None = None
+    dbapi_connection: Any | None = None
+    iris_handle: Any | None = None
+
+
+class Runtime(Protocol):
     def call_classmethod(self, class_name: str, method_name: str, *args: Any) -> Any: ...
     def new_object(self, class_name: str) -> Any: ...
     def save_object(self, obj: Any) -> Any: ...
     def get_object(self, class_name: str, obj_id: str) -> Any: ...
     def delete_object(self, class_name: str, obj_id: str) -> bool: ...
-    def get_dbapi_connection(self) -> Any: ...
-    def begin_transaction(self) -> None: ...
-    def commit_transaction(self) -> None: ...
-    def rollback_transaction(self) -> None: ...
-
+    def connection(self) -> ContextManager[Any]: ...
+    def transaction(self) -> ContextManager[None]: ...
     def set_property(self, obj: Any, prop_name: str, value: Any) -> None: ...
     def get_property(self, obj: Any, prop_name: str) -> Any: ...
     def invoke_method(self, obj: Any, method_name: str, *args: Any) -> Any: ...
     def get_object_id(self, obj: Any) -> str | None: ...
-    def is_ok(self, status: Any) -> bool: ...
-    def format_status(self, status: Any) -> str: ...
+    def check_status(self, status: Any, operation: str) -> None: ...
+    def compile_class(self, class_name: str, flags: str = "fc /display=none") -> None: ...
     def extract_python_value(self, val: Any) -> Any: ...
     def extract_typed_python_value(self, val: Any, collection_kind: str | None) -> Any: ...
-    def clear_reference(self, obj: Any, field_name: str, *, serial: bool = False) -> bool: ...
+    def clear_reference(self, obj: Any, field_name: str, *, serial: bool = False) -> None: ...
     def decode_percent_list(self, value: Any) -> list[Any]: ...
     def inject_iris_value(
         self,
@@ -37,37 +51,158 @@ class RuntimeAdapter(Protocol):
     ) -> None: ...
 
 
-_active_runtime: RuntimeAdapter | None = None
-_wrapper_runtime: IRISRuntimeAdapter | None = None
+class IRISRuntime:
+    """Normalized semantic runtime backed by the configured iris wrapper."""
+
+    def __init__(self, backend: WrapperBackend | None = None):
+        self._backend = backend or WrapperBackend()
+        self._values = IRISValueCodec(self._backend, self)
+
+    def _get_backend(self) -> WrapperBackend:
+        if not hasattr(self, "_backend"):
+            self._backend = WrapperBackend()
+        return self._backend
+
+    def _get_value_codec(self) -> IRISValueCodec:
+        # Subclasses written against the old adapter occasionally skipped super().__init__().
+        backend = IRISRuntime._get_backend(self)
+        if not hasattr(self, "_values"):
+            self._values = IRISValueCodec(backend, self)
+        return self._values
+
+    def call_classmethod(self, class_name: str, method_name: str, *args: Any) -> Any:
+        return self._backend.call_classmethod(class_name, method_name, *args)
+
+    def new_object(self, class_name: str) -> Any:
+        return self._backend.new_object(class_name)
+
+    def save_object(self, obj: Any) -> Any:
+        return self._backend.save_object(obj)
+
+    def get_object(self, class_name: str, obj_id: str) -> Any:
+        return self._backend.get_object(class_name, obj_id)
+
+    def delete_object(self, class_name: str, obj_id: str) -> bool:
+        return self._backend.is_ok(self._backend.delete_object(class_name, obj_id))
+
+    def get_dbapi_connection(self) -> Any:
+        """Compatibility escape hatch; algorithms should use connection()."""
+        return self._backend.dbapi_connection()
+
+    @contextmanager
+    def connection(self) -> Iterator[Any]:
+        connection = self._backend.dbapi_connection()
+        try:
+            yield connection
+        finally:
+            connection.close()
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        self._backend.begin_transaction()
+        try:
+            yield
+        except BaseException as operation_error:
+            self._rollback_preserving(operation_error)
+            raise
+        self._commit_transaction()
+
+    def _rollback_preserving(self, primary_error: BaseException) -> None:
+        try:
+            self._backend.rollback_transaction()
+        except BaseException as rollback_error:
+            setattr(primary_error, "rollback_error", rollback_error)
+
+    def _commit_transaction(self) -> None:
+        try:
+            self._backend.commit_transaction()
+        except BaseException as commit_error:
+            self._rollback_preserving(commit_error)
+            raise RuntimeOperationError(
+                "commit_transaction",
+                str(commit_error),
+                backend=self._backend.backend_name(),
+            ) from commit_error
+
+    # Retained temporarily for adapters/tests migrating to context managers.
+    def begin_transaction(self) -> None:
+        self._backend.begin_transaction()
+
+    def commit_transaction(self) -> None:
+        self._backend.commit_transaction()
+
+    def rollback_transaction(self) -> None:
+        self._backend.rollback_transaction()
+
+    def invoke_method(self, obj: Any, method_name: str, *args: Any) -> Any:
+        return self._backend.invoke_method(obj, method_name, *args)
+
+    def set_property(self, obj: Any, prop_name: str, value: Any) -> None:
+        self._backend.set_property(obj, prop_name, value)
+
+    def get_property(self, obj: Any, prop_name: str) -> Any:
+        return self._backend.get_property(obj, prop_name)
+
+    def get_object_id(self, obj: Any) -> str | None:
+        return self._backend.object_id(obj)
+
+    def is_ok(self, status: Any) -> bool:
+        return self._backend.is_ok(status)
+
+    def format_status(self, status: Any) -> str:
+        try:
+            message = self.call_classmethod("%SYSTEM.Status", "GetErrorText", status)
+        except (RuntimeOperationError, RuntimeError, AttributeError, TypeError):
+            return str(status)
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+        return str(status)
+
+    def check_status(self, status: Any, operation: str) -> None:
+        backend = IRISRuntime._get_backend(self)
+        if not backend.is_ok(status):
+            raise RuntimeStatusError(
+                operation,
+                self.format_status(status),
+                backend=backend.backend_name(),
+            )
+
+    def compile_class(self, class_name: str, flags: str = "fc /display=none") -> None:
+        status = self.call_classmethod("%SYSTEM.OBJ", "Compile", class_name, flags)
+        self.check_status(status, f"compile {class_name}")
+
+    def extract_python_value(self, val: Any) -> Any:
+        return IRISRuntime._get_value_codec(self).extract_python_value(val)
+
+    def extract_typed_python_value(self, val: Any, collection_kind: str | None) -> Any:
+        return IRISRuntime._get_value_codec(self).extract_typed_python_value(val, collection_kind)
+
+    def clear_reference(self, obj: Any, field_name: str, *, serial: bool = False) -> None:
+        IRISRuntime._get_value_codec(self).clear_reference(obj, field_name, serial=serial)
+
+    def decode_percent_list(self, value: Any) -> list[Any]:
+        return IRISRuntime._get_value_codec(self).decode_percent_list(value)
+
+    def inject_iris_value(
+        self,
+        obj: Any,
+        field_name: str,
+        val: Any,
+        field_meta: Any | None = None,
+    ) -> None:
+        IRISRuntime._get_value_codec(self).inject_iris_value(obj, field_name, val, field_meta)
 
 
-class _NonClosingConnectionProxy:
-    def __init__(self, connection: Any):
-        self._connection = connection
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._connection, name)
-
-    def close(self) -> None:
-        return None
-
-
-def get_runtime() -> RuntimeAdapter:
-    if _active_runtime is not None:
-        return _active_runtime
-    global _wrapper_runtime
-    if _wrapper_runtime is None:
-        _wrapper_runtime = IRISRuntimeAdapter()
-    return _wrapper_runtime
+_active_runtime: Runtime | None = None
 
 
 def _reset_model_runtime_caches() -> None:
     try:
         import iris_persistence.models as models
-    except Exception:
+    except ImportError:
         return
 
-    def walk(model_cls: Any):
+    def walk(model_cls: Any) -> Iterator[Any]:
         for subclass in model_cls.__subclasses__():
             yield subclass
             yield from walk(subclass)
@@ -78,220 +213,51 @@ def _reset_model_runtime_caches() -> None:
 
     try:
         import iris_persistence.query as query
-    except Exception:
+    except ImportError:
         return
     query._AUTO_SYNCED.clear()
 
 
-def configure_default_runtime(runtime: RuntimeAdapter | None) -> None:
-    """Override the wrapper-backed runtime, primarily for unit tests."""
+def install_runtime(runtime: Runtime) -> None:
     global _active_runtime
     _active_runtime = runtime
     _reset_model_runtime_caches()
 
 
-def configure_runtime(
-    native_connection: Any | None = None,
-    *,
-    dbapi_connection: Any | None = None,
-    iris_handle: Any | None = None,
-    mode: str | None = None,
-    install_dir: str | None = None,
-) -> None:
-    """Configure the underlying iris wrapper runtime and clear test overrides."""
-    try:
-        import iris
-    except ImportError:
-        raise ImportError("Failed to import the `iris` package.")
-
-    config: dict[str, Any] = {}
-    if mode is not None:
-        config["mode"] = mode
-    if install_dir is not None:
-        config["install_dir"] = install_dir
-    if native_connection is not None:
-        config["native_connection"] = native_connection
-    if dbapi_connection is not None:
-        config["dbapi"] = dbapi_connection
-    if iris_handle is not None:
-        config["iris"] = iris_handle
-
-    iris.runtime.configure(**config)
-    configure_default_runtime(None)
+def get_runtime() -> Runtime:
+    global _active_runtime
+    if _active_runtime is None:
+        _active_runtime = IRISRuntime()
+    return _active_runtime
 
 
-def configure(
-    native_connection: Any | None = None,
-    *,
-    dbapi_connection: Any | None = None,
-    iris_handle: Any | None = None,
-    mode: str | None = None,
-    install_dir: str | None = None,
-) -> None:
-    """Deprecated alias for :func:`configure_runtime`."""
-    warnings.warn(
-        "iris_persistence.configure() is deprecated; use configure_runtime() instead",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    configure_runtime(
-        native_connection,
-        dbapi_connection=dbapi_connection,
-        iris_handle=iris_handle,
-        mode=mode,
-        install_dir=install_dir,
-    )
+def configure_runtime(config: RuntimeConfig = RuntimeConfig()) -> Runtime:
+    wrapper_config: dict[str, Any] = {"mode": config.mode}
+    if config.install_dir is not None:
+        wrapper_config["install_dir"] = config.install_dir
+    if config.native_connection is not None:
+        wrapper_config["native_connection"] = config.native_connection
+    if config.dbapi_connection is not None:
+        wrapper_config["dbapi"] = config.dbapi_connection
+    if config.iris_handle is not None:
+        wrapper_config["iris"] = config.iris_handle
+    WrapperBackend.configure(**wrapper_config)
+
+    runtime = IRISRuntime()
+    install_runtime(runtime)
+    return runtime
 
 
-class IRISRuntimeAdapter(IRISValueAdapterMixin):
-    """Thin adapter over the iris wrapper facade plus persistence-specific value handling."""
-
-    def _runtime_state(self) -> Any | None:
-        try:
-            import iris
-        except ImportError:
-            return None
-
-        runtime = getattr(iris, "runtime", None)
-        get_state = getattr(runtime, "get", None)
-        if callable(get_state):
-            return get_state()
-        return None
-
-    def _cls(self, class_name: str):
-        try:
-            import iris
-        except ImportError:
-            raise RuntimeError("iris_persistence not configured and `iris` module is unavailable.")
-
-        state = self._runtime_state()
-        if getattr(state, "state", None) == "unavailable":
-            raise RuntimeError(
-                "No IRIS runtime is available. Configure embedded mode with "
-                "`IRISINSTALLDIR`, `iris.connect(path=...)`, or configure native "
-                "mode with `iris_persistence.configure(connection)`."
-            )
-
-        try:
-            return iris.cls(class_name)
-        except RuntimeError as exc:
-            if "iris.cls: error finding class" in str(exc):
-                raise RuntimeError(
-                    f"IRIS class {class_name!r} does not exist in the current namespace. "
-                    "If this model is defined in Python, run `Model.sync_schema()` first. "
-                    "Otherwise verify `Meta.classname` and the active IRIS namespace."
-                ) from exc
-            raise
-
-    def call_classmethod(self, class_name: str, method_name: str, *args: Any) -> Any:
-        cls_ref = self._cls(class_name)
-        return getattr(cls_ref, method_name)(*args)
-
-    def new_object(self, class_name: str) -> Any:
-        return self._cls(class_name)._New()
-
-    def save_object(self, obj: Any) -> Any:
-        return obj._Save()
-
-    def begin_transaction(self) -> None:
-        import iris
-
-        iris.tstart()
-
-    def commit_transaction(self) -> None:
-        import iris
-
-        iris.tcommit()
-
-    def rollback_transaction(self) -> None:
-        import iris
-
-        rollback_one = getattr(iris, "trollbackone", None)
-        if callable(rollback_one):
-            rollback_one()
-        else:
-            iris.trollback()
-
-    def format_status(self, status: Any) -> str:
-        try:
-            message = self.call_classmethod("%SYSTEM.Status", "GetErrorText", status)
-            if isinstance(message, str):
-                message = message.strip()
-                if message:
-                    return message
-        except Exception:
-            pass
-        return str(status)
-
-    def get_object(self, class_name: str, obj_id: str) -> Any:
-        cls_ref = self._cls(class_name)
-        return cls_ref._OpenId(obj_id)
-
-    def delete_object(self, class_name: str, obj_id: str) -> bool:
-        cls_ref = self._cls(class_name)
-        status = cls_ref._DeleteId(obj_id)
-        return self.is_ok(status)
-
-    def get_dbapi_connection(self) -> Any:
-        try:
-            import iris
-        except ImportError:
-            raise RuntimeError("iris_persistence not configured and `iris` module is unavailable.")
-
-        state = self._runtime_state()
-        if getattr(state, "dbapi", None) is not None:
-            return iris.dbapi.connect(mode="auto")
-
-        if getattr(state, "mode", None) == "native":
-            native_connection = getattr(state, "native_connection", None)
-            if native_connection is not None and callable(
-                getattr(native_connection, "cursor", None)
-            ):
-                return _NonClosingConnectionProxy(native_connection)
-
-            hostname = getattr(native_connection, "hostname", None)
-            port = getattr(native_connection, "port", None)
-            namespace = getattr(native_connection, "namespace", None)
-            username = os.environ.get("IRISUSERNAME")
-            password = os.environ.get("IRISPASSWORD")
-            if hostname and port and namespace and username and password:
-                return iris.dbapi.connect(
-                    mode="native",
-                    hostname=hostname,
-                    port=port,
-                    namespace=namespace,
-                    username=username,
-                    password=password,
-                )
-
-        return iris.dbapi.connect(mode="auto")
-
-    def invoke_method(self, obj: Any, method_name: str, *args: Any) -> Any:
-        return getattr(obj, method_name)(*args)
-
-    def set_property(self, obj: Any, prop_name: str, value: Any) -> None:
-        if isinstance(value, bool):
-            value = 1 if value else 0
-        setattr(obj, prop_name, value)
-
-    def get_property(self, obj: Any, prop_name: str) -> Any:
-        return getattr(obj, prop_name)
-
-    def get_object_id(self, obj: Any) -> str | None:
-        for method_name in ("_Id", "Id", "%Id"):
-            method = getattr(obj, method_name, None)
-            if not callable(method):
-                continue
-            val = method()
-            if val:
-                return str(val)
-        return None
-
-    def is_ok(self, status: Any) -> bool:
-        if isinstance(status, int):
-            return status != 0
-        if isinstance(status, str):
-            return not status.startswith("0 ")
-        if getattr(status, "IsOK", None):
-            return status.IsOK()
-        return False
+__all__ = [
+    "IRISRuntime",
+    "Runtime",
+    "RuntimeClassNotFoundError",
+    "RuntimeConfig",
+    "RuntimeConfigurationError",
+    "RuntimeOperationError",
+    "RuntimeStatusError",
+    "UnsupportedRuntimeOperation",
+    "configure_runtime",
+    "get_runtime",
+    "install_runtime",
+]

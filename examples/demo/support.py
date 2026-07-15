@@ -14,7 +14,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import iris_persistence
-from iris_persistence.runtime import configure_default_runtime
+from iris_persistence.runtime import install_runtime
 from iris_persistence.testing import InMemoryAdapter
 
 
@@ -22,7 +22,7 @@ def configure_demo_runtime(backend: str | None = None) -> str:
     selected = (backend or os.environ.get("IRIS_DEMO_BACKEND", "auto")).strip().lower()
 
     if selected == "fake":
-        configure_default_runtime(InMemoryAdapter())
+        install_runtime(InMemoryAdapter())
         return "fake"
 
     if selected == "remote":
@@ -38,7 +38,9 @@ def configure_demo_runtime(backend: str | None = None) -> str:
                 "Remote demos require IRISUSERNAME and IRISPASSWORD in the environment."
             )
         connection = iris.connect(host, port, namespace, username, password)
-        iris_persistence.configure_runtime(connection)
+        iris_persistence.configure_runtime(
+            iris_persistence.RuntimeConfig(native_connection=connection)
+        )
         return "remote"
 
     if selected not in {"auto", "embedded"}:
@@ -54,7 +56,7 @@ def configure_demo_runtime(backend: str | None = None) -> str:
     except Exception:
         if selected != "auto":
             raise
-        configure_default_runtime(InMemoryAdapter())
+        install_runtime(InMemoryAdapter())
         return "fake"
 
 

@@ -37,7 +37,7 @@ from iris_persistence.types import UNSET
 def _collect_live_parameters_from_sql(runtime: Any, classname: str) -> dict[str, Any]:
     rows = _dictionary_rows(
         runtime,
-        "SELECT Name, Default FROM %Dictionary.ParameterDefinition WHERE parent = ?",
+        "SELECT Name, _Default FROM %Dictionary.ParameterDefinition WHERE parent = ?",
         (classname,),
     )
     parameters = {}
@@ -252,7 +252,7 @@ class _LiveSchemaReader:
             return None
         try:
             return self.runtime.invoke_method(params, "GetAt", name)
-        except Exception:
+        except (AttributeError, RuntimeError, TypeError, ValueError):
             return None
 
     def _read_members(self) -> None:

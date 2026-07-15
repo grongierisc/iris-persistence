@@ -52,7 +52,7 @@ def test_demo_list_configure_demo_runtime_falls_back_to_fake(monkeypatch):
         {"get_dbapi_connection": broken_dbapi_connection},
     )()
 
-    monkeypatch.setattr(demo_list_fixture.iris_persistence, "configure", lambda: None)
+    monkeypatch.setattr(demo_list_fixture.iris_persistence, "configure_runtime", lambda: None)
     monkeypatch.setattr(demo_list_fixture, "get_runtime", lambda: broken_runtime)
 
     backend = configure_fixture_runtime()

@@ -300,7 +300,9 @@ class _CompiledDictionaryReader(DictionarySession):
     def _runtime_max_lengths(self, classname: str) -> dict[str, str]:
         runtime = self._runtime or get_runtime()
         class_def = runtime.get_object("%Dictionary.ClassDefinition", classname)
-        prop_list = runtime.get_property(class_def, "Properties") if class_def else None
+        if class_def is None:
+            return {}
+        prop_list = runtime.get_property(class_def, "Properties")
         if prop_list is None:
             return {}
         entries = (
@@ -360,8 +362,12 @@ class _CompiledDictionaryReader(DictionarySession):
         runtime = self._runtime or get_runtime()
         try:
             class_def = runtime.get_object("%Dictionary.ClassDefinition", classname)
-            param_list = runtime.get_property(class_def, "Parameters") if class_def else None
-            count = runtime.invoke_method(param_list, "Count") if param_list else 0
+            if class_def is None:
+                return []
+            param_list = runtime.get_property(class_def, "Parameters")
+            if param_list is None:
+                return []
+            count = runtime.invoke_method(param_list, "Count")
             candidates = (
                 runtime.invoke_method(param_list, "GetAt", index)
                 for index in range(1, count + 1)

@@ -11,6 +11,7 @@ import pytest
 
 import iris_persistence.scaffold as scaffold_module
 from iris_persistence.advanced_storage import StorageData, StorageDefinition
+from iris_persistence.scaffold.reader import _CompiledDictionaryReader, _CompiledParameter
 from iris_persistence.scaffold.render import _render_call
 
 
@@ -147,6 +148,74 @@ class _StubCollection:
 
     def GetAt(self, index):
         return self._items[index - 1]
+
+
+class _ExplosiveBoolProxy:
+    def __init__(self, **properties):
+        self.properties = properties
+
+    def __bool__(self):
+        raise UnicodeDecodeError("utf-8", b"\xe3", 0, 1, "invalid continuation byte")
+
+
+class _RuntimeDictionaryFixture:
+    def __init__(self, class_definition):
+        self.class_definition = class_definition
+
+    def get_object(self, class_name, object_id):
+        assert class_name == "%Dictionary.ClassDefinition"
+        return self.class_definition
+
+    @staticmethod
+    def get_property(obj, name):
+        if name not in obj.properties:
+            raise AttributeError(name)
+        return obj.properties[name]
+
+    @staticmethod
+    def invoke_method(obj, name, *args):
+        return getattr(obj, name)(*args)
+
+
+class _ExplosiveCollection(_ExplosiveBoolProxy):
+    def __init__(self, items):
+        super().__init__()
+        self.items = list(items)
+
+    def Count(self):
+        return len(self.items)
+
+    def GetAt(self, index):
+        return self.items[index - 1]
+
+
+class _ParameterMap:
+    def __init__(self, values):
+        self.values = values
+
+    def GetAt(self, name):
+        return self.values.get(name)
+
+
+def test_runtime_dictionary_proxies_are_never_truth_tested():
+    parameter = _ExplosiveBoolProxy(Name="CUSTOM", Default="42", Inherited=False)
+    parameter_list = _ExplosiveCollection([parameter])
+    class_definition = _ExplosiveBoolProxy(Parameters=parameter_list)
+    runtime = _RuntimeDictionaryFixture(class_definition)
+    reader = _CompiledDictionaryReader(_StubConnection({}), runtime)
+
+    assert reader._runtime_parameters("Demo.Product") == [
+        _CompiledParameter(name="CUSTOM", default="42")
+    ]
+
+
+def test_runtime_max_lengths_does_not_truth_test_dictionary_proxies():
+    prop = _ExplosiveBoolProxy(Name="Name", Parameters=_ParameterMap({"MAXLEN": "120"}))
+    class_definition = _ExplosiveBoolProxy(Properties=_ExplosiveCollection([prop]))
+    runtime = _RuntimeDictionaryFixture(class_definition)
+    reader = _CompiledDictionaryReader(_StubConnection({}), runtime)
+
+    assert reader._runtime_max_lengths("Demo.Product") == {"Name": "120"}
 
 
 class _StubRuntimeWithParameters(_StubRuntime):

@@ -430,7 +430,7 @@ class TestIRISRuntimeAdapter(unittest.TestCase):
 
         try:
             with patch.dict("sys.modules", {"iris": fake_iris}):
-                runtime_module.configure(
+                runtime_module.configure_runtime(
                     native_connection="native-conn",
                     dbapi_connection="dbapi-conn",
                 )

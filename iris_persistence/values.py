@@ -11,6 +11,16 @@ from iris_persistence.field_utils import (
     is_percent_list_field,
 )
 
+_DYNAMIC_CLASSES = frozenset({"%Library.DynamicObject", "%Library.DynamicArray"})
+_STREAM_CLASSES = frozenset(
+    {
+        "%Stream.GlobalBinary",
+        "%Stream.GlobalCharacter",
+        "%Stream.FileBinary",
+        "%Stream.FileCharacter",
+    }
+)
+
 
 class IRISValueAdapterMixin:
     """Persistence-specific IRIS value conversion shared by runtime adapters."""
@@ -46,24 +56,29 @@ class IRISValueAdapterMixin:
             clear = getattr(current_prop, "Clear", None)
             if callable(clear):
                 clear()
-
             if collection_kind == "list" and isinstance(val, list):
-                if not callable(getattr(current_prop, "Insert", None)):
-                    return False
-                for item in val:
-                    getattr(current_prop, "Insert")(item)
-                return True
-
+                return self._populate_list(current_prop, val)
             if collection_kind == "array" and isinstance(val, dict):
-                if not callable(getattr(current_prop, "SetAt", None)):
-                    return False
-                for key, item in val.items():
-                    getattr(current_prop, "SetAt")(item, str(key))
-                return True
+                return self._populate_array(current_prop, val)
         except Exception:
             return False
-
         return False
+
+    @staticmethod
+    def _populate_list(target: Any, values: list[Any]) -> bool:
+        if not callable(getattr(target, "Insert", None)):
+            return False
+        for item in values:
+            getattr(target, "Insert")(item)
+        return True
+
+    @staticmethod
+    def _populate_array(target: Any, values: dict[Any, Any]) -> bool:
+        if not callable(getattr(target, "SetAt", None)):
+            return False
+        for key, item in values.items():
+            getattr(target, "SetAt")(item, str(key))
+        return True
 
     def _native_handles(self, obj: Any) -> tuple[Any, Any, bool] | None:
         oref = obj._oref if hasattr(obj, "_oref") else obj
@@ -240,38 +255,68 @@ class IRISValueAdapterMixin:
         return self.call_classmethod("%Library.List", "OdbcToLogical", row.getvalue())
 
     def _extract_collection_value(self, val: Any, expected_kind: str | None = None) -> Any:
-        if expected_kind != "list" and (
-            callable(getattr(val, "Count", None))
-            and callable(getattr(val, "Next", None))
-            and callable(getattr(val, "GetAt", None))
-        ):
-            try:
-                key = getattr(val, "Next")("")
-                items: dict[str, Any] = {}
-                while key not in ("", None):
-                    items[str(key)] = self.extract_python_value(getattr(val, "GetAt")(key))
-                    key = getattr(val, "Next")(key)
-                return items
-            except Exception:
-                if expected_kind == "array":
-                    return None
-
-        if (
-            expected_kind in (None, "list")
-            and callable(getattr(val, "Count", None))
-            and callable(getattr(val, "GetAt", None))
-        ):
-            try:
-                total = getattr(val, "Count")()
-                if isinstance(total, int):
-                    return [
-                        self.extract_python_value(getattr(val, "GetAt")(index))
-                        for index in range(1, total + 1)
-                    ]
-            except Exception:
-                pass
-
+        if expected_kind != "list" and self._supports_methods(val, "Count", "Next", "GetAt"):
+            array = self._extract_array_value(val)
+            if array is not None or expected_kind == "array":
+                return array
+        if expected_kind in (None, "list") and self._supports_methods(val, "Count", "GetAt"):
+            return self._extract_list_value(val)
         return None
+
+    @staticmethod
+    def _supports_methods(value: Any, *names: str) -> bool:
+        return all(callable(getattr(value, name, None)) for name in names)
+
+    def _extract_array_value(self, value: Any) -> dict[str, Any] | None:
+        try:
+            key = value.Next("")
+            items: dict[str, Any] = {}
+            while key not in ("", None):
+                items[str(key)] = self.extract_python_value(value.GetAt(key))
+                key = value.Next(key)
+            return items
+        except Exception:
+            return None
+
+    def _extract_list_value(self, value: Any) -> list[Any] | None:
+        try:
+            total = value.Count()
+            if not isinstance(total, int):
+                return None
+            return [self.extract_python_value(value.GetAt(index)) for index in range(1, total + 1)]
+        except Exception:
+            return None
+
+    @staticmethod
+    def _iris_class_name(value: Any) -> str | None:
+        if not hasattr(value, "_ClassName"):
+            return type(value).__name__
+        try:
+            return value._ClassName(1)
+        except Exception:
+            return None
+
+    def _extract_dynamic_json(self, value: Any) -> Any:
+        try:
+            stream = self.call_classmethod("%Stream.GlobalCharacter", "_New")
+            value._ToJSON(stream)
+            stream.Rewind()
+            return json.loads(stream.Read())
+        except Exception:
+            return value
+
+    @staticmethod
+    def _extract_stream(value: Any, iris_class: str) -> Any:
+        try:
+            value.Rewind()
+            size_value = getattr(value, "Size", 0)
+            size = size_value() if callable(size_value) else size_value
+            content = value.Read(size) if size and size > 0 else b""
+            if isinstance(content, str) and "Binary" in iris_class:
+                return content.encode("latin1")
+            return content
+        except Exception:
+            return value
 
     def extract_python_value(self, val: Any, expected_collection_kind: str | None = None) -> Any:
         if type(val) in PYTHON_SCALAR_TYPES:
@@ -279,40 +324,12 @@ class IRISValueAdapterMixin:
         extracted_collection = self._extract_collection_value(val, expected_collection_kind)
         if extracted_collection is not None:
             return extracted_collection
-
-        iris_class = None
-        if hasattr(val, "_ClassName"):
-            try:
-                iris_class = val._ClassName(1)
-            except Exception:
-                pass
-        else:
-            iris_class = type(val).__name__
-
-        if iris_class in ("%Library.DynamicObject", "%Library.DynamicArray"):
-            try:
-                stream = self.call_classmethod("%Stream.GlobalCharacter", "_New")
-                val._ToJSON(stream)
-                stream.Rewind()
-                val = json.loads(stream.Read())
-            except Exception:
-                pass
-        elif iris_class in (
-            "%Stream.GlobalBinary",
-            "%Stream.GlobalCharacter",
-            "%Stream.FileBinary",
-            "%Stream.FileCharacter",
-        ):
-            try:
-                val.Rewind()
-                size_val = getattr(val, "Size", 0)
-                size = size_val() if callable(size_val) else size_val
-                content = val.Read(size) if size and size > 0 else b""
-                if isinstance(content, str) and "Binary" in iris_class:
-                    content = content.encode("latin1")
-                val = content
-            except Exception:
-                pass
+        iris_class = self._iris_class_name(val)
+        if iris_class in _DYNAMIC_CLASSES:
+            return self._extract_dynamic_json(val)
+        if iris_class in _STREAM_CLASSES:
+            assert iris_class is not None
+            return self._extract_stream(val, iris_class)
         return val
 
     def extract_typed_python_value(self, val: Any, collection_kind: str | None) -> Any:

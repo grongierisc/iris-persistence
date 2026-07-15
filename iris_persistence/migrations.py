@@ -1,22 +1,18 @@
 from __future__ import annotations
 
-import datetime as _datetime
-import getpass
 import hashlib
 import importlib
 import json
-import os
-import socket
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence, cast
 
+from iris_persistence.migration_backup import _write_apply_backup
 from iris_persistence.models import Model
 from iris_persistence.runtime import get_runtime
 from iris_persistence.schema import (
     SchemaOperation,
     SchemaState,
-    _collect_live_schema_state,
     _run_with_schema_transaction,
     _sync_schema_model,
     _sync_schema_state,
@@ -249,76 +245,11 @@ def _states_fingerprint(states: Sequence[SchemaState]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _utc_now() -> str:
-    return _datetime.datetime.now(_datetime.timezone.utc).isoformat()
-
-
-def _backup_id(plan: MigrationPlan) -> str:
-    timestamp = _datetime.datetime.now(_datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return f"{timestamp}-{plan.plan_fingerprint[:12]}"
-
-
-def _backup_root(backup_dir: str | Path, plan: MigrationPlan) -> Path:
-    return Path(backup_dir) / _backup_id(plan)
-
-
 def _call_status(runtime: Any, class_name: str, method_name: str, *args: Any) -> Any:
     status = runtime.call_classmethod(class_name, method_name, *args)
     if not runtime.is_ok(status):
         raise BackupRestoreError(runtime.format_status(status))
     return status
-
-
-def _write_apply_backup(
-    *,
-    runtime: Any,
-    plan: MigrationPlan,
-    models: Sequence[type[Model]],
-    backup_dir: str | Path,
-) -> Path:
-    root = _backup_root(backup_dir, plan)
-    root.mkdir(parents=True, exist_ok=False)
-
-    live_states = [
-        _collect_live_schema_state(runtime, model._classname)
-        for model in sorted(models, key=lambda item: item._classname)
-    ]
-    class_states = [
-        {
-            "classname": state.classname,
-            "existed": bool(state.superclasses),
-        }
-        for state in live_states
-    ]
-
-    plan.save(root / "plan.json")
-    (root / "schema_states.json").write_text(
-        json.dumps(
-            [state.to_dict() for state in live_states],
-            sort_keys=True,
-            indent=2,
-            default=str,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    metadata = {
-        "backup_id": root.name,
-        "created_at": _utc_now(),
-        "user": getpass.getuser(),
-        "host": socket.gethostname(),
-        "cwd": os.getcwd(),
-        "target_revision": plan.target_revision,
-        "plan_fingerprint": plan.plan_fingerprint,
-        "live_schema_fingerprint": plan.live_schema_fingerprint,
-        "target_schema_fingerprint": plan.target_schema_fingerprint,
-        "class_states": class_states,
-    }
-    (root / "metadata.json").write_text(
-        json.dumps(metadata, sort_keys=True, indent=2, default=str) + "\n",
-        encoding="utf-8",
-    )
-    return root
 
 
 def _resolve_models(models: Iterable[type[Model]] | None) -> tuple[type[Model], ...]:
@@ -340,9 +271,7 @@ def create_plan(
     model_tuple = _resolve_models(models)
     diffs = [diff_schema(model_cls) for model_cls in model_tuple]
     operations = tuple(
-        MigrationOperation.from_schema(operation)
-        for diff in diffs
-        for operation in diff.operations
+        MigrationOperation.from_schema(operation) for diff in diffs for operation in diff.operations
     )
     live_states = tuple(diff.before_state for diff in diffs if diff.before_state is not None)
     target_states = tuple(diff.after_state for diff in diffs if diff.after_state is not None)
@@ -390,9 +319,7 @@ def apply_plan(
     if isinstance(plan, dict):
         plan = MigrationPlan.from_dict(plan)
 
-    blocked = tuple(
-        operation for operation in plan.operations if operation.safety == "blocked"
-    )
+    blocked = tuple(operation for operation in plan.operations if operation.safety == "blocked")
     if blocked:
         return ApplyResult(
             status="blocked",
@@ -473,8 +400,7 @@ def rollback_backup(backup_dir: str | Path) -> RollbackResult:
     if not states_path.exists():
         raise BackupRestoreError(f"Backup schema states not found: {states_path}")
     states = tuple(
-        SchemaState.from_dict(item)
-        for item in json.loads(states_path.read_text(encoding="utf-8"))
+        SchemaState.from_dict(item) for item in json.loads(states_path.read_text(encoding="utf-8"))
     )
 
     runtime = get_runtime()

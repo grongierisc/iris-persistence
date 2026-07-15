@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from typing import Any, Protocol
 
 from iris_persistence.values import IRISValueAdapterMixin
@@ -89,7 +90,7 @@ def configure_default_runtime(runtime: RuntimeAdapter | None) -> None:
     _reset_model_runtime_caches()
 
 
-def configure(
+def configure_runtime(
     native_connection: Any | None = None,
     *,
     dbapi_connection: Any | None = None,
@@ -117,6 +118,29 @@ def configure(
 
     iris.runtime.configure(**config)
     configure_default_runtime(None)
+
+
+def configure(
+    native_connection: Any | None = None,
+    *,
+    dbapi_connection: Any | None = None,
+    iris_handle: Any | None = None,
+    mode: str | None = None,
+    install_dir: str | None = None,
+) -> None:
+    """Deprecated alias for :func:`configure_runtime`."""
+    warnings.warn(
+        "iris_persistence.configure() is deprecated; use configure_runtime() instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    configure_runtime(
+        native_connection,
+        dbapi_connection=dbapi_connection,
+        iris_handle=iris_handle,
+        mode=mode,
+        install_dir=install_dir,
+    )
 
 
 class IRISRuntimeAdapter(IRISValueAdapterMixin):

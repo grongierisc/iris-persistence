@@ -21,6 +21,9 @@ class Person(Model, persistent=True):
 Person.sync_schema()
 person = Person(Name="Ada")
 person.save()
+
+iris_object = person.to_iris()
+copy = Person.from_iris(iris_object)
 ```
 
 `managed` adds, updates, and removes Python-owned properties, indexes, and parameters without
@@ -97,8 +100,13 @@ Non-location optimizer statistics can be changed explicitly through the advanced
 ```python
 from iris_persistence.advanced_storage import (
     StorageProperty,
+    inspect_existing_storage,
     tune_existing_storage_statistics,
 )
+
+before = inspect_existing_storage("App.Person")
+name_stats = {item.name: item for item in before.properties}["Name"]
+print(before.data_location, name_stats.selectivity)
 
 result = tune_existing_storage_statistics(
     "App.Person",
@@ -111,9 +119,15 @@ result = tune_existing_storage_statistics(
         ),
     ),
 )
+
+after = inspect_existing_storage("App.Person")
 ```
 
-This opens the active writable `%Dictionary.StorageDefinition`, updates only storage-property
+`inspect_existing_storage()` returns a typed, read-only `StorageDefinition` snapshot from the
+active writable dictionary storage. Pass `storage_name="CustomStorage"` to inspect a named
+definition instead. It does not use compiled SQL projections and performs no mutation.
+
+`tune_existing_storage_statistics()` opens the active writable `%Dictionary.StorageDefinition`, updates only storage-property
 statistics, saves, and recompiles the class. It cannot change any data, ID, index, stream,
 counter, version, or extent location. The complete runnable example is
 [examples/advanced_existing_statistics.py](examples/advanced_existing_statistics.py):
@@ -264,10 +278,13 @@ connection:
 ```python
 import iris_persistence
 
-iris_persistence.configure(connection)
+iris_persistence.configure_runtime(connection)
 ```
 
 Both runtime paths use the same model and schema APIs.
+
+In 0.4, the root `configure`, `materialize`, and `from_iris` names remain compatibility wrappers
+and emit `DeprecationWarning`; use `configure_runtime`, `Model.to_iris`, and `Model.from_iris`.
 
 ## Development
 

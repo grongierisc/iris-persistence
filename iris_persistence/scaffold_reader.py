@@ -107,6 +107,32 @@ class _CompiledIndex:
     primary_key: bool
 
 
+_PROPERTY_PROJECTIONS = (
+    (
+        "Identity, Relationship, OnDelete, Inverse, Transient, Storable, MultiDimensional",
+        (
+            "identity",
+            "relationship",
+            "on_delete",
+            "inverse",
+            "transient",
+            "storable",
+            "multi_dimensional",
+        ),
+    ),
+    (
+        "SqlListDelimiter, SqlListType, SqlComputeCode, SqlComputeOnChange, SqlComputed",
+        (
+            "sql_list_delimiter",
+            "sql_list_type",
+            "sql_compute_code",
+            "sql_compute_on_change",
+            "sql_computed",
+        ),
+    ),
+)
+
+
 class _CompiledDictionaryReader(DictionarySession):
     """Thin reader for the %Dictionary compiled metadata used by scaffolding."""
 
@@ -192,127 +218,101 @@ class _CompiledDictionaryReader(DictionarySession):
         )
 
     def list_properties(self, classname: str) -> list[_CompiledProperty]:
-        property_rows = self._fetchall(
-            (
-                "SELECT Name, Type, Required, InitialExpression, Parameters, "
-                "Collection, SqlFieldName, ReadOnly "
-                "FROM %Dictionary.CompiledProperty WHERE parent = ?"
-            ),
+        rows = self._fetchall(
+            "SELECT Name, Type, Required, InitialExpression, Parameters, "
+            "Collection, SqlFieldName, ReadOnly "
+            "FROM %Dictionary.CompiledProperty WHERE parent = ?",
             (classname,),
         )
-        metadata_by_name: dict[str, dict[str, Any]] = {}
-        projections = (
-            (
-                "Identity, Relationship, OnDelete, Inverse, Transient, Storable, MultiDimensional",
-                (
-                    "identity",
-                    "relationship",
-                    "on_delete",
-                    "inverse",
-                    "transient",
-                    "storable",
-                    "multi_dimensional",
-                ),
-            ),
-            (
-                "SqlListDelimiter, SqlListType, SqlComputeCode, SqlComputeOnChange, SqlComputed",
-                (
-                    "sql_list_delimiter",
-                    "sql_list_type",
-                    "sql_compute_code",
-                    "sql_compute_on_change",
-                    "sql_computed",
-                ),
-            ),
+        metadata = self._property_metadata(classname)
+        properties = [
+            self._compiled_property(row, metadata)
+            for row in rows
+            if not str(row[0]).startswith("%")
+        ]
+        return sorted(
+            self._fill_missing_max_lengths(classname, properties), key=lambda item: item.name
         )
-        for columns, keys in projections:
-            projection_rows = self._optional_rows(
+
+    def _property_metadata(self, classname: str) -> dict[str, dict[str, Any]]:
+        result: dict[str, dict[str, Any]] = {}
+        for columns, keys in _PROPERTY_PROJECTIONS:
+            rows = self._optional_rows(
                 f"SELECT Name, {columns} FROM %Dictionary.CompiledProperty WHERE parent = ?",
                 (classname,),
             )
-            for row in projection_rows:
-                metadata_by_name.setdefault(str(row[0]), {}).update(zip(keys, row[1:]))
-        properties = []
-        for (
-            prop_name,
-            prop_type,
-            required,
-            init_exp,
-            params_raw,
-            collection,
-            sql_field_name,
-            readonly,
-        ) in property_rows:
-            if str(prop_name).startswith("%"):
+            for row in rows:
+                result.setdefault(str(row[0]), {}).update(zip(keys, row[1:]))
+        return result
+
+    def _compiled_property(
+        self, row: tuple[Any, ...], metadata_by_name: dict[str, dict[str, Any]]
+    ) -> _CompiledProperty:
+        name, iris_type, required, initial, params, collection, sql_name, readonly = row
+        metadata = metadata_by_name.get(str(name), {})
+        parsed_params = _parse_iris_dict(params) if params else {}
+        return _CompiledProperty(
+            name=name,
+            iris_type=iris_type,
+            python_type=python_annotation_for_iris_type(iris_type),
+            required=coerce_bool(required),
+            default=initial if initial != '""' and initial else None,
+            maxlen=parsed_params.get("MAXLEN"),
+            readonly=coerce_bool(readonly),
+            collection=_optional_str(collection),
+            sql_field_name=None if not sql_name or str(sql_name) == str(name) else str(sql_name),
+            identity=coerce_bool(metadata.get("identity")),
+            relationship=_optional_str(metadata.get("relationship")),
+            on_delete=_optional_str(metadata.get("on_delete")),
+            inverse=_optional_str(metadata.get("inverse")),
+            transient=coerce_bool(metadata.get("transient")),
+            storable=True
+            if metadata.get("storable") is None
+            else coerce_bool(metadata["storable"]),
+            multi_dimensional=coerce_bool(metadata.get("multi_dimensional")),
+            sql_list_delimiter=_optional_str(metadata.get("sql_list_delimiter")),
+            sql_list_type=_optional_str(metadata.get("sql_list_type")),
+            sql_compute_code=_optional_str(metadata.get("sql_compute_code")),
+            sql_compute_on_change=_optional_str(metadata.get("sql_compute_on_change")),
+            sql_computed=coerce_bool(metadata.get("sql_computed")),
+        )
+
+    def _fill_missing_max_lengths(
+        self, classname: str, properties: list[_CompiledProperty]
+    ) -> list[_CompiledProperty]:
+        if not properties or all(item.maxlen is not None for item in properties):
+            return properties
+        try:
+            max_lengths = self._runtime_max_lengths(classname)
+        except Exception:
+            return properties
+        return [
+            item
+            if item.maxlen is not None or item.name not in max_lengths
+            else replace(item, maxlen=max_lengths[item.name])
+            for item in properties
+        ]
+
+    def _runtime_max_lengths(self, classname: str) -> dict[str, str]:
+        runtime = self._runtime or get_runtime()
+        class_def = runtime.get_object("%Dictionary.ClassDefinition", classname)
+        prop_list = runtime.get_property(class_def, "Properties") if class_def else None
+        if prop_list is None:
+            return {}
+        result: dict[str, str] = {}
+        for index in range(1, runtime.invoke_method(prop_list, "Count") + 1):
+            prop = runtime.invoke_method(prop_list, "GetAt", index)
+            name = runtime.get_property(prop, "Name")
+            params = runtime.get_property(prop, "Parameters") if name else None
+            if params is None:
                 continue
-            parsed_params = _parse_iris_dict(params_raw) if params_raw else {}
-            metadata = metadata_by_name.get(str(prop_name), {})
-            properties.append(
-                _CompiledProperty(
-                    name=prop_name,
-                    iris_type=prop_type,
-                    python_type=python_annotation_for_iris_type(prop_type),
-                    required=coerce_bool(required),
-                    default=init_exp if init_exp != '""' and init_exp else None,
-                    maxlen=parsed_params.get("MAXLEN"),
-                    readonly=coerce_bool(readonly),
-                    collection=_optional_str(collection),
-                    sql_field_name=(
-                        None
-                        if not sql_field_name or str(sql_field_name) == str(prop_name)
-                        else str(sql_field_name)
-                    ),
-                    identity=coerce_bool(metadata.get("identity")),
-                    relationship=_optional_str(metadata.get("relationship")),
-                    on_delete=_optional_str(metadata.get("on_delete")),
-                    inverse=_optional_str(metadata.get("inverse")),
-                    transient=coerce_bool(metadata.get("transient")),
-                    storable=(
-                        True
-                        if metadata.get("storable") is None
-                        else coerce_bool(metadata.get("storable"))
-                    ),
-                    multi_dimensional=coerce_bool(metadata.get("multi_dimensional")),
-                    sql_list_delimiter=_optional_str(metadata.get("sql_list_delimiter")),
-                    sql_list_type=_optional_str(metadata.get("sql_list_type")),
-                    sql_compute_code=_optional_str(metadata.get("sql_compute_code")),
-                    sql_compute_on_change=_optional_str(metadata.get("sql_compute_on_change")),
-                    sql_computed=coerce_bool(metadata.get("sql_computed")),
-                )
-            )
-        if properties and any(item.maxlen is None for item in properties):
             try:
-                runtime = self._runtime or get_runtime()
-                class_def = runtime.get_object("%Dictionary.ClassDefinition", classname)
-                if class_def is not None:
-                    prop_list = runtime.get_property(class_def, "Properties")
-                    if prop_list is not None:
-                        count = runtime.invoke_method(prop_list, "Count")
-                        maxlen_by_name: dict[str, str] = {}
-                        for index in range(1, count + 1):
-                            prop = runtime.invoke_method(prop_list, "GetAt", index)
-                            name = runtime.get_property(prop, "Name")
-                            if not name:
-                                continue
-                            params = runtime.get_property(prop, "Parameters")
-                            if params is None:
-                                continue
-                            try:
-                                maxlen = runtime.invoke_method(params, "GetAt", "MAXLEN")
-                            except Exception:
-                                maxlen = None
-                            if maxlen not in (None, ""):
-                                maxlen_by_name[str(name)] = str(maxlen)
-                        if maxlen_by_name:
-                            properties = [
-                                item
-                                if item.maxlen is not None or item.name not in maxlen_by_name
-                                else replace(item, maxlen=maxlen_by_name[item.name])
-                                for item in properties
-                            ]
+                maxlen = runtime.invoke_method(params, "GetAt", "MAXLEN")
             except Exception:
-                pass
-        return sorted(properties, key=lambda item: item.name)
+                maxlen = None
+            if maxlen not in (None, ""):
+                result[str(name)] = str(maxlen)
+        return result
 
     def list_parameters(self, classname: str) -> list[_CompiledParameter]:
         params = self._normalize_parameters(

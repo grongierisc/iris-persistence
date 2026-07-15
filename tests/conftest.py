@@ -60,7 +60,7 @@ def configured_iris_runtime(request):
                 "remote IRIS backend requires env vars: " + ", ".join(missing)
             )
         connection = iris.connect(host, int(port), namespace, username, password)
-        iris_persistence.configure(connection)
+        iris_persistence.configure_runtime(connection)
         try:
             yield "remote"
         finally:
@@ -68,10 +68,10 @@ def configured_iris_runtime(request):
             if callable(close):
                 close()
             try:
-                iris_persistence.configure()
+                iris_persistence.configure_runtime()
             except Exception:
                 pass
         return
 
-    iris_persistence.configure()
+    iris_persistence.configure_runtime()
     yield "embedded"

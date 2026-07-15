@@ -14,7 +14,7 @@ def configure_fixture_runtime(*, backend: str = "auto") -> str:
         return "fake"
 
     try:
-        iris_persistence.configure()
+        iris_persistence.configure_runtime()
         get_runtime().get_dbapi_connection()
         return "iris"
     except Exception:

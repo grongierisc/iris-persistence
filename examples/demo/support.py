@@ -38,7 +38,7 @@ def configure_demo_runtime(backend: str | None = None) -> str:
                 "Remote demos require IRISUSERNAME and IRISPASSWORD in the environment."
             )
         connection = iris.connect(host, port, namespace, username, password)
-        iris_persistence.configure(connection)
+        iris_persistence.configure_runtime(connection)
         return "remote"
 
     if selected not in {"auto", "embedded"}:
@@ -47,7 +47,7 @@ def configure_demo_runtime(backend: str | None = None) -> str:
         )
 
     try:
-        iris_persistence.configure()
+        iris_persistence.configure_runtime()
         import iris
 
         return str(getattr(iris.runtime, "mode", "embedded"))

@@ -670,6 +670,7 @@ def scaffold_from_iris(
     include_related: bool = False,
     scaffold_selectivity: bool = False,
     return_result: bool = False,
+    best_effort: bool = False,
 ) -> list[str] | ScaffoldResult:
     """Scaffold typed models from live IRIS classes."""
     runtime = get_runtime()
@@ -721,10 +722,14 @@ def scaffold_from_iris(
                 try:
                     parameters = reader.list_parameters(class_info.name)
                 except Exception as exc:
+                    if not best_effort:
+                        raise
                     _record_warning(result, "parameters", class_info.name, exc)
                 try:
                     indexes = reader.list_indexes(class_info.name)
                 except Exception as exc:
+                    if not best_effort:
+                        raise
                     _record_warning(result, "indexes", class_info.name, exc)
                 try:
                     storage = reader.get_storage(
@@ -749,6 +754,8 @@ def scaffold_from_iris(
                             )
                         storage_sql_maps = reader.list_storage_sql_maps(storage_parent)
                 except Exception as exc:
+                    if not best_effort:
+                        raise
                     _record_warning(result, "storage", class_info.name, exc)
 
             module_path = output_path / f"{module_names[class_info.name]}.py"

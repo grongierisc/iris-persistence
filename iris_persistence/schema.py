@@ -724,31 +724,21 @@ def _sync_schema_state(runtime: Any, state: SchemaState | dict[str, Any]) -> Non
 
 
 def _run_with_schema_transaction(runtime: Any, action: Callable[[], Any]) -> Any:
-    begin_transaction = getattr(runtime, "begin_transaction", None)
-    commit_transaction = getattr(runtime, "commit_transaction", None)
-    rollback_transaction = getattr(runtime, "rollback_transaction", None)
-    if not (
-        callable(begin_transaction)
-        and callable(commit_transaction)
-        and callable(rollback_transaction)
-    ):
-        return action()
-
-    begin_transaction()
+    runtime.begin_transaction()
     try:
         result = action()
     except Exception:
         try:
-            rollback_transaction()
+            runtime.rollback_transaction()
         except Exception:
             pass
         raise
 
     try:
-        commit_transaction()
+        runtime.commit_transaction()
     except Exception:
         try:
-            rollback_transaction()
+            runtime.rollback_transaction()
         except Exception:
             pass
         raise

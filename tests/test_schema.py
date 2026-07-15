@@ -120,6 +120,15 @@ class _RecordingRuntime:
     def delete_object(self, class_name, obj_id):
         return True
 
+    def begin_transaction(self):
+        pass
+
+    def commit_transaction(self):
+        pass
+
+    def rollback_transaction(self):
+        pass
+
     def get_dbapi_connection(self):
         raise AssertionError("dbapi connection not needed for schema sync test")
 
@@ -558,13 +567,11 @@ def test_sync_schema_managed_removes_owned_members_without_rebuilding_class(monk
 
     ManagedSchemaFixture.sync_schema()
 
-    assert [
-        parameter.Name for parameter in runtime.class_definition.Parameters.items
-    ] == ["NEWPARAM"]
+    assert [parameter.Name for parameter in runtime.class_definition.Parameters.items] == [
+        "NEWPARAM"
+    ]
     existing_new_name = next(
-        prop
-        for prop in runtime.class_definition.Properties.items
-        if prop.Name == "NewName"
+        prop for prop in runtime.class_definition.Properties.items if prop.Name == "NewName"
     )
     assert [prop.Name for prop in runtime.class_definition.Properties.items] == [
         "NewName",
@@ -573,9 +580,7 @@ def test_sync_schema_managed_removes_owned_members_without_rebuilding_class(monk
     ]
     assert existing_new_name.Type == "%Library.String"
     existing_items = next(
-        prop
-        for prop in runtime.class_definition.Properties.items
-        if prop.Name == "Items"
+        prop for prop in runtime.class_definition.Properties.items if prop.Name == "Items"
     )
     assert existing_items.Type == "%Library.String"
     assert existing_items.Collection == "list"
@@ -740,9 +745,7 @@ def test_sync_schema_extend_opens_existing_user_class_for_unqualified_model(monk
 
     ExistingUnqualifiedSchemaFixture.sync_schema()
 
-    assert "%Dictionary.ClassDefinition" not in [
-        class_name for class_name, _obj in runtime.created
-    ]
+    assert "%Dictionary.ClassDefinition" not in [class_name for class_name, _obj in runtime.created]
     prop = runtime.class_definition.Properties.items[0]
     assert prop.Name == "Payload"
     assert prop.parent == "User.ExistingUnqualifiedSchemaFixture"

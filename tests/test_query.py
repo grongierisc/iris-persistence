@@ -134,6 +134,13 @@ class _SaveRuntime:
     def extract_python_value(self, val):
         return val
 
+    def extract_typed_python_value(self, val, collection_kind):
+        return val
+
+    def clear_reference(self, obj, field_name, *, serial=False):
+        self.set_property(obj, field_name, "")
+        return True
+
 
 class _NativeOref:
     def __init__(self):
@@ -199,6 +206,10 @@ class _ReferenceClearRuntime(_SaveRuntime):
     def invoke_method(self, obj, method_name, *args):
         return getattr(obj, method_name)(*args)
 
+    def clear_reference(self, obj, field_name, *, serial=False):
+        self.invoke_method(obj, f"{field_name}SetObjectId", "")
+        return True
+
 
 class _NativeAndReferenceClearObject(_ReferenceClearObject):
     def __init__(self):
@@ -211,6 +222,14 @@ class _NativeAndReferenceClearRuntime(_ReferenceClearRuntime):
     def __init__(self):
         super().__init__()
         self.obj = _NativeAndReferenceClearObject()
+
+    def clear_reference(self, obj, field_name, *, serial=False):
+        return runtime_module.IRISRuntimeAdapter.clear_reference(
+            self,
+            obj,
+            field_name,
+            serial=serial,
+        )
 
 
 class _NativeReferenceMethodOref(_NativeOref):

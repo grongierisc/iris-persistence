@@ -319,16 +319,13 @@ def test_list_fixture_scaffold_round_trip(loaded_objectscript_fixtures, tmp_path
     if list_fixture.source != "cls":
         pytest.skip("requires loading the ObjectScript list fixture directly from .cls metadata")
 
-    try:
-        result = scaffold_from_iris(
-            "Demo.ListFixture",
-            str(tmp_path),
-            extract_meta=True,
-            include_related=True,
-            return_result=True,
-        )
-    except Exception as exc:
-        pytest.skip(f"requires live IRIS scaffold access: {exc}")
+    result = scaffold_from_iris(
+        "Demo.ListFixture",
+        str(tmp_path),
+        extract_meta=True,
+        include_related=True,
+        return_result=True,
+    )
 
     assert result.warnings == []
     assert {Path(path).name for path in result.files} >= {"listfixture.py", "listfixtureitem.py"}
@@ -455,8 +452,7 @@ def test_scaffold_selectivity_option_for_demo_demo(
     conn = runtime.get_dbapi_connection()
     cur = conn.cursor()
     cur.execute(
-        "SELECT Name, Selectivity "
-        "FROM %Dictionary.StoragePropertyDefinition WHERE parent = ?",
+        "SELECT Name, Selectivity FROM %Dictionary.StoragePropertyDefinition WHERE parent = ?",
         ("Demo.Demo||CustomStorage",),
     )
     expected_rows = {
@@ -566,8 +562,7 @@ def test_healthshare_request_scaffold_handles_initial_expression_and_related_req
     )
     assert (
         "Request: Any | None = "
-        'Field(iris_type="HS.FHIRServer.API.Data.Request", default=None)'
-        in default_text
+        'Field(iris_type="HS.FHIRServer.API.Data.Request", default=None)' in default_text
     )
     assert ' = ##class(%ZHSLIB.HealthShareMgr).GetComponentVersion("HSLIB")' not in default_text
 
@@ -591,6 +586,5 @@ def test_healthshare_request_scaffold_handles_initial_expression_and_related_req
     assert "from data_request import DataRequest" in related_text
     assert (
         "Request: DataRequest | None = "
-        'Field(iris_type="HS.FHIRServer.API.Data.Request", default=None)'
-        in related_text
+        'Field(iris_type="HS.FHIRServer.API.Data.Request", default=None)' in related_text
     )

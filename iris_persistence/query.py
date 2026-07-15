@@ -94,11 +94,9 @@ def _build_model_from_iris_obj(
             if model_field._is_percent_list:
                 d[field_name] = runtime.decode_percent_list(raw_val)
             else:
-                typed_extract = getattr(runtime, "extract_typed_python_value", None)
-                python_val = (
-                    typed_extract(raw_val, model_field._collection_kind)
-                    if callable(typed_extract)
-                    else runtime.extract_python_value(raw_val)
+                python_val = runtime.extract_typed_python_value(
+                    raw_val,
+                    model_field._collection_kind,
                 )
                 if python_val in (None, 0) and (
                     model_field._is_scalar_string or model_field.declared_type is str
@@ -208,37 +206,6 @@ def _nullable_reference_has_no_initial_value(model_field: Any) -> bool:
     return getattr(field_meta, "initial_expression", None) is None and (
         default is UNSET or default is None
     )
-
-
-def _clear_nullable_model_reference(
-    runtime: Any,
-    iris_obj: Any,
-    field_name: str,
-    model_field: Any,
-) -> bool:
-    clear_reference = getattr(runtime, "clear_reference", None)
-    if callable(clear_reference):
-        return clear_reference(
-            iris_obj,
-            field_name,
-            serial=is_serial_model_type(model_field.declared_type),
-        )
-    if not is_serial_model_type(model_field.declared_type):
-        for method_name, value in (
-            (f"{field_name}SetObjectId", ""),
-            (f"{field_name}SetObjectId", None),
-            (f"{field_name}SetObject", None),
-        ):
-            try:
-                runtime.invoke_method(iris_obj, method_name, value)
-                return True
-            except Exception:
-                continue
-    try:
-        runtime.set_property(iris_obj, field_name, "")
-        return True
-    except Exception:
-        return False
 
 
 def _resolve_sql_field_name(model_cls: Type[TModel], field_name: str) -> str:
@@ -464,11 +431,10 @@ def _populate_iris_object(
                         and _nullable_reference_has_no_initial_value(model_field)
                     ):
                         continue
-                    if _clear_nullable_model_reference(
-                        runtime,
+                    if runtime.clear_reference(
                         iris_obj,
                         field_name,
-                        model_field,
+                        serial=is_serial_model_type(model_field.declared_type),
                     ):
                         continue
                     raise RuntimeError(

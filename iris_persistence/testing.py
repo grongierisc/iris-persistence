@@ -85,6 +85,15 @@ class InMemoryAdapter(RuntimeAdapter):
             return True
         return False
 
+    def begin_transaction(self) -> None:
+        pass
+
+    def commit_transaction(self) -> None:
+        pass
+
+    def rollback_transaction(self) -> None:
+        pass
+
     def set_property(self, obj: Any, prop_name: str, value: Any) -> None:
         setattr(obj, prop_name, value)
 

@@ -485,10 +485,10 @@ def test_model_rejects_ambiguous_dual_field_declarations():
             Name: Annotated[str, Field(max_length=100)] = Field(required=True)
 
 
-def test_model_generates_real_constructor_per_class():
-    assert LiteProduct.__dict__["__init__"] is not Model.__init__
-    assert list(signature(LiteProduct.__init__).parameters) == [
-        "self",
+def test_model_uses_one_generic_constructor_with_a_per_class_signature():
+    assert "__init__" not in LiteProduct.__dict__
+    assert LiteProduct.__init__ is Model.__init__
+    assert list(signature(LiteProduct).parameters) == [
         "Id",
         "Name",
         "Price",

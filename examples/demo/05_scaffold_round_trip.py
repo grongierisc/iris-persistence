@@ -9,7 +9,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from iris_persistence import Field, Model, scaffold_from_iris
+from iris_persistence import Field, Model
+from iris_persistence.scaffold import scaffold_from_iris
 
 from examples.demo.support import (
     configure_demo_runtime,

@@ -11,33 +11,10 @@ NULL_STRING = "\x00"
 
 @dataclass(frozen=True)
 class ScalarCodec:
-    """Scalar semantics shared by generic execution and generated model functions."""
+    """Classify scalar fields for the generic load and save plans."""
 
     read_kind: str
     save_kind: str
-
-    def load_expression(self, value: str, *, nullable: bool) -> str:
-        if self.read_kind == "str":
-            return f"None if {value} == _NULL_STRING else ({value} if {value} else '')"
-        if self.read_kind == "bool":
-            if nullable:
-                return f"None if {value} in ('', None) else bool({value} or 0)"
-            return f"bool({value} or 0)"
-        if nullable:
-            return f"None if {value} in ('', None) else {value}"
-        return value
-
-    def save_expression(self, value: str, *, nullable: bool) -> str:
-        if self.read_kind == "str":
-            return f"_NULL_STRING if {value} is None else {value}"
-        if self.read_kind == "bool":
-            converted = f"1 if {value} else 0"
-            return f"'' if {value} is None else ({converted})" if nullable else converted
-        return f"'' if {value} is None else {value}" if nullable else value
-
-    def skips_none_on_save(self, *, nullable: bool) -> bool:
-        return not nullable and self.read_kind != "str"
-
 
 SCALAR_CODECS: dict[Any, ScalarCodec] = {
     str: ScalarCodec("str", "scalar_fast"),
@@ -47,9 +24,7 @@ SCALAR_CODECS: dict[Any, ScalarCodec] = {
 }
 
 
-# Scalar conversion rules shared by the generic load/save paths (query.py) and the
-# per-class code generators (models._build_fast_load/_build_fast_save), which inline
-# the same semantics for speed.
+# Scalar conversion rules used by the generic load/save paths.
 def load_scalar_str(value: Any) -> Any:
     """IRIS str property -> Python (NULL_STRING sentinel -> None, falsy -> '')."""
     return None if value == NULL_STRING else (value if value else "")

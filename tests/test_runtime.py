@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import iris_persistence.runtime as runtime_module
 from iris_persistence import Field, Model
+from iris_persistence._runtime_backend import WrapperBackend
 from iris_persistence.runtime import (
     IRISRuntime,
     RuntimeConfig,
@@ -345,7 +346,7 @@ class TestIRISRuntime(unittest.TestCase):
         )
         self.assertEqual(plain_obj.MyList, "encoded-list")
 
-    def test_get_dbapi_connection_uses_explicit_remote_credentials(self):
+    def test_connection_uses_explicit_remote_credentials(self):
         dbapi_connection = SimpleNamespace(close=MagicMock())
         fake_dbapi = SimpleNamespace(connect=MagicMock(return_value=dbapi_connection))
         connection = SimpleNamespace(hostname="localhost", port=1972, namespace="IRISAPP")
@@ -367,7 +368,8 @@ class TestIRISRuntime(unittest.TestCase):
             clear=False,
         ):
             with patch.dict("sys.modules", {"iris": fake_iris}):
-                result = adapter.get_dbapi_connection()
+                with adapter.connection() as result:
+                    self.assertIsNotNone(result)
 
         fake_dbapi.connect.assert_called_once_with(
             mode="native",
@@ -377,10 +379,9 @@ class TestIRISRuntime(unittest.TestCase):
             username="SuperUser",
             password="SYS",
         )
-        result.close()
         dbapi_connection.close.assert_called_once_with()
 
-    def test_get_dbapi_connection_reuses_native_connection_cursor(self):
+    def test_connection_reuses_caller_owned_native_connection_cursor(self):
         cursor = SimpleNamespace(marker="cursor")
         connection = SimpleNamespace(cursor=MagicMock(return_value=cursor), close=MagicMock())
         adapter = IRISRuntime()
@@ -396,11 +397,49 @@ class TestIRISRuntime(unittest.TestCase):
         )
 
         with patch.dict("sys.modules", {"iris": fake_iris}):
-            result = adapter.get_dbapi_connection()
-
-        self.assertEqual(result.cursor().marker, "cursor")
-        result.close()
+            with adapter.connection() as result:
+                self.assertEqual(result.cursor().marker, "cursor")
         connection.close.assert_not_called()
+
+    def test_legacy_native_database_shape_is_a_tested_backend_contract(self):
+        database = SimpleNamespace(
+            get=MagicMock(return_value="value"),
+            set=MagicMock(),
+            invoke=MagicMock(),
+        )
+        obj = SimpleNamespace(_oref="oref", _db=database)
+        backend = WrapperBackend()
+
+        self.assertEqual(backend.try_native_get(obj, "Name"), (True, "value"))
+        self.assertEqual(backend.try_native_set(obj, "Name", "Ada"), (True, True))
+        self.assertTrue(backend.try_native_invoke(obj, "Save"))
+        self.assertTrue(backend.try_native_invoke_target(obj, "stream", "Clear"))
+
+        database.get.assert_called_once_with("oref", "Name")
+        database.set.assert_called_once_with("oref", "Name", "Ada")
+        database.invoke.assert_any_call("oref", "Save")
+        database.invoke.assert_any_call("stream", "Clear")
+
+    def test_rollback_supports_current_and_legacy_wrapper_shapes(self):
+        rollback_one = MagicMock()
+        current = SimpleNamespace(trollbackone=rollback_one, trollback=MagicMock())
+        legacy = SimpleNamespace(trollback=MagicMock())
+        backend = WrapperBackend()
+
+        with patch.dict("sys.modules", {"iris": current}):
+            backend.rollback_transaction()
+        with patch.dict("sys.modules", {"iris": legacy}):
+            backend.rollback_transaction()
+
+        rollback_one.assert_called_once_with()
+        current.trollback.assert_not_called()
+        legacy.trollback.assert_called_once_with()
+
+    def test_object_id_uses_normalized_wrapper_method_only(self):
+        backend = WrapperBackend()
+
+        self.assertEqual(backend.object_id(SimpleNamespace(_Id=lambda: 7)), "7")
+        self.assertIsNone(backend.object_id(SimpleNamespace(Id=lambda: 7)))
 
     def test_transaction_attaches_rollback_failure_to_commit_error(self):
         class _FailingBackend:

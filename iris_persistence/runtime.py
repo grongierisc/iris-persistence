@@ -58,18 +58,6 @@ class IRISRuntime:
         self._backend = backend or WrapperBackend()
         self._values = IRISValueCodec(self._backend, self)
 
-    def _get_backend(self) -> WrapperBackend:
-        if not hasattr(self, "_backend"):
-            self._backend = WrapperBackend()
-        return self._backend
-
-    def _get_value_codec(self) -> IRISValueCodec:
-        # Subclasses written against the old adapter occasionally skipped super().__init__().
-        backend = IRISRuntime._get_backend(self)
-        if not hasattr(self, "_values"):
-            self._values = IRISValueCodec(backend, self)
-        return self._values
-
     def call_classmethod(self, class_name: str, method_name: str, *args: Any) -> Any:
         return self._backend.call_classmethod(class_name, method_name, *args)
 
@@ -159,12 +147,11 @@ class IRISRuntime:
         return str(status)
 
     def check_status(self, status: Any, operation: str) -> None:
-        backend = IRISRuntime._get_backend(self)
-        if not backend.is_ok(status):
+        if not self._backend.is_ok(status):
             raise RuntimeStatusError(
                 operation,
                 self.format_status(status),
-                backend=backend.backend_name(),
+                backend=self._backend.backend_name(),
             )
 
     def compile_class(self, class_name: str, flags: str = "fc /display=none") -> None:
@@ -172,16 +159,16 @@ class IRISRuntime:
         self.check_status(status, f"compile {class_name}")
 
     def extract_python_value(self, val: Any) -> Any:
-        return IRISRuntime._get_value_codec(self).extract_python_value(val)
+        return self._values.extract_python_value(val)
 
     def extract_typed_python_value(self, val: Any, collection_kind: str | None) -> Any:
-        return IRISRuntime._get_value_codec(self).extract_typed_python_value(val, collection_kind)
+        return self._values.extract_typed_python_value(val, collection_kind)
 
     def clear_reference(self, obj: Any, field_name: str, *, serial: bool = False) -> None:
-        IRISRuntime._get_value_codec(self).clear_reference(obj, field_name, serial=serial)
+        self._values.clear_reference(obj, field_name, serial=serial)
 
     def decode_percent_list(self, value: Any) -> list[Any]:
-        return IRISRuntime._get_value_codec(self).decode_percent_list(value)
+        return self._values.decode_percent_list(value)
 
     def inject_iris_value(
         self,
@@ -190,7 +177,7 @@ class IRISRuntime:
         val: Any,
         field_meta: Any | None = None,
     ) -> None:
-        IRISRuntime._get_value_codec(self).inject_iris_value(obj, field_name, val, field_meta)
+        self._values.inject_iris_value(obj, field_name, val, field_meta)
 
 
 _active_runtime: Runtime | None = None

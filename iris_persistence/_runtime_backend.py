@@ -238,13 +238,11 @@ class WrapperBackend:
 
     @staticmethod
     def object_id(obj: Any) -> str | None:
-        for method_name in ("_Id", "Id", "%Id"):
-            method = getattr(obj, method_name, None)
-            if callable(method):
-                value = method()
-                if value:
-                    return str(value)
-        return None
+        method = getattr(obj, "_Id", None)
+        if not callable(method):
+            return None
+        value = method()
+        return str(value) if value else None
 
     @staticmethod
     def is_ok(status: Any) -> bool:

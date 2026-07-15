@@ -55,12 +55,6 @@ def _build_model_from_iris_obj(
     if _is_null_object_reference(iris_obj):
         return None
 
-    # Use the per-class code-gen loader when available (direct LOAD_ATTR, 2-3× faster
-    # than getattr() for IRIS C-extension objects).
-    fast_load = model_cls._fast_load
-    if fast_load is not None:
-        return fast_load(iris_obj, known_pk)
-
     values: dict[str, Any] = {}
     _load_direct_fields(model_cls, iris_obj, values)
     _load_coerced_fields(model_cls, iris_obj, values)
@@ -349,10 +343,6 @@ def _save_complex_fields(context: _SaveContext) -> None:
 
 
 def _populate_iris_object(context: _SaveContext) -> None:
-    cls = context.instance.__class__
-    if cls._fast_save:
-        cls._fast_save(context.iris_obj, context.instance.__dict__)
-        return
     _save_fast_scalar_fields(context)
     _save_coerced_scalar_fields(context)
     _save_complex_fields(context)

@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 
 import iris_persistence
-from iris_persistence import scaffold_from_iris
 from iris_persistence.runtime import get_runtime
+from iris_persistence.scaffold import scaffold_from_iris
 from tests.fixture_support import (
     OBJECTSCRIPT_CLS_FIXTURES,
     OBJECTSCRIPT_FIXTURES,

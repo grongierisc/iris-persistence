@@ -86,8 +86,6 @@ class Model(metaclass=ModelMeta):
     _read_fields: dict[str, tuple[_FieldPlan, ...]]
     _save_fields: dict[str, tuple[_FieldPlan, ...]]
     _is_serial_class: bool
-    _fast_load: Any  # per-class code-gen loader, or None for generic path
-    _fast_save: Any  # per-class code-gen field setter, or None for generic path
 
     @classmethod
     def __init_subclass__(

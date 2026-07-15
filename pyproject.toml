@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "iris-persistence"
-version = "0.3.0b1"
+version = "0.3.0"
 description = "Python object persistence for InterSystems IRIS, inspired by %Persistent"
 readme = "README.md"
 requires-python = ">=3.10"

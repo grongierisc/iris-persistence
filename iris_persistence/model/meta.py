@@ -13,10 +13,6 @@ from iris_persistence.field_utils import (
     is_scalar_string_field,
 )
 from iris_persistence.model.codegen import FieldPlan as _FieldPlan
-from iris_persistence.model.codegen import build_fast_init as _build_fast_init
-from iris_persistence.model.codegen import build_fast_load as _build_fast_load
-from iris_persistence.model.codegen import build_fast_save as _build_fast_save
-from iris_persistence.model.codegen import build_generated_init as _build_generated_init
 from iris_persistence.model.codegen import build_signature as _build_signature
 from iris_persistence.model.values import (
     _is_object_reference_field,
@@ -387,10 +383,6 @@ def _install_model_fields(cls: type, model_fields: dict[str, ModelField]) -> Non
     target = cast(Any, cls)
     target.__model_fields__ = model_fields
     target._fields = {name: field.field_info for name, field in model_fields.items()}
-    generated_init = _build_generated_init(model_fields)
-    if generated_init is not None:
-        generated_init.__qualname__ = f"{cls.__qualname__}.__init__"
-        target.__init__ = generated_init
     target.__signature__ = _build_signature(model_fields)
     if hasattr(cls, "_declared_field_assignments__"):
         delattr(cls, "_declared_field_assignments__")
@@ -412,11 +404,6 @@ def _install_model_options(
     target._custom_storage = options.custom_storage
     target._parameters = options.parameters
     target._indexes = _synthesize_indexes(cls.__name__, model_fields, options.indexes)
-    if not options.validate_on_init:
-        fast_init = _build_fast_init(model_fields)
-        if fast_init is not None:
-            fast_init.__qualname__ = f"{cls.__qualname__}.__init__"
-            target.__init__ = fast_init
 
 
 def _group_field_plans(
@@ -441,16 +428,6 @@ def _install_field_plans(cls: type, model_fields: dict[str, ModelField]) -> None
         field_plans, "save_kind", ("scalar_fast", "scalar_coerce", "complex")
     )
     target._is_serial_class = "SerialObject" in target._superclasses
-    target._fast_load = (
-        None
-        if any(plan.read_kind in {"coerce", "complex"} for plan in field_plans)
-        else _build_fast_load(cls, field_plans, target._is_serial_class)
-    )
-    target._fast_save = (
-        None
-        if any(plan.save_kind != "scalar_fast" for plan in field_plans)
-        else _build_fast_save(cls, field_plans)
-    )
 
 
 class ModelMeta(type):

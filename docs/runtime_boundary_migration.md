@@ -118,7 +118,8 @@ regressions remain in the tested Embedded environment. Native deployments should
 integration matrix because connection ownership and wrapper fallback timing are the most likely
 compatibility-sensitive areas.
 
-## Unchanged compatibility wrappers
+## Root compatibility wrappers
 
 The root `materialize()` and `from_iris()` functions still emit `DeprecationWarning`. Prefer
-`Model.to_iris()` and `Model.from_iris()`; their removal is separate from this runtime refactor.
+`Model.to_iris()` and `Model.from_iris()`; they are removed with the other deprecated root aliases
+in `0.4.0`. See the [product-surface migration](product_surface_migration.md).

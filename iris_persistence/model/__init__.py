@@ -1,1 +1,1 @@
-"""Model construction, validation, and generated fast paths."""
+"""Model construction, validation, field plans, and value handling."""

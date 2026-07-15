@@ -4,4 +4,8 @@ docs_dir: docs
 
 nav:
   - Home: README.md
+  - Architecture: architecture.md
+  - Product-surface Migration: product_surface_migration.md
+  - Runtime Boundary Migration: runtime_boundary_migration.md
+  - Runtime Compatibility: runtime_compatibility.md
   - Advanced Schema Mapping: advanced_schema_mapping.md

@@ -9,7 +9,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from iris_persistence import Field, Index, Model, apply_plan, create_plan, verify_plan
+from iris_persistence import Field, Index, Model
+from iris_persistence.migrations import apply_plan, create_plan, verify_plan
 
 from examples.demo.support import configure_demo_runtime, unique_suffix
 

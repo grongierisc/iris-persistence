@@ -183,6 +183,7 @@ class _NativeHandleObject:
 
 class _NativeEmptyReferenceRuntime(runtime_module.IRISRuntime):
     def __init__(self):
+        super().__init__()
         self.obj = _NativeHandleObject()
 
     def new_object(self, class_name):
@@ -235,18 +236,10 @@ class _NativeAndReferenceClearObject(_ReferenceClearObject):
         self._db = object()
 
 
-class _NativeAndReferenceClearRuntime(_ReferenceClearRuntime):
+class _NativeAndReferenceClearRuntime(_NativeEmptyReferenceRuntime):
     def __init__(self):
-        super().__init__()
+        runtime_module.IRISRuntime.__init__(self)
         self.obj = _NativeAndReferenceClearObject()
-
-    def clear_reference(self, obj, field_name, *, serial=False):
-        return runtime_module.IRISRuntime.clear_reference(
-            self,
-            obj,
-            field_name,
-            serial=serial,
-        )
 
 
 class _NativeReferenceMethodOref(_NativeOref):
@@ -269,6 +262,7 @@ class _NativeReferenceMethodObject:
 
 class _NativeReferenceMethodRuntime(_NativeEmptyReferenceRuntime):
     def __init__(self):
+        runtime_module.IRISRuntime.__init__(self)
         self.obj = _NativeReferenceMethodObject()
 
 
@@ -369,48 +363,48 @@ def test_save_casts_string_none_to_iris_empty_string_marker_generic_path():
     assert ("Name", chr(0)) in runtime.set_calls
 
 
-def test_fast_save_casts_string_none_to_iris_empty_string_marker():
-    class FastNullableStringFixture(Model):
-        Name: str | None = None
-
-    obj = type("FakeIRISObject", (), {})()
-
-    FastNullableStringFixture._fast_save(obj, {"Name": None})
-
-    assert obj.Name == chr(0)
-
-
-def test_fast_save_clears_nullable_scalar_none_values():
-    class FastNullableScalarFixture(Model):
+def test_generic_save_clears_nullable_scalar_none_values():
+    class NullableScalarFixture(Model):
         Count: int | None = None
         Enabled: bool | None = None
 
-    obj = type("FakeIRISObject", (), {"Count": 7, "Enabled": 1})()
+    previous_runtime = runtime_module._active_runtime
+    runtime = _SaveRuntime()
+    runtime.obj.Count = 7
+    runtime.obj.Enabled = 1
+    install_runtime(runtime)
+    try:
+        save_model(NullableScalarFixture(Count=None, Enabled=None))
+    finally:
+        runtime_module._active_runtime = previous_runtime
 
-    FastNullableScalarFixture._fast_save(obj, {"Count": None, "Enabled": None})
-
-    assert obj.Count == ""
-    assert obj.Enabled == ""
+    assert runtime.obj.Count == ""
+    assert runtime.obj.Enabled == ""
 
 
-def test_fast_save_does_not_touch_absent_fields():
-    class FastPartialFixture(Model):
+def test_generic_save_does_not_touch_absent_fields():
+    class PartialFixture(Model):
         Count: int | None
 
-    obj = type("FakeIRISObject", (), {"Count": 7})()
+    previous_runtime = runtime_module._active_runtime
+    runtime = _SaveRuntime()
+    runtime.obj.Count = 7
+    install_runtime(runtime)
+    try:
+        save_model(PartialFixture())
+    finally:
+        runtime_module._active_runtime = previous_runtime
 
-    FastPartialFixture._fast_save(obj, {})
-
-    assert obj.Count == 7
+    assert runtime.obj.Count == 7
 
 
-def test_fast_load_casts_iris_empty_string_marker_to_none():
-    class FastLoadNullableStringFixture(Model):
+def test_load_casts_iris_empty_string_marker_to_none():
+    class LoadNullableStringFixture(Model):
         Name: str | None = None
 
     iris_obj = type("FakeIRISObject", (), {"Name": chr(0)})()
 
-    loaded = _build_model_from_iris_obj(FastLoadNullableStringFixture, iris_obj, known_pk="1")
+    loaded = _build_model_from_iris_obj(LoadNullableStringFixture, iris_obj, known_pk="1")
 
     assert loaded is not None
     assert loaded.Name is None
@@ -502,32 +496,23 @@ def test_materialize_does_not_save_related_persistent_models():
         runtime_module._active_runtime = previous_runtime
 
 
-def test_materialize_uses_shared_population_path_for_serial_objects(monkeypatch):
-    class FastSerialChild(Model, serial=True):
+def test_materialize_uses_shared_population_path_for_serial_objects():
+    class SerialChild(Model, serial=True):
         Name: str | None = None
 
-    class FastSerialParent(Model, persistent=True):
-        Child: FastSerialChild
+    class SerialParent(Model, persistent=True):
+        Child: SerialChild
 
     previous_runtime = runtime_module._active_runtime
     adapter = InMemoryAdapter()
     install_runtime(adapter)
-    calls = []
-    original_fast_save = FastSerialChild._fast_save
-
-    def wrapped_fast_save(iris_obj, inst_dict):
-        calls.append(inst_dict.copy())
-        original_fast_save(iris_obj, inst_dict)
-
-    monkeypatch.setattr(FastSerialChild, "_fast_save", wrapped_fast_save)
-
     try:
-        parent = FastSerialParent(Child=FastSerialChild(Name="nested"))
+        parent = SerialParent(Child=SerialChild(Name="nested"))
 
         iris_obj = materialize(parent)
 
-        assert calls == [{"_pk": None, "_iris_obj": iris_obj.Child, "Name": "nested"}]
         assert iris_obj.Child.Name == "nested"
+        assert parent.Child._iris_obj is iris_obj.Child
     finally:
         runtime_module._active_runtime = previous_runtime
 

@@ -69,9 +69,7 @@ class InMemoryRuntime(Runtime):
                 return self.id_val
 
             def __getattr__(self, name: str) -> Any:
-                # Return None for any unset property so that direct attribute
-                # access (used by the code-gen _fast_load path) behaves the same
-                # as the getattr(obj, name, None) form used by the generic path.
+                # Return None for any unset property, matching IRIS proxy behavior.
                 if name.startswith("_"):
                     raise AttributeError(name)
                 return None

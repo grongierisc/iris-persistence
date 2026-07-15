@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from iris_persistence import scaffold_from_iris
+from iris_persistence.scaffold import scaffold_from_iris
 
 
 def main() -> None:

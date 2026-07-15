@@ -2,7 +2,7 @@
 
 `iris_persistence` is a Python object persistence layer for InterSystems IRIS, inspired by `%Persistent`. It provides a Python-first model class, brownfield scaffolding, and typed storage metadata using IRIS APIs rather than SQL as its persistence model.
 
-> Status: `0.1.0` public preview. The API is experimental and may change before a stable `1.0` release. Python 3.10 or newer is required.
+> Status: `0.2.3` public preview. The API is experimental and may change before a stable `1.0` release. Python 3.10 or newer is required.
 
 ## What This Version Supports
 
@@ -525,6 +525,7 @@ result: ScaffoldResult = scaffold_from_iris(
     extract_meta=True,
     scaffold_selectivity=True,
     return_result=True,
+    best_effort=True,
 )
 for warning in result.warnings:
     print(warning.message)
@@ -538,7 +539,9 @@ Scaffold rules:
 - storage metadata is emitted as `StorageDefinition(...)`
 - `scaffold_selectivity=True` enriches `StorageProperty(..., selectivity=...)` from `%Dictionary.StoragePropertyDefinition`
 - `mode="extend"` preserves indexes and parameters in `Meta`
-- `return_result=True` returns generated file paths plus any metadata extraction warnings
+- metadata extraction errors fail scaffolding by default
+- `best_effort=True` emits partial models and records metadata extraction warnings
+- `return_result=True` returns generated file paths plus warnings collected in best-effort mode
 - generated model files are expected to import cleanly
 - include related classes in the scaffold pattern if you want generated models to reference each other with typed imports
 

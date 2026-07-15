@@ -65,8 +65,8 @@ writable storage definition. Compiler-added fields are ignored. Equal declaratio
 any declared mismatch produces `blocked_storage_change` and raises `StorageMigrationRequired`
 before mutation.
 
-`allow_destructive=True` does not bypass a blocked storage operation. Physical relocation needs a
-future workflow that can copy data, switch globals, validate, and roll back safely.
+No application or rollback flag can bypass a blocked storage operation. Physical relocation
+needs a future workflow that can copy data, switch globals, validate, and roll back safely.
 
 ## Scaffolding
 

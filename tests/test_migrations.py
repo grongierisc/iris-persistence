@@ -11,7 +11,6 @@ from iris_persistence.migrations import (
     MigrationOperation,
     MigrationPlan,
     StaleMigrationPlanError,
-    UnsafeMigrationError,
     apply_plan,
     create_plan,
     rollback_backup,
@@ -100,7 +99,7 @@ def test_blocked_storage_change_cannot_be_bypassed(recording_runtime, tmp_path):
     )
     plan = replace(plan, operations=(blocked,))
 
-    result = apply_plan(plan, backup_dir=tmp_path, allow_destructive=True)
+    result = apply_plan(plan, backup_dir=tmp_path)
 
     assert result.status == "blocked"
     assert result.skipped_operations == (blocked,)
@@ -122,10 +121,7 @@ def test_rollback_backup_deletes_classes_created_by_apply(recording_runtime, tmp
     apply_result = apply_plan(plan, backup_dir=tmp_path)
 
     assert apply_result.backup_dir is not None
-    with pytest.raises(UnsafeMigrationError, match="destructive"):
-        rollback_backup(apply_result.backup_dir)
-
-    result = rollback_backup(apply_result.backup_dir, allow_destructive=True)
+    result = rollback_backup(apply_result.backup_dir)
 
     assert result.status == "rolled_back"
     assert result.deleted_classes == ("Demo.ParameterFixture",)
@@ -171,7 +167,7 @@ def test_rollback_backup_restores_existing_class_from_schema_state(recording_run
         encoding="utf-8",
     )
 
-    result = rollback_backup(backup_dir, allow_destructive=True)
+    result = rollback_backup(backup_dir)
 
     assert result.restored_classes == ("Demo.RestoreFixture",)
     restored = recording_runtime.saved[-1]
@@ -187,4 +183,4 @@ def test_rollback_backup_restores_existing_class_from_schema_state(recording_run
 
 def test_rollback_backup_requires_metadata(recording_runtime, tmp_path):
     with pytest.raises(BackupRestoreError, match="metadata"):
-        rollback_backup(tmp_path, allow_destructive=True)
+        rollback_backup(tmp_path)

@@ -28,10 +28,6 @@ class MigrationError(RuntimeError):
     pass
 
 
-class UnsafeMigrationError(MigrationError):
-    pass
-
-
 class StaleMigrationPlanError(MigrationError):
     pass
 
@@ -390,13 +386,9 @@ def apply_plan(
     plan: MigrationPlan | dict[str, Any],
     *,
     backup_dir: str | Path = ".iris_persistence/backups",
-    allow_destructive: bool = False,
-    yes: bool | None = None,
 ) -> ApplyResult:
     if isinstance(plan, dict):
         plan = MigrationPlan.from_dict(plan)
-    if yes is not None:
-        allow_destructive = yes
 
     blocked = tuple(
         operation for operation in plan.operations if operation.safety == "blocked"
@@ -408,17 +400,6 @@ def apply_plan(
             skipped_operations=blocked,
         )
 
-    unsafe = tuple(
-        operation
-        for operation in plan.operations
-        if operation.safety in {"destructive", "manual-review"}
-    )
-    if unsafe and not allow_destructive:
-        return ApplyResult(
-            status="blocked",
-            target_revision=plan.target_revision,
-            skipped_operations=unsafe,
-        )
     if not plan.operations:
         return ApplyResult(status="noop", target_revision=plan.target_revision)
 
@@ -481,14 +462,7 @@ def verify_plan(plan: MigrationPlan | dict[str, Any]) -> VerifyResult:
     )
 
 
-def rollback_backup(
-    backup_dir: str | Path,
-    *,
-    allow_destructive: bool = False,
-) -> RollbackResult:
-    if not allow_destructive:
-        raise UnsafeMigrationError("Backup rollback is destructive; pass allow_destructive=True")
-
+def rollback_backup(backup_dir: str | Path) -> RollbackResult:
     root = Path(backup_dir)
     metadata_path = root / "metadata.json"
     if not metadata_path.exists():
@@ -542,7 +516,6 @@ __all__ = [
     "MigrationPlan",
     "RollbackResult",
     "StaleMigrationPlanError",
-    "UnsafeMigrationError",
     "VerifyResult",
     "apply_plan",
     "check_drift",

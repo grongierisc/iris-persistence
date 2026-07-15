@@ -6,7 +6,6 @@ import json
 from iris_persistence.migrations import (
     MigrationError,
     MigrationPlan,
-    UnsafeMigrationError,
     _load_model_spec,
     apply_plan,
     check_drift,
@@ -50,7 +49,6 @@ def _cmd_apply(args: argparse.Namespace) -> int:
     result = apply_plan(
         plan,
         backup_dir=args.backup_dir,
-        allow_destructive=args.allow_destructive or args.yes,
     )
     if args.json:
         print(json.dumps(result.to_dict(), sort_keys=True, indent=2, default=str))
@@ -88,10 +86,7 @@ def _cmd_verify_plan(args: argparse.Namespace) -> int:
 
 
 def _cmd_rollback_backup(args: argparse.Namespace) -> int:
-    result = rollback_backup(
-        args.backup_dir,
-        allow_destructive=args.allow_destructive or args.yes,
-    )
+    result = rollback_backup(args.backup_dir)
     if args.json:
         print(json.dumps(result.to_dict(), sort_keys=True, indent=2, default=str))
     else:
@@ -133,10 +128,8 @@ def build_parser() -> argparse.ArgumentParser:
     apply.add_argument("--from", dest="from_revision")
     apply.add_argument("--json", action="store_true")
     apply.add_argument("--backup-dir", default=".iris_persistence/backups")
-    apply.add_argument("--allow-destructive", action="store_true")
     apply.add_argument("--dry-run", action="store_true", help="Accepted for workflow symmetry")
     apply.add_argument("--fail-on-drift", action=argparse.BooleanOptionalAction, default=True)
-    apply.add_argument("--yes", action="store_true")
     apply.set_defaults(func=_cmd_apply)
 
     review_plan = subparsers.add_parser("review-plan")
@@ -147,8 +140,6 @@ def build_parser() -> argparse.ArgumentParser:
     apply_plan_cmd = subparsers.add_parser("apply-plan")
     apply_plan_cmd.add_argument("plan_file")
     apply_plan_cmd.add_argument("--backup-dir", default=".iris_persistence/backups")
-    apply_plan_cmd.add_argument("--allow-destructive", action="store_true")
-    apply_plan_cmd.add_argument("--yes", action="store_true")
     apply_plan_cmd.add_argument("--json", action="store_true")
     apply_plan_cmd.set_defaults(
         func=lambda args: _cmd_apply(
@@ -159,8 +150,6 @@ def build_parser() -> argparse.ArgumentParser:
                 from_revision=None,
                 fail_on_drift=True,
                 backup_dir=args.backup_dir,
-                allow_destructive=args.allow_destructive,
-                yes=args.yes,
                 json=args.json,
             )
         )
@@ -173,8 +162,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     rollback_backup_cmd = subparsers.add_parser("rollback-backup")
     rollback_backup_cmd.add_argument("backup_dir")
-    rollback_backup_cmd.add_argument("--allow-destructive", action="store_true")
-    rollback_backup_cmd.add_argument("--yes", action="store_true")
     rollback_backup_cmd.add_argument("--json", action="store_true")
     rollback_backup_cmd.set_defaults(func=_cmd_rollback_backup)
 
@@ -192,8 +179,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except UnsafeMigrationError as exc:
-        parser.exit(2, f"{exc}\n")
     except MigrationError as exc:
         parser.exit(1, f"{exc}\n")
     except Exception as exc:

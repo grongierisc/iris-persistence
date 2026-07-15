@@ -708,6 +708,15 @@ class Model(metaclass=ModelMeta):
 
         save_model(self)
 
+    def delete(self) -> bool:
+        """Delete this persistent object from IRIS; return whether it existed."""
+        from iris_persistence.query import delete_model
+
+        deleted = delete_model(self)
+        if deleted:
+            self._iris_obj = None
+        return deleted
+
     def to_iris(self, *, auto_sync: bool = True, validate: bool = True) -> Any:
         """Return a populated IRIS object handle without calling %Save()."""
 

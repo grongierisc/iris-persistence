@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import keyword
 from dataclasses import dataclass, is_dataclass
 from dataclasses import fields as dataclass_fields
-from inspect import Parameter, Signature
 from typing import (
     TYPE_CHECKING,
     Annotated,
@@ -19,7 +17,7 @@ from typing import (
     get_type_hints,
 )
 
-from iris_persistence.codecs import NULL_STRING, SCALAR_CODECS, resolve_declared_type
+from iris_persistence.codecs import SCALAR_CODECS, resolve_declared_type
 from iris_persistence.field_utils import (
     IRIS_COLLECTION_TYPES,
     collection_value_type,
@@ -28,6 +26,24 @@ from iris_persistence.field_utils import (
     is_percent_list_field,
     is_scalar_string_field,
     walk_declared_value,
+)
+from iris_persistence.model_codegen import (
+    FieldPlan as _FieldPlan,
+)
+from iris_persistence.model_codegen import (
+    build_fast_init as _build_fast_init,
+)
+from iris_persistence.model_codegen import (
+    build_fast_load as _build_fast_load,
+)
+from iris_persistence.model_codegen import (
+    build_fast_save as _build_fast_save,
+)
+from iris_persistence.model_codegen import (
+    build_generated_init as _build_generated_init,
+)
+from iris_persistence.model_codegen import (
+    build_signature as _build_signature,
 )
 from iris_persistence.types import UNSET, ClassMetadata, FieldInfo, Index, ModelField
 
@@ -38,20 +54,6 @@ T = TypeVar("T", bound="Model")
 TDataclass = TypeVar("TDataclass")
 
 
-@dataclass(frozen=True)
-class _FieldPlan:
-    name: str
-    model_field: ModelField
-    read_kind: str
-    save_kind: str
-
-
-class _FactoryDefault:
-    def __repr__(self) -> str:
-        return "<factory>"
-
-
-FACTORY_DEFAULT = _FactoryDefault()
 RESERVED_FIELD_NAMES = frozenset({"pk", "_pk", "_iris_obj"})
 DEFAULT_SYNC_MODE = "managed"
 
@@ -81,20 +83,6 @@ def _is_empty_class_metadata(metadata: ClassMetadata | None) -> bool:
         and metadata.sql_table_name is None
         and not metadata.procedure_block
     )
-
-
-def _codegen_safe_names(names: Any) -> bool:
-    return all(name.isidentifier() and not keyword.iskeyword(name) for name in names)
-
-
-def _compile_function_source(
-    params: list[str],
-    body: list[str],
-    namespace: dict[str, Any],
-) -> Any:
-    source = "def __init__(" + ", ".join(params) + "):\n" + "\n".join(body)
-    exec(source, namespace)
-    return namespace["__init__"]
 
 
 def _parse_class_metadata(meta_inner: Any) -> ClassMetadata | None:
@@ -205,199 +193,6 @@ def _build_model_field(
         _element_type=element_type,
         _is_model_field=is_model_field,
     )
-
-
-def _build_signature(model_fields: Dict[str, ModelField]) -> Signature:
-    parameters = []
-    for model_field in model_fields.values():
-        default: Any = Parameter.empty
-        if model_field.default_factory is not UNSET:
-            default = FACTORY_DEFAULT
-        elif model_field.default is not UNSET:
-            default = model_field.default
-        elif not model_field.required:
-            default = None
-        parameters.append(
-            Parameter(
-                model_field.name,
-                kind=Parameter.KEYWORD_ONLY,
-                default=default,
-                annotation=model_field.declared_type,
-            )
-        )
-    return Signature(parameters=parameters)
-
-
-def _build_generated_init(model_fields: Dict[str, ModelField]) -> Any | None:
-    if not _codegen_safe_names(model_fields):
-        return None
-
-    params = ["self"]
-    if model_fields:
-        params.append("*")
-    body = ["    provided_values = {}"]
-    for model_field in model_fields.values():
-        if model_field.required:
-            params.append(model_field.name)
-        else:
-            params.append(f"{model_field.name}=UNSET")
-        body.append(f"    provided_values[{model_field.name!r}] = {model_field.name}")
-    body.append("    self._initialize_model_state(provided_values)")
-
-    return _compile_function_source(params, body, {"UNSET": UNSET})
-
-
-def _build_fast_init(model_fields: Dict[str, ModelField]) -> Any | None:
-    """Generate an optimised __init__ for models with validate_on_init=False.
-
-    Bypasses _initialize_model_state entirely: just sets _pk/_iris_obj to None
-    and assigns each field directly into self.__dict__, eliminating the field
-    loop, the intermediate provided_values dict, and all setattr dispatch.
-    """
-    if not _codegen_safe_names(model_fields):
-        return None
-
-    params = ["self"]
-    if model_fields:
-        params.append("*")
-
-    body = [
-        "    self._pk = None",
-        "    self._iris_obj = None",
-    ]
-    if model_fields:
-        body.append("    d = self.__dict__")
-
-    namespace: dict[str, Any] = {"UNSET": UNSET}
-    for i, (name, mf) in enumerate(model_fields.items()):
-        if mf.required:
-            params.append(name)
-            body.append(f"    d[{name!r}] = {name}")
-        elif mf.field_info.default_factory is not UNSET:
-            factory_var = f"_dfact_{i}"
-            namespace[factory_var] = mf.field_info.default_factory
-            params.append(f"{name}=UNSET")
-            body.append(f"    d[{name!r}] = {name} if {name} is not UNSET else {factory_var}()")
-        elif mf.field_info.default is not UNSET:
-            default_var = f"_dval_{i}"
-            namespace[default_var] = mf.field_info.default
-            params.append(f"{name}=UNSET")
-            body.append(f"    d[{name!r}] = {name} if {name} is not UNSET else {default_var}")
-        else:
-            params.append(f"{name}=UNSET")
-            body.append(f"    if {name} is not UNSET: d[{name!r}] = {name}")
-
-    return _compile_function_source(params, body, namespace)
-
-
-def _build_fast_load(model_cls: Any, field_plans: tuple[_FieldPlan, ...], is_serial: bool) -> Any:
-    """Generate a per-class _fast_load using direct attribute access (LOAD_ATTR bytecode).
-
-    IRIS objects have a 2-3× penalty when property access goes through Python's getattr()
-    built-in vs a compiled `obj.Name` LOAD_ATTR instruction.  Code-gen lets us produce:
-
-        d['Name'] = iris_obj.Name          # fast  (LOAD_ATTR)
-
-    instead of what the generic loop does:
-
-        getattr(iris_obj, 'Name', None)    # slow (getattr builtin)
-
-    The inlined expressions must match the semantics of codecs.load_scalar_str/
-    load_scalar_number/load_scalar_bool used by the generic path in query.py.
-
-    Returns None for models with complex fields (collections, related models) or non-standard
-    scalar types (datetime, bytes, …) so those fall back to the generic path.
-    """
-    # Field names must be valid Python identifiers (no special chars like %)
-    if not _codegen_safe_names(plan.name for plan in field_plans):
-        return None
-
-    lines = [
-        "def _fast_load(iris_obj, known_pk=None):",
-        "    if iris_obj is None: return None",
-        "    instance = _model_cls.__new__(_model_cls)",
-        "    d = instance.__dict__",
-        "    d['_iris_obj'] = iris_obj",
-    ]
-
-    if is_serial:
-        lines.append("    d['_pk'] = None")
-    else:
-        # known_pk is provided on the hot path (get(pk)).
-        # For related model loading (known_pk=None), fall back to get_object_id.
-        lines.append("    if known_pk is not None:")
-        lines.append("        d['_pk'] = known_pk")
-        lines.append("    else:")
-        lines.append("        _oid = _get_runtime().get_object_id(iris_obj)")
-        lines.append("        d['_pk'] = str(_oid) if _oid else None")
-
-    for plan in field_plans:
-        name = plan.name
-        mf = plan.model_field
-        codec = SCALAR_CODECS.get(mf.declared_type)
-        if codec is None or codec.read_kind != plan.read_kind:
-            return None  # complex/coerced fields need the generic path
-        lines.append(f"    _v = iris_obj.{name}")
-        lines.append(f"    d[{name!r}] = {codec.load_expression('_v', nullable=mf.nullable)}")
-
-    lines.append("    return instance")
-    source = "\n".join(lines)
-    from iris_persistence.runtime import get_runtime as _get_runtime_fn
-
-    namespace: dict[str, Any] = {
-        "_model_cls": model_cls,
-        "_get_runtime": _get_runtime_fn,
-        "_NULL_STRING": NULL_STRING,
-    }
-    exec(source, namespace)
-    fn = namespace["_fast_load"]
-    fn.__qualname__ = f"{model_cls.__qualname__}._fast_load"
-    return fn
-
-
-def _build_fast_save(
-    model_cls: Any,
-    field_plans: tuple[_FieldPlan, ...],
-) -> Any:
-    """Generate a per-class _fast_save using direct attribute assignment (STORE_ATTR bytecode).
-
-    Like _build_fast_load, this avoids the overhead of calling set_property() per field
-    (a Python function call + isinstance(val, bool) check each time) by emitting direct
-    `iris_obj.Field = val` assignments via code-gen.
-
-    The inlined expressions must match the semantics of codecs.save_scalar_null and the
-    generic scalar branch of query._populate_iris_object.
-
-    Only generated for models where all writable fields are primitive scalars with no
-    coercion or complex fields (collections, related models).  Falls back to the generic
-    loop in save_model for all other models.
-    """
-    scalar_fast_plans = [plan for plan in field_plans if plan.save_kind == "scalar_fast"]
-    if not scalar_fast_plans or len(scalar_fast_plans) != len(field_plans):
-        return None
-    # Field names must be valid Python identifiers
-    if not _codegen_safe_names(plan.name for plan in scalar_fast_plans):
-        return None
-
-    lines = ["def _fast_save(iris_obj, inst_dict):"]
-    for plan in scalar_fast_plans:
-        name = plan.name
-        mf = plan.model_field
-        codec = SCALAR_CODECS[mf.declared_type]
-        lines.append(f"    if {name!r} in inst_dict:")
-        lines.append(f"        _v = inst_dict.get({name!r})")
-        assignment = f"iris_obj.{name} = {codec.save_expression('_v', nullable=mf.nullable)}"
-        if codec.skips_none_on_save(nullable=mf.nullable):
-            lines.append(f"        if _v is not None: {assignment}")
-        else:
-            lines.append(f"        {assignment}")
-
-    source = "\n".join(lines)
-    namespace: dict[str, Any] = {"_NULL_STRING": NULL_STRING}
-    exec(source, namespace)
-    fn = namespace["_fast_save"]
-    fn.__qualname__ = f"{model_cls.__qualname__}._fast_save"
-    return fn
 
 
 def _is_object_reference_field(model_field: ModelField) -> bool:
@@ -801,15 +596,6 @@ class Model(metaclass=ModelMeta):
 
     def __init__(self, **kwargs):
         self._initialize_model_state(kwargs)
-
-    @classmethod
-    def _from_loaded_values(cls: Type[T], values: dict[str, Any]) -> T:
-        instance = cls.__new__(cls)
-        instance._pk = None
-        instance._iris_obj = None
-        for name, value in values.items():
-            setattr(instance, name, value)
-        return instance
 
     def to_dict(self) -> dict[str, Any]:
         """Return declared model fields as plain Python values."""

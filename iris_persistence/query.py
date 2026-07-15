@@ -125,7 +125,7 @@ def _build_model_from_iris_obj(
                         python_val,
                     )
 
-    # Build instance directly — bypass _from_loaded_values + per-field setattr loop
+        # Build the instance directly, bypassing the per-field setattr loop.
     instance = model_cls.__new__(model_cls)
     instance_dict = instance.__dict__
     instance_dict.update(d)

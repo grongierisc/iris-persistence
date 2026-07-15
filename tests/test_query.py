@@ -608,7 +608,7 @@ def test_save_empty_string_clears_scaffold_style_nullable_reference_with_native_
     finally:
         runtime_module._active_runtime = previous_runtime
 
-    assert ExistingScaffoldStyleParent._complex_save_fields[0][0] == "Child"
+    assert ExistingScaffoldStyleParent._save_fields["complex"][0].name == "Child"
     assert runtime.obj._oref.set_calls == [("Child", "")]
 
 

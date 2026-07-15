@@ -19,9 +19,8 @@ from typing import (
     get_type_hints,
 )
 
-from iris_persistence.codecs import NULL_STRING, resolve_declared_type
+from iris_persistence.codecs import NULL_STRING, SCALAR_CODECS, resolve_declared_type
 from iris_persistence.field_utils import (
-    DIRECT_PROPERTY_TYPES,
     IRIS_COLLECTION_TYPES,
     collection_value_type,
     is_application_iris_class,
@@ -55,6 +54,23 @@ class _FactoryDefault:
 FACTORY_DEFAULT = _FactoryDefault()
 RESERVED_FIELD_NAMES = frozenset({"pk", "_pk", "_iris_obj"})
 DEFAULT_SYNC_MODE = "managed"
+
+
+@dataclass(frozen=True)
+class SyncPolicy:
+    auto_sync: bool
+    merge: str
+    cache_auto_sync: bool = False
+
+
+SYNC_POLICIES = {
+    "observe": SyncPolicy(False, "live"),
+    "extend": SyncPolicy(True, "extend", cache_auto_sync=True),
+    "managed": SyncPolicy(True, "managed"),
+    "replace": SyncPolicy(False, "replace"),
+}
+
+
 def _is_empty_class_metadata(metadata: ClassMetadata | None) -> bool:
     if metadata is None:
         return True
@@ -318,33 +334,16 @@ def _build_fast_load(model_cls: Any, field_plans: tuple[_FieldPlan, ...], is_ser
     for plan in field_plans:
         name = plan.name
         mf = plan.model_field
-        if plan.read_kind == "str":
-            lines.append(
-                f"    _v = iris_obj.{name}; "
-                f"d[{name!r}] = None if _v == _NULL_STRING else (_v if _v else '')"
-            )
-        elif plan.read_kind == "bool":
-            if mf.nullable:
-                lines.append(
-                    f"    _v = iris_obj.{name}; "
-                    f"d[{name!r}] = None if _v in ('', None) else bool(_v or 0)"
-                )
-            else:
-                lines.append(f"    d[{name!r}] = bool(iris_obj.{name} or 0)")
-        elif plan.read_kind == "primitive":
-            if mf.nullable:
-                lines.append(
-                    f"    _v = iris_obj.{name}; "
-                    f"d[{name!r}] = None if _v in ('', None) else _v"
-                )
-            else:
-                lines.append(f"    d[{name!r}] = iris_obj.{name}")
-        else:
+        codec = SCALAR_CODECS.get(mf.declared_type)
+        if codec is None or codec.read_kind != plan.read_kind:
             return None  # complex/coerced fields need the generic path
+        lines.append(f"    _v = iris_obj.{name}")
+        lines.append(f"    d[{name!r}] = {codec.load_expression('_v', nullable=mf.nullable)}")
 
     lines.append("    return instance")
     source = "\n".join(lines)
     from iris_persistence.runtime import get_runtime as _get_runtime_fn
+
     namespace: dict[str, Any] = {
         "_model_cls": model_cls,
         "_get_runtime": _get_runtime_fn,
@@ -384,26 +383,14 @@ def _build_fast_save(
     for plan in scalar_fast_plans:
         name = plan.name
         mf = plan.model_field
-        if mf.declared_type is str:
-            lines.append(f"    if {name!r} in inst_dict:")
-            lines.append(f"        _v = inst_dict.get({name!r})")
-            lines.append(f"        iris_obj.{name} = _NULL_STRING if _v is None else _v")
-        elif mf.declared_type is bool:
-            lines.append(f"    if {name!r} in inst_dict:")
-            lines.append(f"        _v = inst_dict.get({name!r})")
-            if mf.nullable:
-                lines.append(
-                    f"        iris_obj.{name} = '' if _v is None else (1 if _v else 0)"
-                )
-            else:
-                lines.append(f"        if _v is not None: iris_obj.{name} = 1 if _v else 0")
+        codec = SCALAR_CODECS[mf.declared_type]
+        lines.append(f"    if {name!r} in inst_dict:")
+        lines.append(f"        _v = inst_dict.get({name!r})")
+        assignment = f"iris_obj.{name} = {codec.save_expression('_v', nullable=mf.nullable)}"
+        if codec.skips_none_on_save(nullable=mf.nullable):
+            lines.append(f"        if _v is not None: {assignment}")
         else:
-            lines.append(f"    if {name!r} in inst_dict:")
-            lines.append(f"        _v = inst_dict.get({name!r})")
-            if mf.nullable:
-                lines.append(f"        iris_obj.{name} = '' if _v is None else _v")
-            else:
-                lines.append(f"        if _v is not None: iris_obj.{name} = _v")
+            lines.append(f"        {assignment}")
 
     source = "\n".join(lines)
     namespace: dict[str, Any] = {"_NULL_STRING": NULL_STRING}
@@ -602,23 +589,15 @@ def _build_field_plans(model_fields: dict[str, ModelField]) -> tuple[_FieldPlan,
             or model_field._is_model_field
         ):
             read_kind = "complex"
-        elif model_field.declared_type is bool:
-            read_kind = "bool"
-        elif model_field.declared_type is str:
-            read_kind = "str"
-        elif model_field.declared_type in (int, float):
-            read_kind = "primitive"
         else:
-            read_kind = "coerce"
+            codec = SCALAR_CODECS.get(model_field.declared_type)
+            read_kind = codec.read_kind if codec is not None else "coerce"
 
         if getattr(model_field.field_info, "readonly", False):
             save_kind = "complex"
         elif model_field._collection_kind is None and not _is_object_reference_field(model_field):
-            save_kind = (
-                "scalar_fast"
-                if model_field.declared_type in DIRECT_PROPERTY_TYPES
-                else "scalar_coerce"
-            )
+            codec = SCALAR_CODECS.get(model_field.declared_type)
+            save_kind = codec.save_kind if codec is not None else "scalar_coerce"
         else:
             save_kind = "complex"
 
@@ -673,9 +652,7 @@ class ModelMeta(type):
         )
         if reserved:
             reserved_fields = ", ".join(reserved)
-            raise TypeError(
-                f"Model {name} uses reserved field name(s): {reserved_fields}"
-            )
+            raise TypeError(f"Model {name} uses reserved field name(s): {reserved_fields}")
         declared_field_assignments = {}
         for field_name in annotations:
             value = namespace.get(field_name, UNSET)
@@ -715,9 +692,12 @@ class ModelMeta(type):
             delattr(cls, "_declared_model_options__")
         superclasses = _resolve_model_superclasses(meta_inner, declared_model_options)
         validate_on_init = getattr(meta_inner, "validate_on_init", True)
+        sync_mode = getattr(meta_inner, "mode", DEFAULT_SYNC_MODE)
+        if sync_mode not in SYNC_POLICIES:
+            raise TypeError(f"Unknown schema sync mode: {sync_mode!r}")
         for attr_name, value in {
             "_classname": getattr(meta_inner, "classname", name),
-            "_sync_mode": getattr(meta_inner, "mode", DEFAULT_SYNC_MODE),
+            "_sync_mode": sync_mode,
             "_auto_sync": getattr(meta_inner, "auto_sync", False),
             "_validate_on_init": validate_on_init,
             "_superclasses": _normalize_superclasses(superclasses),
@@ -737,34 +717,14 @@ class ModelMeta(type):
         field_plans = _build_field_plans(model_fields)
         for attr_name, value in {
             "_field_plans": field_plans,
-            "_scalar_fast_fields": [
-                plan.name for plan in field_plans if plan.save_kind == "scalar_fast"
-            ],
-            "_scalar_coerce_fields": [
-                (plan.name, plan.model_field.declared_type)
-                for plan in field_plans
-                if plan.save_kind == "scalar_coerce"
-            ],
-            "_complex_save_fields": [
-                (plan.name, plan.model_field)
-                for plan in field_plans
-                if plan.save_kind == "complex"
-            ],
-            "_read_str_fields": [plan.name for plan in field_plans if plan.read_kind == "str"],
-            "_read_primitive_fields": [
-                plan.name for plan in field_plans if plan.read_kind == "primitive"
-            ],
-            "_read_bool_fields": [plan.name for plan in field_plans if plan.read_kind == "bool"],
-            "_read_coerce_fields": [
-                (plan.name, plan.model_field.declared_type)
-                for plan in field_plans
-                if plan.read_kind == "coerce"
-            ],
-            "_read_complex_fields": [
-                (plan.name, plan.model_field)
-                for plan in field_plans
-                if plan.read_kind == "complex"
-            ],
+            "_read_fields": {
+                kind: tuple(plan for plan in field_plans if plan.read_kind == kind)
+                for kind in ("str", "primitive", "bool", "coerce", "complex")
+            },
+            "_save_fields": {
+                kind: tuple(plan for plan in field_plans if plan.save_kind == kind)
+                for kind in ("scalar_fast", "scalar_coerce", "complex")
+            },
         }.items():
             setattr(cls, attr_name, value)
         # Pre-compute serial-class flag to avoid re-checking per _build_model_from_iris_obj call.
@@ -796,14 +756,8 @@ class Model(metaclass=ModelMeta):
     _validate_on_init: bool
     _class_metadata: ClassMetadata | None
     _field_plans: tuple[_FieldPlan, ...]
-    _scalar_fast_fields: list[str]
-    _scalar_coerce_fields: list[tuple[str, Any]]
-    _complex_save_fields: list[tuple[str, ModelField]]
-    _read_str_fields: list[str]
-    _read_primitive_fields: list[str]
-    _read_bool_fields: list[str]
-    _read_coerce_fields: list[tuple[str, Any]]
-    _read_complex_fields: list[tuple[str, ModelField]]
+    _read_fields: dict[str, tuple[_FieldPlan, ...]]
+    _save_fields: dict[str, tuple[_FieldPlan, ...]]
     _is_serial_class: bool
     _fast_load: Any  # per-class code-gen loader, or None for generic path
     _fast_save: Any  # per-class code-gen field setter, or None for generic path

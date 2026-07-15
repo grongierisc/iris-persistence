@@ -106,6 +106,13 @@ class InMemoryAdapter(RuntimeAdapter):
     def extract_python_value(self, val: Any) -> Any:
         return val
 
+    def extract_typed_python_value(self, val: Any, collection_kind: str | None) -> Any:
+        return val
+
+    def clear_reference(self, obj: Any, field_name: str, *, serial: bool = False) -> bool:
+        setattr(obj, field_name, "")
+        return True
+
     def decode_percent_list(self, value: Any) -> list[Any]:
         if value is None:
             return []

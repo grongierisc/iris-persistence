@@ -24,6 +24,8 @@ class RuntimeAdapter(Protocol):
     def is_ok(self, status: Any) -> bool: ...
     def format_status(self, status: Any) -> str: ...
     def extract_python_value(self, val: Any) -> Any: ...
+    def extract_typed_python_value(self, val: Any, collection_kind: str | None) -> Any: ...
+    def clear_reference(self, obj: Any, field_name: str, *, serial: bool = False) -> bool: ...
     def decode_percent_list(self, value: Any) -> list[Any]: ...
     def inject_iris_value(
         self,
@@ -252,20 +254,11 @@ class IRISRuntimeAdapter(IRISValueAdapterMixin):
         return getattr(obj, prop_name)
 
     def get_object_id(self, obj: Any) -> str | None:
-        try:
-            val = obj._Id()
-            if val:
-                return str(val)
-        except AttributeError:
-            pass
-        try:
-            val = obj.Id()
-            if val:
-                return str(val)
-        except AttributeError:
-            pass
-        if hasattr(obj, "%Id"):
-            val = getattr(obj, "%Id")()
+        for method_name in ("_Id", "Id", "%Id"):
+            method = getattr(obj, method_name, None)
+            if not callable(method):
+                continue
+            val = method()
             if val:
                 return str(val)
         return None

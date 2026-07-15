@@ -214,6 +214,38 @@ class TestIRISRuntimeAdapter(unittest.TestCase):
         self.mock_oref.set.assert_not_called()
         self.assertEqual(calls, [("Clear",), ("SetAt", "one", marker)])
 
+    def test_extract_typed_empty_array_preserves_mapping_shape(self):
+        class _EmptyArray:
+            def Count(self):
+                return 0
+
+            def Next(self, key):
+                return ""
+
+            def GetAt(self, key):
+                raise AssertionError("empty array has no values")
+
+        self.assertEqual(self.adapter.extract_typed_python_value(_EmptyArray(), "array"), {})
+
+    def test_extract_typed_array_preserves_none_first_value(self):
+        class _NullableArray:
+            values = {"first": None, "second": 2}
+
+            def Count(self):
+                return len(self.values)
+
+            def Next(self, key):
+                keys = list(self.values)
+                return keys[0] if key == "" else (keys[1] if key == keys[0] else "")
+
+            def GetAt(self, key):
+                return self.values[key]
+
+        self.assertEqual(
+            self.adapter.extract_typed_python_value(_NullableArray(), "array"),
+            {"first": None, "second": 2},
+        )
+
     def test_inject_collection_class_array_refreshes_setat_per_item(self):
         field = Field(iris_type="%ArrayOfDataTypes")
         calls = []

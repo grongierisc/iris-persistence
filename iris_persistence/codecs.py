@@ -1,11 +1,50 @@
 from __future__ import annotations
 
 import datetime
+from dataclasses import dataclass
 from types import UnionType
 from typing import Annotated, Any, Union, get_args, get_origin
 
 # Sentinel stored in IRIS string properties to represent Python None.
 NULL_STRING = "\x00"
+
+
+@dataclass(frozen=True)
+class ScalarCodec:
+    """Scalar semantics shared by generic execution and generated model functions."""
+
+    read_kind: str
+    save_kind: str
+
+    def load_expression(self, value: str, *, nullable: bool) -> str:
+        if self.read_kind == "str":
+            return f"None if {value} == _NULL_STRING else ({value} if {value} else '')"
+        if self.read_kind == "bool":
+            if nullable:
+                return f"None if {value} in ('', None) else bool({value} or 0)"
+            return f"bool({value} or 0)"
+        if nullable:
+            return f"None if {value} in ('', None) else {value}"
+        return value
+
+    def save_expression(self, value: str, *, nullable: bool) -> str:
+        if self.read_kind == "str":
+            return f"_NULL_STRING if {value} is None else {value}"
+        if self.read_kind == "bool":
+            converted = f"1 if {value} else 0"
+            return f"'' if {value} is None else ({converted})" if nullable else converted
+        return f"'' if {value} is None else {value}" if nullable else value
+
+    def skips_none_on_save(self, *, nullable: bool) -> bool:
+        return not nullable and self.read_kind != "str"
+
+
+SCALAR_CODECS: dict[Any, ScalarCodec] = {
+    str: ScalarCodec("str", "scalar_fast"),
+    bool: ScalarCodec("bool", "scalar_fast"),
+    int: ScalarCodec("primitive", "scalar_fast"),
+    float: ScalarCodec("primitive", "scalar_fast"),
+}
 
 
 # Scalar conversion rules shared by the generic load/save paths (query.py) and the

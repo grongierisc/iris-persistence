@@ -5,7 +5,7 @@ Types and definitions for iris_persistence schema layout.
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from dataclasses import field as dataclass_field
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -234,3 +234,31 @@ class StorageDefinition:
     indices: Tuple[StorageIndex, ...] = ()
     properties: Tuple[StorageProperty, ...] = ()
     sql_maps: Tuple[StorageSQLMap, ...] = ()
+
+
+STORAGE_DEFINITION_SCALAR_KEYS = tuple(
+    item.name
+    for item in fields(StorageDefinition)
+    if item.name not in {"data", "indices", "properties", "sql_maps"}
+)
+
+
+def _storage_scalar_keys(model: type[Any], *containers: str) -> tuple[str, ...]:
+    return tuple(item.name for item in fields(model) if item.name not in {"name", *containers})
+
+
+STORAGE_PROPERTY_SCALAR_KEYS = _storage_scalar_keys(StorageProperty)
+STORAGE_DATA_SCALAR_KEYS = _storage_scalar_keys(StorageData, "values")
+STORAGE_INDEX_SCALAR_KEYS = _storage_scalar_keys(StorageIndex)
+STORAGE_SQL_MAP_SCALAR_KEYS = _storage_scalar_keys(
+    StorageSQLMap, "data", "row_id_specs", "subscripts"
+)
+STORAGE_SQL_MAP_DATA_SCALAR_KEYS = _storage_scalar_keys(StorageSQLMapData)
+STORAGE_SQL_MAP_ROW_ID_SPEC_SCALAR_KEYS = _storage_scalar_keys(StorageSQLMapRowIdSpec)
+STORAGE_SQL_MAP_SUB_SCALAR_KEYS = _storage_scalar_keys(
+    StorageSQLMapSub, "access_vars", "invalid_conditions"
+)
+STORAGE_SQL_MAP_SUB_ACCESS_VAR_SCALAR_KEYS = _storage_scalar_keys(StorageSQLMapSubAccessVar)
+STORAGE_SQL_MAP_SUB_INVALID_CONDITION_SCALAR_KEYS = _storage_scalar_keys(
+    StorageSQLMapSubInvalidCondition
+)

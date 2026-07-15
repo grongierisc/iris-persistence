@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import datetime
 import warnings
-from contextlib import contextmanager
-from typing import Any, Dict, Generic, Iterator, List, Optional, Type, TypeVar
+from typing import Any, Dict, Generic, List, Optional, Type, TypeVar
 
 import iris_persistence.models
+from iris_persistence.catalog import dbapi_cursor
 from iris_persistence.codecs import (
     NULL_STRING,
     coerce_value_for_load,
@@ -27,20 +27,6 @@ from iris_persistence.types import UNSET
 TModel = TypeVar("TModel", bound="iris_persistence.models.Model")
 
 _AUTO_SYNCED: set[type[iris_persistence.models.Model]] = set()
-
-
-@contextmanager
-def _dbapi_cursor(runtime: Any) -> Iterator[Any]:
-    """Yield a cursor from a fresh DB-API connection, closing both afterwards."""
-    conn = runtime.get_dbapi_connection()
-    cursor = conn.cursor()
-    try:
-        yield cursor
-    finally:
-        for handle in (cursor, conn):
-            close = getattr(handle, "close", None)
-            if callable(close):
-                close()
 
 
 def _is_null_object_reference(value: Any) -> bool:
@@ -70,40 +56,50 @@ def _build_model_from_iris_obj(
     d: dict = {}
 
     # str fields: direct getattr, normalise None/0 → "" (IRIS can return 0 for empty string props)
-    for field_name in model_cls._read_str_fields:
+    for plan in model_cls._read_fields["str"]:
+        field_name = plan.name
         d[field_name] = load_scalar_str(getattr(iris_obj, field_name, None))
 
     # int/float fields: direct getattr, IRIS already returns correct Python type
-    for field_name in model_cls._read_primitive_fields:
+    for plan in model_cls._read_fields["primitive"]:
+        field_name = plan.name
         d[field_name] = load_scalar_number(
             getattr(iris_obj, field_name, None),
             model_cls.__model_fields__[field_name].nullable,
         )
 
     # bool fields: IRIS stores as int 0/1, convert without calling coerce_value_for_load
-    for field_name in model_cls._read_bool_fields:
+    for plan in model_cls._read_fields["bool"]:
+        field_name = plan.name
         d[field_name] = load_scalar_bool(
             getattr(iris_obj, field_name, None),
             model_cls.__model_fields__[field_name].nullable,
         )
 
     # Scalar fields needing full coercion (e.g. datetime): still skip get_property dispatch
-    if model_cls._read_coerce_fields:
+    if model_cls._read_fields["coerce"]:
         runtime = get_runtime()
-        for field_name, declared_type in model_cls._read_coerce_fields:
+        for plan in model_cls._read_fields["coerce"]:
+            field_name, declared_type = plan.name, plan.model_field.declared_type
             raw_val = getattr(iris_obj, field_name, None)
             python_val = runtime.extract_python_value(raw_val)
             d[field_name] = coerce_value_for_load(declared_type, python_val)
 
     # Complex fields: percent_list, collections, related models — full runtime path
-    if model_cls._read_complex_fields:
+    if model_cls._read_fields["complex"]:
         runtime = get_runtime()
-        for field_name, model_field in model_cls._read_complex_fields:
+        for plan in model_cls._read_fields["complex"]:
+            field_name, model_field = plan.name, plan.model_field
             raw_val = runtime.get_property(iris_obj, field_name)
             if model_field._is_percent_list:
                 d[field_name] = runtime.decode_percent_list(raw_val)
             else:
-                python_val = runtime.extract_python_value(raw_val)
+                typed_extract = getattr(runtime, "extract_typed_python_value", None)
+                python_val = (
+                    typed_extract(raw_val, model_field._collection_kind)
+                    if callable(typed_extract)
+                    else runtime.extract_python_value(raw_val)
+                )
                 if python_val in (None, 0) and (
                     model_field._is_scalar_string or model_field.declared_type is str
                 ):
@@ -116,9 +112,11 @@ def _build_model_from_iris_obj(
                     d[field_name] = walk_declared_value(
                         python_val,
                         model_field.declared_type,
-                        lambda item, item_type: _build_model_from_iris_obj(item_type, item)
-                        if is_model_type(item_type)
-                        else coerce_value_for_load(item_type, item),
+                        lambda item, item_type: (
+                            _build_model_from_iris_obj(item_type, item)
+                            if is_model_type(item_type)
+                            else coerce_value_for_load(item_type, item)
+                        ),
                         stringify_keys=True,
                     )
                 else:
@@ -207,9 +205,8 @@ def _materialize_related_value(
 def _nullable_reference_has_no_initial_value(model_field: Any) -> bool:
     field_meta = model_field.field_info
     default = getattr(field_meta, "default", UNSET)
-    return (
-        getattr(field_meta, "initial_expression", None) is None
-        and (default is UNSET or default is None)
+    return getattr(field_meta, "initial_expression", None) is None and (
+        default is UNSET or default is None
     )
 
 
@@ -219,7 +216,13 @@ def _clear_nullable_model_reference(
     field_name: str,
     model_field: Any,
 ) -> bool:
-    try_native_invoke = getattr(runtime, "try_native_invoke", None)
+    clear_reference = getattr(runtime, "clear_reference", None)
+    if callable(clear_reference):
+        return clear_reference(
+            iris_obj,
+            field_name,
+            serial=is_serial_model_type(model_field.declared_type),
+        )
     if not is_serial_model_type(model_field.declared_type):
         for method_name, value in (
             (f"{field_name}SetObjectId", ""),
@@ -230,25 +233,12 @@ def _clear_nullable_model_reference(
                 runtime.invoke_method(iris_obj, method_name, value)
                 return True
             except Exception:
-                if callable(try_native_invoke) and try_native_invoke(
-                    iris_obj, method_name, value
-                ):
-                    return True
-
-    native_attempted = False
-    try_native_set = getattr(runtime, "try_native_set", None)
-    if callable(try_native_set):
-        cleared, native_attempted = try_native_set(iris_obj, field_name, "")
-        if cleared:
-            return True
-
-    if not native_attempted:
-        try:
-            runtime.set_property(iris_obj, field_name, "")
-            return True
-        except Exception:
-            pass
-    return False
+                continue
+    try:
+        runtime.set_property(iris_obj, field_name, "")
+        return True
+    except Exception:
+        return False
 
 
 def _resolve_sql_field_name(model_cls: Type[TModel], field_name: str) -> str:
@@ -270,7 +260,7 @@ def _resolve_sql_table_name(model_cls: Type[TModel]) -> str:
     runtime = get_runtime()
     row = None
     try:
-        with _dbapi_cursor(runtime) as cursor:
+        with dbapi_cursor(runtime) as cursor:
             cursor.execute(
                 (
                     "SELECT SqlTableName, SqlSchemaName "
@@ -297,9 +287,7 @@ def _resolve_sql_table_name(model_cls: Type[TModel]) -> str:
         sql_table_name, sql_schema_name = row
         if sql_table_name:
             resolved = (
-                f"{sql_schema_name}.{sql_table_name}"
-                if sql_schema_name
-                else str(sql_table_name)
+                f"{sql_schema_name}.{sql_table_name}" if sql_schema_name else str(sql_table_name)
             )
             setattr(model_cls, "_sql_table_name", resolved)
             return resolved
@@ -320,23 +308,19 @@ def _maybe_auto_sync_schema(model_cls: Type[TModel]) -> None:
         return
 
     mode = getattr(model_cls, "_sync_mode", iris_persistence.models.DEFAULT_SYNC_MODE)
-    if mode == "observe":
+    policy = iris_persistence.models.SYNC_POLICIES[mode]
+    if not policy.auto_sync:
+        reason = "never writes schema" if mode == "observe" else "is destructive"
         raise RuntimeError(
-            f"{model_cls.__name__} enables `Meta.auto_sync`, but mode='observe' "
-            "never writes schema. "
-            "Disable auto-sync or call `Model.sync_schema()` explicitly in a writable mode."
-        )
-    if mode == "replace":
-        raise RuntimeError(
-            f"{model_cls.__name__} enables `Meta.auto_sync`, but mode='replace' is destructive. "
+            f"{model_cls.__name__} enables `Meta.auto_sync`, but mode={mode!r} {reason}. "
             "Call `Model.sync_schema()` explicitly instead of auto-syncing on save."
         )
 
-    if mode == "extend" and model_cls in _AUTO_SYNCED:
+    if policy.cache_auto_sync and model_cls in _AUTO_SYNCED:
         return
 
     model_cls.sync_schema()
-    if mode == "extend":
+    if policy.cache_auto_sync:
         _AUTO_SYNCED.add(model_cls)
 
 
@@ -380,7 +364,7 @@ class QuerySet(Generic[TModel]):
             )
 
         results = []
-        with _dbapi_cursor(runtime) as cursor:
+        with dbapi_cursor(runtime) as cursor:
             cursor.execute(sql, params)
             for row in cursor:
                 row_id = row[0]
@@ -412,7 +396,8 @@ def _populate_iris_object(
     else:
         # Fast path: primitive scalar fields (str/int/float/bool) — no coercion needed,
         # bypass inject_iris_value dispatch and call set_property directly.
-        for field_name in cls._scalar_fast_fields:
+        for plan in cls._save_fields["scalar_fast"]:
+            field_name = plan.name
             if field_name not in inst_dict:
                 continue
             val = inst_dict.get(field_name)
@@ -429,8 +414,9 @@ def _populate_iris_object(
                 runtime.set_property(iris_obj, field_name, val)
 
         # Scalar fields that require coercion (e.g. datetime types).
-        if cls._scalar_coerce_fields:
-            for field_name, declared_type in cls._scalar_coerce_fields:
+        if cls._save_fields["scalar_coerce"]:
+            for plan in cls._save_fields["scalar_coerce"]:
+                field_name, declared_type = plan.name, plan.model_field.declared_type
                 if field_name not in inst_dict:
                     continue
                 val = inst_dict.get(field_name)
@@ -459,8 +445,9 @@ def _populate_iris_object(
                     )
 
         # Complex fields: collections, related models, readonly.
-        if cls._complex_save_fields:
-            for field_name, model_field in cls._complex_save_fields:
+        if cls._save_fields["complex"]:
+            for plan in cls._save_fields["complex"]:
+                field_name, model_field = plan.name, plan.model_field
                 if getattr(model_field.field_info, "readonly", False) and is_update:
                     continue
                 if field_name not in inst_dict:

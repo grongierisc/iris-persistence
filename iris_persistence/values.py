@@ -24,6 +24,9 @@ class IRISValueAdapterMixin:
     def get_property(self, obj: Any, prop_name: str) -> Any:
         raise NotImplementedError
 
+    def invoke_method(self, obj: Any, method_name: str, *args: Any) -> Any:
+        raise NotImplementedError
+
     def _populate_collection_property(
         self,
         obj: Any,
@@ -115,6 +118,32 @@ class IRISValueAdapterMixin:
         except Exception:
             return False
 
+    def clear_reference(self, obj: Any, field_name: str, *, serial: bool = False) -> bool:
+        """Clear an object reference across embedded and native IRIS APIs."""
+        if not serial:
+            for method_name, value in (
+                (f"{field_name}SetObjectId", ""),
+                (f"{field_name}SetObjectId", None),
+                (f"{field_name}SetObject", None),
+            ):
+                try:
+                    self.invoke_method(obj, method_name, value)
+                    return True
+                except Exception:
+                    if self.try_native_invoke(obj, method_name, value):
+                        return True
+
+        cleared, native_attempted = self.try_native_set(obj, field_name, "")
+        if cleared:
+            return True
+        if native_attempted:
+            return False
+        try:
+            self.set_property(obj, field_name, "")
+            return True
+        except Exception:
+            return False
+
     def _clear_property_value(self, obj: Any, field_name: str) -> bool:
         handles = self._native_handles(obj)
         if handles is not None:
@@ -178,21 +207,28 @@ class IRISValueAdapterMixin:
         self.set_property(obj, field_name, dyn_value)
         return True
 
-    def _inject_mapping_value(
+    def _inject_collection_value(
         self,
         obj: Any,
         field_name: str,
-        val: dict[Any, Any],
+        val: dict[Any, Any] | list[Any],
+        *,
+        kind: str,
         field_meta: Any | None = None,
     ) -> None:
-        if collection_kind_from_field(field_meta) is not None:
-            if self._populate_collection_property(obj, field_name, val, field_meta=field_meta):
-                return
-            if is_percent_list_field(field_meta):
-                self.set_property(obj, field_name, val)
-                return
+        if kind == "list" and is_percent_list_field(field_meta):
+            assert isinstance(val, list)
+            self.set_property(obj, field_name, self._encode_percent_list(val))
+            return
+        if collection_kind_from_field(
+            field_meta
+        ) is not None and self._populate_collection_property(
+            obj, field_name, val, field_meta=field_meta
+        ):
+            return
+        dynamic_class = "%Library.DynamicArray" if kind == "list" else "%Library.DynamicObject"
         try:
-            if self._set_dynamic_json_value(obj, field_name, "%Library.DynamicObject", val):
+            if self._set_dynamic_json_value(obj, field_name, dynamic_class, val):
                 return
         except Exception:
             pass
@@ -203,47 +239,28 @@ class IRISValueAdapterMixin:
         csv.writer(row, lineterminator="").writerow(values)
         return self.call_classmethod("%Library.List", "OdbcToLogical", row.getvalue())
 
-    def _inject_sequence_value(
-        self,
-        obj: Any,
-        field_name: str,
-        val: list[Any],
-        field_meta: Any | None = None,
-    ) -> None:
-        if is_percent_list_field(field_meta):
-            self.set_property(obj, field_name, self._encode_percent_list(val))
-            return
-        if collection_kind_from_field(field_meta) is not None:
-            if self._populate_collection_property(obj, field_name, val, field_meta=field_meta):
-                return
-        try:
-            if self._set_dynamic_json_value(obj, field_name, "%Library.DynamicArray", val):
-                return
-        except Exception:
-            pass
-        self.set_property(obj, field_name, val)
-
-    def _extract_collection_value(self, val: Any) -> Any:
-        if (
+    def _extract_collection_value(self, val: Any, expected_kind: str | None = None) -> Any:
+        if expected_kind != "list" and (
             callable(getattr(val, "Count", None))
             and callable(getattr(val, "Next", None))
             and callable(getattr(val, "GetAt", None))
         ):
             try:
                 key = getattr(val, "Next")("")
-                if isinstance(key, str) and key not in ("", None):
-                    first_value = getattr(val, "GetAt")(key)
-                    if first_value is not None:
-                        items: dict[str, Any] = {}
-                        while key not in ("", None):
-                            items[str(key)] = self.extract_python_value(getattr(val, "GetAt")(key))
-                            key = getattr(val, "Next")(key)
-                        if items:
-                            return items
+                items: dict[str, Any] = {}
+                while key not in ("", None):
+                    items[str(key)] = self.extract_python_value(getattr(val, "GetAt")(key))
+                    key = getattr(val, "Next")(key)
+                return items
             except Exception:
-                pass
+                if expected_kind == "array":
+                    return None
 
-        if callable(getattr(val, "Count", None)) and callable(getattr(val, "GetAt", None)):
+        if (
+            expected_kind in (None, "list")
+            and callable(getattr(val, "Count", None))
+            and callable(getattr(val, "GetAt", None))
+        ):
             try:
                 total = getattr(val, "Count")()
                 if isinstance(total, int):
@@ -256,10 +273,10 @@ class IRISValueAdapterMixin:
 
         return None
 
-    def extract_python_value(self, val: Any) -> Any:
+    def extract_python_value(self, val: Any, expected_collection_kind: str | None = None) -> Any:
         if type(val) in PYTHON_SCALAR_TYPES:
             return val
-        extracted_collection = self._extract_collection_value(val)
+        extracted_collection = self._extract_collection_value(val, expected_collection_kind)
         if extracted_collection is not None:
             return extracted_collection
 
@@ -298,6 +315,9 @@ class IRISValueAdapterMixin:
                 pass
         return val
 
+    def extract_typed_python_value(self, val: Any, collection_kind: str | None) -> Any:
+        return self.extract_python_value(val, collection_kind)
+
     def decode_percent_list(self, value: Any) -> list[Any]:
         if value in (None, ""):
             return []
@@ -326,8 +346,8 @@ class IRISValueAdapterMixin:
                 return
             self.set_property(obj, field_name, val)
         elif isinstance(val, dict):
-            self._inject_mapping_value(obj, field_name, val, field_meta=field_meta)
+            self._inject_collection_value(obj, field_name, val, kind="array", field_meta=field_meta)
         elif isinstance(val, list):
-            self._inject_sequence_value(obj, field_name, val, field_meta=field_meta)
+            self._inject_collection_value(obj, field_name, val, kind="list", field_meta=field_meta)
         else:
             self.set_property(obj, field_name, val)

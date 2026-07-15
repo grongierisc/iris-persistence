@@ -2,8 +2,13 @@ import decimal
 
 import pytest
 
+import iris_persistence.runtime as runtime_module
 import iris_persistence.schema as schema_module
 from iris_persistence import Field, Index, Model, StorageMigrationRequired, StorageTuning
+from iris_persistence.advanced_storage import (
+    StorageProperty,
+    tune_existing_storage_statistics,
+)
 from iris_persistence.schema import _map_python_type_to_iris
 from tests.fixtures.python.schema_mapping_fixtures import (
     ClassMetadataFixture,
@@ -538,6 +543,43 @@ def test_generated_default_storage_is_excluded_without_declaration(monkeypatch):
     assert diff.before_state.storage is None
     assert diff.after_state.storage is None
     assert all(operation.path != "storage" for operation in diff.operations)
+
+
+def test_explicit_existing_storage_statistics_tuning(monkeypatch):
+    runtime = _ExistingClassRuntime()
+    runtime.class_definition.Name = "Demo.ExistingTuning"
+    runtime.class_definition.Super = "%Persistent"
+    storage = _RecordingObject("%Dictionary.StorageDefinition")
+    storage.Name = "Default"
+    runtime.class_definition.Storages.Insert(storage)
+    monkeypatch.setattr(runtime_module, "get_runtime", lambda: runtime)
+
+    result = tune_existing_storage_statistics(
+        "Demo.ExistingTuning",
+        properties=(
+            StorageProperty(
+                name="Name",
+                average_field_size="32",
+                selectivity="5.0000%",
+            ),
+        ),
+    )
+
+    tuned = storage.Properties.items[0]
+    assert tuned.Name == "Name"
+    assert tuned.AverageFieldSize == "32"
+    assert tuned.Selectivity == "5.0000%"
+    assert result.storage_name == "Default"
+    assert result.updated_properties == ("Name",)
+    assert ("%SYSTEM.OBJ", "Compile", ("Demo.ExistingTuning", "fc /display=none")) in runtime.calls
+
+
+def test_existing_storage_statistics_reject_physical_locations():
+    with pytest.raises(ValueError, match="physical storage"):
+        tune_existing_storage_statistics(
+            "Demo.ExistingTuning",
+            properties=(StorageProperty(name="Name", stream_location="^Moved.Stream"),),
+        )
 
 
 def test_sync_schema_extend_adds_missing_indexes_without_duplication(monkeypatch):

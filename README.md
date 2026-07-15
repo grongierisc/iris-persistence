@@ -88,6 +88,68 @@ or serial models. After the class has compiled, the declaration is immutable thr
 sync. A mismatch raises `StorageMigrationRequired` before mutation and migration plans report a
 non-bypassable `blocked_storage_change`. Moving existing data requires a separate migration.
 
+### Advanced tuning of an existing class
+
+There are two distinct workflows for an existing class.
+
+Non-location optimizer statistics can be changed explicitly through the advanced API:
+
+```python
+from iris_persistence.advanced_storage import (
+    StorageProperty,
+    tune_existing_storage_statistics,
+)
+
+result = tune_existing_storage_statistics(
+    "App.Person",
+    properties=(
+        StorageProperty(
+            name="Name",
+            average_field_size="32",
+            selectivity="5.0000%",
+            outlier_selectivity='.999999:"UNKNOWN"',
+        ),
+    ),
+)
+```
+
+This opens the active writable `%Dictionary.StorageDefinition`, updates only storage-property
+statistics, saves, and recompiles the class. It cannot change any data, ID, index, stream,
+counter, version, or extent location. The complete runnable example is
+[examples/advanced_existing_statistics.py](examples/advanced_existing_statistics.py):
+
+```bash
+python examples/advanced_existing_statistics.py App.Person Name
+```
+
+InterSystems documents these writable fields on
+[`%Dictionary.StoragePropertyDefinition`](https://docs.intersystems.com/irislatest/csp/documatic/%25CSP.Documatic.cls?CLASSNAME=%25Dictionary.StoragePropertyDefinition&LIBRARY=%25SYS)
+and recommends modifying defined dictionary classes rather than compiled projections.
+
+Physical relocation is not an in-place tuning operation. Never point an occupied class at empty
+new globals: existing IDs, data, indexes, streams, and references would still be in the old
+locations. The safe general pattern is:
+
+1. Back up the namespace and establish a maintenance or dual-write window.
+2. Create a second persistent class with the target `StorageTuning`.
+3. Copy through object or SQL APIs and retain an old-ID to new-ID map.
+4. Validate row counts, field values, streams, indexes, relationships, and application queries.
+5. Cut application reads and writes over explicitly.
+6. Keep the source intact until rollback is no longer required.
+
+[examples/advanced_storage_relocation.py](examples/advanced_storage_relocation.py) implements
+the create/copy/validate portion and deliberately does not perform cutover or delete the source:
+
+```bash
+python examples/advanced_storage_relocation.py             # review-only
+python examples/advanced_storage_relocation.py --execute-copy
+```
+
+Adapt both model shapes before running it. IDs and external references are not automatically
+preserved. InterSystems likewise warns not to redefine or delete storage for a class containing
+data in its
+[persistent storage guidance](https://docs.intersystems.com/irislatest/csp/docbook/DocBook.UI.Page.cls/framework-api/scbi/Documatic/DocBook.UI.Page.cls?KEY=GOBJ_storageglobals).
+
 ## How the workflow works now
 
 The normal lifecycle has one Python-owned model definition and one IRIS-owned compiled class:

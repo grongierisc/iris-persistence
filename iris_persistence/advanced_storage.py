@@ -128,6 +128,130 @@ class StorageDefinition:
     sql_maps: Tuple[StorageSQLMap, ...] = ()
 
 
+@dataclass(frozen=True)
+class ExistingStorageTuningResult:
+    """Summary of an explicit in-place statistics update."""
+
+    classname: str
+    storage_name: str
+    updated_properties: Tuple[str, ...]
+
+
+_EXISTING_STORAGE_STATISTIC_KEYS = (
+    "average_field_size",
+    "selectivity",
+    "outlier_selectivity",
+    "histogram",
+    "child_block_count",
+    "child_extent_size",
+    "bias_queries_as_outlier",
+)
+
+
+def _runtime_property(runtime: Any, obj: Any, name: str) -> Any:
+    try:
+        return runtime.get_property(obj, name)
+    except (AttributeError, RuntimeError):
+        return None
+
+
+def _runtime_items(runtime: Any, collection: Any) -> tuple[Any, ...]:
+    if collection is None:
+        return ()
+    count = int(runtime.invoke_method(collection, "Count") or 0)
+    return tuple(runtime.invoke_method(collection, "GetAt", index) for index in range(1, count + 1))
+
+
+def tune_existing_storage_statistics(
+    classname: str,
+    properties: Tuple[StorageProperty, ...],
+    *,
+    storage_name: str | None = None,
+) -> ExistingStorageTuningResult:
+    """Update non-location optimizer statistics on an existing defined storage.
+
+    This expert API never changes data, ID, index, stream, counter, version, or extent
+    locations. Physical relocation requires a separate data-copy and cutover workflow.
+    """
+    from iris_persistence.runtime import get_runtime
+
+    if not properties:
+        raise ValueError("At least one StorageProperty tuning is required")
+    if any(not isinstance(item, StorageProperty) for item in properties):
+        raise TypeError("properties must contain StorageProperty instances")
+    if any(item.stream_location is not None for item in properties):
+        raise ValueError("stream_location is physical storage and cannot be tuned in place")
+
+    runtime = get_runtime()
+    runtime.begin_transaction()
+    try:
+        class_definition = runtime.get_object("%Dictionary.ClassDefinition", classname)
+        if class_definition is None:
+            raise ValueError(f"IRIS class {classname!r} does not exist")
+
+        selected_name = storage_name or _runtime_property(
+            runtime, class_definition, "StorageStrategy"
+        ) or "Default"
+        storages = _runtime_items(
+            runtime,
+            _runtime_property(runtime, class_definition, "Storages"),
+        )
+        storage = next(
+            (
+                item
+                for item in storages
+                if str(_runtime_property(runtime, item, "Name")) == selected_name
+            ),
+            None,
+        )
+        if storage is None:
+            raise ValueError(
+                f"Storage {selected_name!r} is not defined for IRIS class {classname!r}"
+            )
+
+        property_collection = _runtime_property(runtime, storage, "Properties")
+        existing = {
+            str(_runtime_property(runtime, item, "Name")): item
+            for item in _runtime_items(runtime, property_collection)
+        }
+        for tuning in properties:
+            definition = existing.get(tuning.name)
+            if definition is None:
+                definition = runtime.new_object("%Dictionary.StoragePropertyDefinition")
+                runtime.set_property(definition, "Name", tuning.name)
+                runtime.set_property(definition, "parent", f"{classname}||{selected_name}")
+                runtime.invoke_method(property_collection, "Insert", definition)
+            for key in _EXISTING_STORAGE_STATISTIC_KEYS:
+                value = getattr(tuning, key)
+                if value is None:
+                    continue
+                runtime_name = "".join(part.capitalize() for part in key.split("_"))
+                runtime.set_property(
+                    definition,
+                    runtime_name,
+                    1 if key == "bias_queries_as_outlier" and value else value,
+                )
+
+        status = runtime.save_object(class_definition)
+        if not runtime.is_ok(status):
+            raise RuntimeError(f"Storage tuning save failed: {runtime.format_status(status)}")
+        status = runtime.call_classmethod(
+            "%SYSTEM.OBJ", "Compile", classname, "fc /display=none"
+        )
+        if not runtime.is_ok(status):
+            raise RuntimeError(f"Storage tuning compile failed: {runtime.format_status(status)}")
+        runtime.commit_transaction()
+    except Exception:
+        runtime.rollback_transaction()
+        raise
+
+    return ExistingStorageTuningResult(
+        classname=classname,
+        storage_name=str(selected_name),
+        updated_properties=tuple(item.name for item in properties),
+    )
+
+
 STORAGE_DEFINITION_SCALAR_KEYS = tuple(
     item.name
     for item in fields(StorageDefinition)

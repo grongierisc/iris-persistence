@@ -272,19 +272,23 @@ hidden-storage fallback queries are intentionally not used.
 
 ## Runtime configuration
 
-Embedded Python discovers its IRIS runtime automatically. For native Python, pass an IRIS
-connection:
+Embedded Python discovers its IRIS runtime automatically. For Native Python, configure the wrapper
+through an immutable `RuntimeConfig`:
 
 ```python
-import iris_persistence
+from iris_persistence import RuntimeConfig, configure_runtime
 
-iris_persistence.configure_runtime(connection)
+configure_runtime(RuntimeConfig(native_connection=connection))
 ```
 
 Both runtime paths use the same model and schema APIs.
 
-In 0.4, the root `configure`, `materialize`, and `from_iris` names remain compatibility wrappers
-and emit `DeprecationWarning`; use `configure_runtime`, `Model.to_iris`, and `Model.from_iris`.
+The root `configure` function and the former runtime adapter classes were removed. The root
+`materialize` and `from_iris` names remain deprecated compatibility wrappers; prefer
+`Model.to_iris` and `Model.from_iris`.
+
+See [runtime boundary migration and breaking changes](docs/runtime_boundary_migration.md) before
+upgrading custom runtimes, Native integrations, or code that directly manages DBAPI connections.
 
 ## Development
 

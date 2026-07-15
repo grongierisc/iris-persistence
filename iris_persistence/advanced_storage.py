@@ -252,6 +252,102 @@ def tune_existing_storage_statistics(
     )
 
 
+def _state_items(model: type[Any], mapping: dict[str, dict[str, Any]]) -> tuple[Any, ...]:
+    allowed = {item.name for item in fields(model)} - {"name"}
+    return tuple(
+        model(name=name, **{key: value for key, value in values.items() if key in allowed})
+        for name, values in sorted(mapping.items())
+    )
+
+
+def _sql_map_subs(mapping: dict[str, dict[str, Any]]) -> tuple[StorageSQLMapSub, ...]:
+    result = []
+    allowed = {item.name for item in fields(StorageSQLMapSub)} - {
+        "name",
+        "access_vars",
+        "invalid_conditions",
+    }
+    for name, values in sorted(mapping.items()):
+        result.append(
+            StorageSQLMapSub(
+                name=name,
+                **{key: value for key, value in values.items() if key in allowed},
+                access_vars=_state_items(
+                    StorageSQLMapSubAccessVar, values.get("access_vars", {})
+                ),
+                invalid_conditions=_state_items(
+                    StorageSQLMapSubInvalidCondition,
+                    values.get("invalid_conditions", {}),
+                ),
+            )
+        )
+    return tuple(result)
+
+
+def _sql_maps(mapping: dict[str, dict[str, Any]]) -> tuple[StorageSQLMap, ...]:
+    result = []
+    allowed = {item.name for item in fields(StorageSQLMap)} - {
+        "name",
+        "data",
+        "row_id_specs",
+        "subscripts",
+    }
+    for name, values in sorted(mapping.items()):
+        result.append(
+            StorageSQLMap(
+                name=name,
+                **{key: value for key, value in values.items() if key in allowed},
+                data=_state_items(StorageSQLMapData, values.get("data", {})),
+                row_id_specs=_state_items(
+                    StorageSQLMapRowIdSpec, values.get("row_id_specs", {})
+                ),
+                subscripts=_sql_map_subs(values.get("subscripts", {})),
+            )
+        )
+    return tuple(result)
+
+
+def inspect_existing_storage(
+    classname: str,
+    *,
+    storage_name: str | None = None,
+    _runtime: Any | None = None,
+) -> StorageDefinition:
+    """Return a typed snapshot of writable storage metadata for an existing class."""
+    from iris_persistence.runtime import get_runtime
+    from iris_persistence.schema_inspection import _collect_live_schema_state
+
+    state = _collect_live_schema_state(
+        _runtime or get_runtime(),
+        classname,
+        include_storage=True,
+        storage_name=storage_name,
+    )
+    storage = state.storage
+    if storage is None:
+        target = f" storage {storage_name!r}" if storage_name else " active storage"
+        raise ValueError(f"IRIS class {classname!r} has no{target}")
+
+    attrs = {
+        key: value
+        for key, value in storage.get("attrs", {}).items()
+        if key in STORAGE_DEFINITION_SCALAR_KEYS
+    }
+    data = []
+    for name, values in sorted(storage.get("data", {}).items()):
+        item_values = dict(values)
+        stored_values = item_values.pop("values", {})
+        data.append(StorageData(name=name, values=stored_values, **item_values))
+    return StorageDefinition(
+        name=str(storage.get("name") or storage_name or "Default"),
+        **attrs,
+        data=tuple(data),
+        indices=_state_items(StorageIndex, storage.get("indices", {})),
+        properties=_state_items(StorageProperty, storage.get("properties", {})),
+        sql_maps=_sql_maps(storage.get("sql_maps", {})),
+    )
+
+
 STORAGE_DEFINITION_SCALAR_KEYS = tuple(
     item.name
     for item in fields(StorageDefinition)

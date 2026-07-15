@@ -227,6 +227,7 @@ def _collect_live_schema_state(
     classname: str,
     *,
     include_storage: bool = False,
+    storage_name: str | None = None,
 ) -> SchemaState:
     state = _empty_schema_state(_schema_classname_for_save(classname))
     existing_classname = _find_existing_classname(runtime, classname)
@@ -296,7 +297,9 @@ def _collect_live_schema_state(
     if not include_storage:
         return SchemaState.from_dict(state)
 
-    storage_strategy = _safe_get_property(runtime, class_def, "StorageStrategy") or "Default"
+    storage_strategy = storage_name or _safe_get_property(
+        runtime, class_def, "StorageStrategy"
+    ) or "Default"
     storages = _iter_runtime_list(runtime, _safe_get_property(runtime, class_def, "Storages"))
     selected_storage = None
     for item in storages:
@@ -304,7 +307,7 @@ def _collect_live_schema_state(
         if storage_strategy and name == storage_strategy:
             selected_storage = item
             break
-    if selected_storage is None and storages:
+    if selected_storage is None and storage_name is None and storages:
         selected_storage = storages[0]
 
     if selected_storage is not None:

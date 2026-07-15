@@ -4,9 +4,11 @@ import pytest
 
 import iris_persistence.runtime as runtime_module
 import iris_persistence.schema as schema_module
+import iris_persistence.schema_inspection as schema_inspection_module
 from iris_persistence import Field, Index, Model, StorageMigrationRequired, StorageTuning
 from iris_persistence.advanced_storage import (
     StorageProperty,
+    inspect_existing_storage,
     tune_existing_storage_statistics,
 )
 from iris_persistence.schema import _map_python_type_to_iris
@@ -580,6 +582,42 @@ def test_existing_storage_statistics_reject_physical_locations():
             "Demo.ExistingTuning",
             properties=(StorageProperty(name="Name", stream_location="^Moved.Stream"),),
         )
+
+
+def test_inspect_existing_storage_returns_typed_writable_snapshot(monkeypatch):
+    state = schema_module.SchemaState.from_dict(
+        {
+            "classname": "Demo.ExistingTuning",
+            "super": "%Persistent",
+            "storage": {
+                "name": "Default",
+                "attrs": {
+                    "type": "%Storage.Persistent",
+                    "data_location": "^Demo.ExistingD",
+                },
+                "data": {
+                    "DefaultData": {
+                        "structure": "listnode",
+                        "values": {"1": "Name"},
+                    }
+                },
+                "properties": {"Name": {"selectivity": "5.0000%"}},
+            },
+        }
+    )
+    monkeypatch.setattr(runtime_module, "get_runtime", lambda: object())
+    monkeypatch.setattr(
+        schema_inspection_module,
+        "_collect_live_schema_state",
+        lambda *_args, **_kwargs: state,
+    )
+
+    snapshot = inspect_existing_storage("Demo.ExistingTuning")
+
+    assert snapshot.name == "Default"
+    assert snapshot.data_location == "^Demo.ExistingD"
+    assert snapshot.data[0].values == {"1": "Name"}
+    assert snapshot.properties[0].selectivity == "5.0000%"
 
 
 def test_sync_schema_extend_adds_missing_indexes_without_duplication(monkeypatch):

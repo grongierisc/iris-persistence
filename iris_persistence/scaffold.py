@@ -19,6 +19,7 @@ from iris_persistence.advanced_storage import (
     StorageIndex,
     StorageProperty,
     StorageSQLMap,
+    inspect_existing_storage,
 )
 from iris_persistence.field_utils import (
     collection_kind_from_iris_type,
@@ -34,8 +35,6 @@ from iris_persistence.scaffold_reader import (
     _CompiledParameter,
     _CompiledProperty,
 )
-from iris_persistence.schema import _storage_meta_from_state
-from iris_persistence.schema_inspection import _collect_live_schema_state
 
 
 def _python_default_literal(prop: _CompiledProperty) -> tuple[str | None, str | None]:
@@ -726,10 +725,10 @@ def scaffold_from_iris(
                     _record_warning(result, "indexes", class_info.name, exc)
             if storage == "custom":
                 try:
-                    storage_state = _collect_live_schema_state(
-                        runtime, class_info.name, include_storage=True
-                    ).storage
-                    storage_definition = _storage_meta_from_state(storage_state)
+                    storage_definition = inspect_existing_storage(
+                        class_info.name,
+                        _runtime=runtime,
+                    )
                     if storage_definition is not None:
                         storage_data = list(storage_definition.data)
                         storage_indices = list(storage_definition.indices)

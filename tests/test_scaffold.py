@@ -4,11 +4,11 @@ import importlib.util
 import sys
 import uuid
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 import iris_persistence.scaffold as scaffold_module
+from iris_persistence.advanced_storage import StorageData, StorageDefinition
 
 
 def _load_module(module_path: Path):
@@ -563,20 +563,22 @@ def test_scaffold_custom_storage_snapshots_writable_definition(monkeypatch, tmp_
         ): [],
     }
     runtime = _StubRuntime(rows_by_query)
-    storage_state = {
-        "kind": None,
-        "name": "CustomStorage",
-        "attrs": {"type": "%Storage.Persistent", "data_location": "^Demo.CustomD"},
-        "data": {"DefaultData": {"structure": "listnode", "values": {"1": "Title"}}},
-        "indices": {},
-        "properties": {},
-        "sql_maps": {},
-    }
+    storage = StorageDefinition(
+        name="CustomStorage",
+        data_location="^Demo.CustomD",
+        data=(
+            StorageData(
+                name="DefaultData",
+                structure="listnode",
+                values={"1": "Title"},
+            ),
+        ),
+    )
     monkeypatch.setattr(scaffold_module, "get_runtime", lambda: runtime)
     monkeypatch.setattr(
         scaffold_module,
-        "_collect_live_schema_state",
-        lambda *_args, **_kwargs: SimpleNamespace(storage=storage_state),
+        "inspect_existing_storage",
+        lambda *_args, **_kwargs: storage,
     )
 
     result = scaffold_module.scaffold_from_iris(

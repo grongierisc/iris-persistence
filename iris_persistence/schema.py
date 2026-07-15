@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
-from types import SimpleNamespace
 from typing import Any, Callable, Type
 
 import iris_persistence.models
@@ -21,7 +19,6 @@ from iris_persistence.schema_state import (
     _PROPERTY_FLAG_FIELDS,
     _PROPERTY_PARAM_FIELDS,
     _PROPERTY_VALUE_FIELDS,
-    _STORAGE_SQL_MAP_STATE_CHILDREN,
     CLASS_METADATA_FLAG_KEYS,
     CLASS_METADATA_KEYS,
     STORAGE_DATA_KEYS,
@@ -655,36 +652,6 @@ def _sync_storage(
     _insert_storage_sql_maps(runtime, storage_definition, classname, storage_name, custom_storage)
 
     runtime.invoke_method(storage_list, "Insert", storage_definition)
-
-
-def _namespace_items(
-    mapping: dict[str, dict[str, Any]],
-    children: tuple[Any, ...] = (),
-) -> tuple[Any, ...]:
-    result = []
-    for name, values in sorted(mapping.items(), key=lambda item: item[0]):
-        attrs = deepcopy(values)
-        for child_name, _keys, grandchildren in children:
-            attrs[child_name] = _namespace_items(attrs.pop(child_name, {}), grandchildren)
-        result.append(SimpleNamespace(name=name, **attrs))
-    return tuple(result)
-
-
-def _storage_meta_from_state(storage_state: dict[str, Any] | None) -> Any:
-    if storage_state is None:
-        return None
-
-    attrs = deepcopy(storage_state.get("attrs", {}))
-    return SimpleNamespace(
-        name=storage_state.get("name"),
-        **attrs,
-        data=_namespace_items(storage_state.get("data", {})),
-        indices=_namespace_items(storage_state.get("indices", {})),
-        properties=_namespace_items(storage_state.get("properties", {})),
-        sql_maps=_namespace_items(
-            storage_state.get("sql_maps", {}), _STORAGE_SQL_MAP_STATE_CHILDREN
-        ),
-    )
 
 
 def _save_and_compile_schema_class(

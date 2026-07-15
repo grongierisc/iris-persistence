@@ -7,6 +7,7 @@ import pytest
 from iris_persistence import Field, Index, Model, StorageMigrationRequired, StorageTuning
 from iris_persistence.advanced_storage import (
     StorageProperty,
+    inspect_existing_storage,
     tune_existing_storage_statistics,
 )
 from iris_persistence.migrations import apply_plan, create_plan, verify_plan
@@ -196,6 +197,10 @@ def test_tuned_default_is_completed_by_compiler_and_then_immutable():
             (f"{TUNED_CLASSNAME}||Default", "Name"),
         )
         assert cursor.fetchone()[0] == "5.0000%"
+        snapshot = inspect_existing_storage(TUNED_CLASSNAME)
+        assert snapshot.name == "Default"
+        assert snapshot.data_location == "^Demo.ManagedTunedD"
+        assert {item.name: item for item in snapshot.properties}["Name"].selectivity == "5.0000%"
 
         repeated_diff = ManagedTunedStorage.diff_schema()
         assert repeated_diff.has_changes is False, repeated_diff.to_unified_diff()

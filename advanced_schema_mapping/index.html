@@ -81,71 +81,27 @@
             
             <li class="nav-item" data-bs-level="1"><a href="#advanced-schema-mapping" class="nav-link">Advanced Schema Mapping</a>
               <ul class="nav flex-column">
-            <li class="nav-item" data-bs-level="2"><a href="#mental-model" class="nav-link">Mental Model</a>
+            <li class="nav-item" data-bs-level="2"><a href="#ownership-model" class="nav-link">Ownership model</a>
               <ul class="nav flex-column">
               </ul>
             </li>
-            <li class="nav-item" data-bs-level="2"><a href="#meta-mapping" class="nav-link">Meta Mapping</a>
+            <li class="nav-item" data-bs-level="2"><a href="#class-metadata" class="nav-link">Class metadata</a>
               <ul class="nav flex-column">
               </ul>
             </li>
-            <li class="nav-item" data-bs-level="2"><a href="#mode-semantics" class="nav-link">Mode Semantics</a>
+            <li class="nav-item" data-bs-level="2"><a href="#creation-time-tuning" class="nav-link">Creation-time tuning</a>
               <ul class="nav flex-column">
               </ul>
             </li>
-            <li class="nav-item" data-bs-level="2"><a href="#auto-sync-semantics" class="nav-link">Auto Sync Semantics</a>
+            <li class="nav-item" data-bs-level="2"><a href="#complete-custom-storage" class="nav-link">Complete custom storage</a>
               <ul class="nav flex-column">
               </ul>
             </li>
-            <li class="nav-item" data-bs-level="2"><a href="#classmetadata-mapping" class="nav-link">ClassMetadata Mapping</a>
+            <li class="nav-item" data-bs-level="2"><a href="#immutability-and-migration" class="nav-link">Immutability and migration</a>
               <ul class="nav flex-column">
               </ul>
             </li>
-            <li class="nav-item" data-bs-level="2"><a href="#parameter-mapping" class="nav-link">Parameter Mapping</a>
-              <ul class="nav flex-column">
-              </ul>
-            </li>
-            <li class="nav-item" data-bs-level="2"><a href="#field-mapping" class="nav-link">Field Mapping</a>
-              <ul class="nav flex-column">
-              </ul>
-            </li>
-            <li class="nav-item" data-bs-level="2"><a href="#type-projection-rules" class="nav-link">Type Projection Rules</a>
-              <ul class="nav flex-column">
-              </ul>
-            </li>
-            <li class="nav-item" data-bs-level="2"><a href="#index-mapping" class="nav-link">Index Mapping</a>
-              <ul class="nav flex-column">
-              </ul>
-            </li>
-            <li class="nav-item" data-bs-level="2"><a href="#storagedefinition-mapping" class="nav-link">StorageDefinition Mapping</a>
-              <ul class="nav flex-column">
-              </ul>
-            </li>
-            <li class="nav-item" data-bs-level="2"><a href="#storagedata-mapping" class="nav-link">StorageData Mapping</a>
-              <ul class="nav flex-column">
-              </ul>
-            </li>
-            <li class="nav-item" data-bs-level="2"><a href="#storageindex-mapping" class="nav-link">StorageIndex Mapping</a>
-              <ul class="nav flex-column">
-              </ul>
-            </li>
-            <li class="nav-item" data-bs-level="2"><a href="#storageproperty-mapping" class="nav-link">StorageProperty Mapping</a>
-              <ul class="nav flex-column">
-              </ul>
-            </li>
-            <li class="nav-item" data-bs-level="2"><a href="#storagesqlmap-mapping" class="nav-link">StorageSQLMap Mapping</a>
-              <ul class="nav flex-column">
-              </ul>
-            </li>
-            <li class="nav-item" data-bs-level="2"><a href="#sql-projection-notes" class="nav-link">SQL Projection Notes</a>
-              <ul class="nav flex-column">
-              </ul>
-            </li>
-            <li class="nav-item" data-bs-level="2"><a href="#migration-workflow" class="nav-link">Migration Workflow</a>
-              <ul class="nav flex-column">
-              </ul>
-            </li>
-            <li class="nav-item" data-bs-level="2"><a href="#current-coverage" class="nav-link">Current Coverage</a>
+            <li class="nav-item" data-bs-level="2"><a href="#scaffolding" class="nav-link">Scaffolding</a>
               <ul class="nav flex-column">
               </ul>
             </li>
@@ -157,1071 +113,102 @@
                     <div class="col-md-9" role="main">
 
 <h1 id="advanced-schema-mapping">Advanced Schema Mapping</h1>
-<p>This document maps <code>iris_persistence</code>'s Python model metadata to the IRIS class dictionary,
-SQL projection, and physical storage metadata.</p>
-<p><code>iris_persistence</code> works across three layers:</p>
-<ul>
-<li>Python model definition: <code>Model</code>, <code>Field(...)</code>, <code>Index(...)</code>, <code>StorageDefinition(...)</code></li>
-<li>IRIS class metadata: <code>%Dictionary.*Definition</code> and <code>%Dictionary.Compiled*</code></li>
-<li>SQL/storage projection: projected SQL table/column/index shape plus global storage layout</li>
-</ul>
-<h2 id="mental-model">Mental Model</h2>
-<p><code>iris_persistence</code> does not generate standalone SQL DDL directly.
-It writes IRIS class metadata, and IRIS projects that metadata into SQL schema.</p>
-<p>In practice:</p>
-<ul>
-<li><code>Model.sync_schema()</code> writes <code>%Dictionary.ClassDefinition</code>, <code>%Dictionary.PropertyDefinition</code>,
-  <code>%Dictionary.IndexDefinition</code>, and storage metadata</li>
-<li>IRIS compiles the class</li>
-<li>the compiled class becomes the source of truth for the SQL projection</li>
-<li><code>scaffold_from_iris()</code> reads <code>%Dictionary.Compiled*</code> metadata back into Python</li>
-<li><code>scaffold_from_iris(..., scaffold_selectivity=True)</code> also enriches storage-property statistics
-  from <code>%Dictionary.StoragePropertyDefinition</code> when compiled storage-property rows are sparse</li>
-<li><code>scaffold_from_iris(..., extract_hidden_meta=True)</code> also includes dictionary-only storage metadata
-  that is not normally represented in the UDL/XML storage block</li>
-</ul>
-<h2 id="meta-mapping">Meta Mapping</h2>
-<table>
-<thead>
-<tr>
-<th>Python <code>Meta</code> attribute</th>
-<th>IRIS metadata target</th>
-<th>SQL / runtime effect</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>classname</code></td>
-<td><code>%Dictionary.ClassDefinition.Name</code></td>
-<td>Defines the IRIS class name; SQL table naming is derived by IRIS from the class unless separately customized in IRIS</td>
-</tr>
-<tr>
-<td><code>mode</code></td>
-<td>no direct dictionary field</td>
-<td>Controls ownership behavior in <code>iris_persistence</code>: <code>managed</code>, <code>extend</code>, <code>replace</code>, <code>observe</code>; default is <code>managed</code></td>
-</tr>
-<tr>
-<td><code>auto_sync</code></td>
-<td>no direct dictionary field</td>
-<td>When <code>True</code>, <code>save()</code> runs <code>sync_schema()</code> automatically before writing; blocked for <code>observe</code> and <code>replace</code></td>
-</tr>
-<tr>
-<td><code>superclasses</code></td>
-<td><code>%Dictionary.ClassDefinition.Super</code></td>
-<td>Controls whether the class is <code>%Persistent</code>, <code>%SerialObject</code>, <code>Ens.Request</code>, etc., which changes table projection and object behavior</td>
-</tr>
-<tr>
-<td><code>metadata=ClassMetadata(...)</code></td>
-<td><code>%Dictionary.ClassDefinition</code> scalar flags</td>
-<td>Class-level descriptive, compiler-facing, and SQL projection metadata</td>
-</tr>
-<tr>
-<td><code>parameters</code></td>
-<td><code>%Dictionary.ParameterDefinition</code> and <code>%Dictionary.ClassDefinition.Parameters</code></td>
-<td>IRIS class parameters; some may affect SQL/storage behavior depending on IRIS semantics</td>
-</tr>
-<tr>
-<td><code>indexes</code></td>
-<td><code>%Dictionary.IndexDefinition</code></td>
-<td>Projects SQL indexes and related access paths</td>
-</tr>
-<tr>
-<td><code>storage</code></td>
-<td><code>%Dictionary.StorageDefinition</code> and children</td>
-<td>Controls physical storage layout and custom SQL map projection</td>
-</tr>
-</tbody>
-</table>
-<h2 id="mode-semantics">Mode Semantics</h2>
+<h2 id="ownership-model">Ownership model</h2>
+<p>Version 0.3.0 has two modes:</p>
 <table>
 <thead>
 <tr>
 <th>Mode</th>
-<th>IRIS write behavior</th>
-<th>Use case</th>
+<th>Authority</th>
+<th>Behavior</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><code>managed</code></td>
-<td>Adds/updates Python-declared members and removes omitted Python-owned parameters, properties, and indexes</td>
-<td>Migration-controlled production classes</td>
-</tr>
-<tr>
-<td><code>extend</code></td>
-<td>Adds/updates Python-declared members, keeps unrelated IRIS metadata</td>
-<td>Brownfield classes and auto-sync demos</td>
-</tr>
-<tr>
-<td><code>replace</code></td>
-<td>Rebuilds the class from Python metadata</td>
-<td>Python-owned destructive rebuilds</td>
+<td>Python for declared members</td>
+<td>Reconciles properties, indexes, parameters, and class metadata without rebuilding the class</td>
 </tr>
 <tr>
 <td><code>observe</code></td>
-<td>Never writes schema</td>
-<td>Bind to existing IRIS classes</td>
+<td>IRIS</td>
+<td>Performs no schema write or compile</td>
 </tr>
 </tbody>
 </table>
-<h2 id="auto-sync-semantics">Auto Sync Semantics</h2>
-<p><code>Meta.auto_sync = True</code> is an opt-in convenience for development and demos.
-It only affects <code>save()</code>.</p>
-<p>Behavior:</p>
+<p>IRIS owns compiler-generated <code>Storage Default</code>, SQL projection artifacts, and runtime methods.
+Python does not reconstruct or diff those artifacts.</p>
+<h2 id="class-metadata">Class metadata</h2>
+<table>
+<thead>
+<tr>
+<th>Python</th>
+<th>Writable dictionary target</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Model field</td>
+<td><code>%Dictionary.PropertyDefinition</code></td>
+</tr>
+<tr>
+<td><code>Meta.indexes</code></td>
+<td><code>%Dictionary.IndexDefinition</code></td>
+</tr>
+<tr>
+<td><code>Meta.parameters</code></td>
+<td><code>%Dictionary.ParameterDefinition</code></td>
+</tr>
+<tr>
+<td><code>Meta.metadata</code></td>
+<td><code>%Dictionary.ClassDefinition</code> scalar fields</td>
+</tr>
+</tbody>
+</table>
+<p>Managed sync removes omitted Python-owned properties, indexes, and parameters. Inherited and
+system members are preserved.</p>
+<h2 id="creation-time-tuning">Creation-time tuning</h2>
+<p>Prefer <code>Meta.parameters</code>, especially <code>DEFAULTGLOBAL</code> and <code>USEEXTENTSET</code>. When explicit physical
+locations are necessary, <code>StorageTuning</code> supports only:</p>
 <ul>
-<li><code>auto_sync=False</code>:
-  <code>save()</code> never writes schema implicitly. If the IRIS class is missing, save fails with a
-  runtime error that points you to <code>Model.sync_schema()</code>.</li>
-<li>default <code>mode="managed", auto_sync=True</code>:
-  <code>save()</code> calls <code>Model.sync_schema()</code> before writing the row. This can add, update, or delete
-  Python-owned schema members, so use it only where implicit schema ownership is acceptable.</li>
-<li><code>mode="extend", auto_sync=True</code>:
-  <code>save()</code> calls <code>Model.sync_schema()</code> before writing the row. This will create the class if
-  needed and add missing Python-declared fields and indexes non-destructively.</li>
-<li><code>mode="observe", auto_sync=True</code>:
-  <code>save()</code> raises an error. <code>observe</code> is read-only from a schema-management perspective.</li>
-<li><code>mode="replace", auto_sync=True</code>:
-  <code>save()</code> raises an error. Destructive schema replacement must remain explicit via
-  <code>Model.sync_schema()</code>.</li>
+<li><code>data_location</code></li>
+<li><code>extent_location</code></li>
+<li><code>id_location</code></li>
+<li><code>index_location</code></li>
+<li><code>stream_location</code></li>
+<li><code>counter_location</code></li>
+<li><code>version_location</code></li>
+<li><code>index_locations</code>, keyed by index name</li>
 </ul>
-<p>Recommended user experience:</p>
+<p>For a new class, these values pre-seed <code>%Dictionary.StorageDefinition</code> named <code>Default</code>. The class
+is then compiled once, allowing IRIS to generate the remaining storage nodes.</p>
+<h2 id="complete-custom-storage">Complete custom storage</h2>
+<p>The full dataclasses live in <code>iris_persistence.advanced_storage</code>:</p>
 <ul>
-<li>demos and first-run developer workflows:
-  default <code>mode="managed", auto_sync=True</code> for Python-owned schemas, or <code>mode="extend", auto_sync=True</code>
-  when IRIS-only members must be preserved</li>
-<li>migration-controlled production classes:
-  default <code>mode="managed"</code> with reviewed <code>plan -&gt; apply -&gt; verify</code></li>
-<li>existing production classes:
-  <code>mode="observe"</code> or explicit <code>sync_schema()</code></li>
-<li>Python-owned destructive rebuilds:
-  explicit <code>Model.sync_schema()</code> with <code>mode="replace"</code></li>
+<li><code>StorageDefinition</code></li>
+<li><code>StorageData</code></li>
+<li><code>StorageIndex</code></li>
+<li><code>StorageProperty</code></li>
+<li><code>StorageSQLMap</code> and its nested definitions</li>
 </ul>
-<p>Example:</p>
-<pre><code class="language-python">class Demo(Model, persistent=True):
-    Name: Annotated[str, Field(required=True)]
-
-    class Meta:
-        classname = &quot;Demo.Demo&quot;
-        mode = &quot;extend&quot;
-        auto_sync = True
-</code></pre>
-<h2 id="classmetadata-mapping">ClassMetadata Mapping</h2>
-<p><code>Meta.metadata = ClassMetadata(...)</code> maps to scalar fields on <code>%Dictionary.ClassDefinition</code>.</p>
-<table>
-<thead>
-<tr>
-<th>Python <code>ClassMetadata(...)</code></th>
-<th>IRIS metadata target</th>
-<th>Meaning</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>description</code></td>
-<td><code>Description</code></td>
-<td>Human-readable class description</td>
-</tr>
-<tr>
-<td><code>deprecated=True</code></td>
-<td><code>Deprecated=1</code></td>
-<td>Marks the class as deprecated in IRIS metadata</td>
-</tr>
-<tr>
-<td><code>final=True</code></td>
-<td><code>Final=1</code></td>
-<td>Marks the class as final/non-subclassable</td>
-</tr>
-<tr>
-<td><code>sql_table_name="..."</code></td>
-<td><code>SqlTableName</code></td>
-<td>Overrides the projected SQL table name</td>
-</tr>
-<tr>
-<td><code>procedure_block=True</code></td>
-<td><code>ProcedureBlock=1</code></td>
-<td>Enables IRIS procedure-block/compiler behavior</td>
-</tr>
-</tbody>
-</table>
-<p>Notes:</p>
-<ul>
-<li><code>ClassMetadata</code> is optional; if absent, <code>iris_persistence</code> leaves those class-level flags alone in <code>managed</code> and <code>extend</code> modes.</li>
-<li>The scaffold only emits non-default class metadata fields.</li>
-<li><code>managed</code> mode removes Python-owned properties, indexes, and parameters that disappear from the model without rebuilding the class.</li>
-<li><code>replace</code> mode clears omitted class metadata naturally because the class is recreated.</li>
-<li><code>Internal</code> and <code>SqlViewName</code> are intentionally not modeled yet because they are exposed by compiled metadata but are not writable reliably through <code>%Dictionary.ClassDefinition</code> in this environment.</li>
-</ul>
-<h2 id="parameter-mapping">Parameter Mapping</h2>
-<p><code>Meta.parameters = {...}</code> maps to IRIS class parameters.</p>
-<p>Write path:</p>
-<ul>
-<li><code>sync_schema()</code> writes Python parameters through <code>%Dictionary.ClassDefinition.Parameters</code></li>
-</ul>
-<p>Read path:</p>
-<ul>
-<li><code>scaffold_from_iris(..., extract_meta=True)</code> first tries <code>%Dictionary.CompiledParameter</code>
-  and keeps only rows owned by the current class</li>
-<li>if that returns nothing, scaffold tries <code>%Dictionary.ParameterDefinition</code></li>
-<li>if that also returns nothing, scaffold may fall back to <code>%Dictionary.ClassDefinition.Parameters</code>
-  but only keeps parameters owned by the current class</li>
-</ul>
-<p>This fallback matters in some namespaces where custom class parameters are visible on the live
-class definition object but do not appear through the SQL dictionary views.</p>
-<p>Notes:</p>
-<ul>
-<li>parameter values are scaffolded as strings</li>
-<li>internal parameters such as <code>%...</code> and <code>GUID</code> are skipped</li>
-<li>inherited parameters are not scaffolded onto the subclass by default</li>
-</ul>
-<h2 id="field-mapping">Field Mapping</h2>
-<p>Field metadata is written to <code>%Dictionary.PropertyDefinition</code> and then projected by IRIS.</p>
-<table>
-<thead>
-<tr>
-<th>Python field / <code>Field(...)</code></th>
-<th>IRIS property metadata</th>
-<th>SQL projection notes</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>annotation type</td>
-<td><code>Type</code></td>
-<td>IRIS projects SQL type from the IRIS property type</td>
-</tr>
-<tr>
-<td><code>iris_type</code></td>
-<td><code>Type</code></td>
-<td>Forces the IRIS property type directly</td>
-</tr>
-<tr>
-<td><code>required=True</code></td>
-<td><code>Required=1</code></td>
-<td>IRIS projects required/non-nullable semantics for the property</td>
-</tr>
-<tr>
-<td><code>default=...</code></td>
-<td><code>InitialExpression</code></td>
-<td>Object/property default; this is not the same as issuing raw SQL <code>DEFAULT</code> DDL yourself</td>
-</tr>
-<tr>
-<td><code>max_length=...</code></td>
-<td>property parameter <code>MAXLEN</code></td>
-<td>Affects string length projection and validation</td>
-</tr>
-<tr>
-<td><code>decimal.Decimal</code> or explicit <code>%Library.Decimal</code></td>
-<td>property parameter <code>SCALE=18</code></td>
-<td>Preserves fractional values with the non-deprecated decimal type</td>
-</tr>
-<tr>
-<td><code>readonly=True</code></td>
-<td><code>ReadOnly=1</code></td>
-<td>Marks the IRIS property as read-only</td>
-</tr>
-<tr>
-<td><code>collection="list"</code> / <code>"array"</code></td>
-<td><code>Collection</code></td>
-<td>Changes collection semantics and SQL/storage projection behavior</td>
-</tr>
-<tr>
-<td><code>sql_field_name="..."</code></td>
-<td><code>SqlFieldName</code></td>
-<td>Overrides the projected SQL column name</td>
-</tr>
-<tr>
-<td><code>identity=True</code></td>
-<td><code>Identity=1</code></td>
-<td>Marks the property as identity-bearing in IRIS metadata</td>
-</tr>
-<tr>
-<td><code>relationship="..."</code></td>
-<td><code>Relationship</code></td>
-<td>Captures IRIS relationship semantics for object references and collections</td>
-</tr>
-<tr>
-<td><code>on_delete="..."</code></td>
-<td><code>OnDelete</code></td>
-<td>Controls IRIS-side delete behavior for relationship properties</td>
-</tr>
-<tr>
-<td><code>inverse="..."</code></td>
-<td><code>Inverse</code></td>
-<td>Names the inverse relationship property in IRIS metadata</td>
-</tr>
-<tr>
-<td><code>transient=True</code></td>
-<td><code>Transient=1</code></td>
-<td>Keeps the property out of persistent storage</td>
-</tr>
-<tr>
-<td><code>storable=False</code></td>
-<td><code>Storable=0</code></td>
-<td>Disables normal storage projection for the property</td>
-</tr>
-<tr>
-<td><code>multi_dimensional=True</code></td>
-<td><code>MultiDimensional=1</code></td>
-<td>Enables multi-dimensional property metadata in IRIS</td>
-</tr>
-<tr>
-<td><code>sql_list_delimiter="..."</code></td>
-<td><code>SqlListDelimiter</code></td>
-<td>Controls SQL list projection delimiter for list-backed fields</td>
-</tr>
-<tr>
-<td><code>sql_list_type="..."</code></td>
-<td><code>SqlListType</code></td>
-<td>Controls SQL list projection type metadata, for example legacy values like <code>"LIST"</code> or <code>"DELIMITED"</code></td>
-</tr>
-<tr>
-<td><code>sql_compute_code="..."</code></td>
-<td><code>SqlComputeCode</code></td>
-<td>Defines SQL-compute code for projected fields</td>
-</tr>
-<tr>
-<td><code>sql_compute_on_change="..."</code></td>
-<td><code>SqlComputeOnChange</code></td>
-<td>Declares which field changes should recompute the SQL value</td>
-</tr>
-<tr>
-<td><code>sql_computed=True</code></td>
-<td><code>SqlComputed=1</code></td>
-<td>Marks the field as SQL-computed metadata</td>
-</tr>
-</tbody>
-</table>
-<p>Notes:</p>
-<ul>
-<li><code>Field.default</code> is written as an IRIS initial expression.</li>
-<li>Plain <code>list[T]</code> and <code>dict[str, T]</code> annotations infer <code>Collection="list"</code> and
-  <code>Collection="array"</code> respectively when no scalar collection <code>iris_type</code> such as <code>%List</code>,
-  <code>%ListOfDataTypes</code>, or <code>%ArrayOfDataTypes</code> is supplied.</li>
-<li><code>Field.storable</code> defaults to <code>True</code>; the scaffold only emits <code>storable=False</code> when IRIS marks the property as non-storable.</li>
-<li>The scaffold only emits non-default field flags, so <code>identity=False</code>, <code>transient=False</code>, and <code>multi_dimensional=False</code> are omitted.</li>
-<li>SQL-projection field metadata is scaffolded only when the compiled property exposes non-empty values for it.</li>
-<li><code>%Persistent</code> references scaffold and sync as class-typed properties.</li>
-<li><code>%SerialObject</code> references scaffold and sync as embedded serial properties.</li>
-</ul>
-<h2 id="type-projection-rules">Type Projection Rules</h2>
-<p>Default Python-to-IRIS mapping:</p>
-<table>
-<thead>
-<tr>
-<th>Python type</th>
-<th>IRIS type</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>str</code></td>
-<td><code>%Library.String</code></td>
-</tr>
-<tr>
-<td><code>int</code></td>
-<td><code>%Library.Integer</code></td>
-</tr>
-<tr>
-<td><code>float</code></td>
-<td><code>%Library.Double</code></td>
-</tr>
-<tr>
-<td><code>decimal.Decimal</code></td>
-<td><code>%Library.Decimal</code></td>
-</tr>
-<tr>
-<td><code>bool</code></td>
-<td><code>%Library.Boolean</code></td>
-</tr>
-<tr>
-<td><code>bytes</code> / <code>bytearray</code></td>
-<td><code>%Stream.GlobalBinary</code></td>
-</tr>
-<tr>
-<td>unparameterized <code>dict</code></td>
-<td><code>%Library.DynamicObject</code></td>
-</tr>
-<tr>
-<td>unparameterized <code>list</code></td>
-<td><code>%Library.DynamicArray</code></td>
-</tr>
-<tr>
-<td><code>dict[str, T]</code></td>
-<td><code>T</code> with <code>Collection="array"</code> unless <code>iris_type</code> forces a scalar collection type</td>
-</tr>
-<tr>
-<td><code>list[T]</code></td>
-<td><code>T</code> with <code>Collection="list"</code> unless <code>iris_type</code> forces a scalar collection type</td>
-</tr>
-<tr>
-<td><code>datetime.date</code></td>
-<td><code>%Library.Date</code></td>
-</tr>
-<tr>
-<td><code>datetime.time</code></td>
-<td><code>%Library.Time</code></td>
-</tr>
-<tr>
-<td><code>datetime.datetime</code></td>
-<td><code>%Library.TimeStamp</code></td>
-</tr>
-<tr>
-<td><code>Model</code> subclass</td>
-<td>target class <code>Meta.classname</code></td>
-</tr>
-</tbody>
-</table>
-<h2 id="index-mapping">Index Mapping</h2>
-<p><code>Meta.indexes</code> entries map to <code>%Dictionary.IndexDefinition</code>.</p>
-<table>
-<thead>
-<tr>
-<th>Python <code>Index(...)</code></th>
-<th>IRIS metadata</th>
-<th>SQL projection notes</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>name</code></td>
-<td><code>Name</code></td>
-<td>IRIS index name</td>
-</tr>
-<tr>
-<td><code>properties</code></td>
-<td><code>Properties</code></td>
-<td>Indexed property/column list</td>
-</tr>
-<tr>
-<td><code>unique=True</code></td>
-<td><code>Unique=1</code></td>
-<td>Projects a unique index</td>
-</tr>
-<tr>
-<td><code>type="..."</code></td>
-<td><code>Type</code></td>
-<td>IRIS index type, for example <code>index</code>, <code>bitmap</code>, <code>key</code></td>
-</tr>
-<tr>
-<td><code>primary_key=True</code></td>
-<td><code>PrimaryKey=1</code></td>
-<td>Marks the index as a primary-key style index in IRIS metadata</td>
-</tr>
-</tbody>
-</table>
-<h2 id="storagedefinition-mapping">StorageDefinition Mapping</h2>
-<p><code>Meta.storage</code> maps to <code>%Dictionary.StorageDefinition</code>.</p>
-<p>By default, <code>scaffold_from_iris(..., extract_meta=True)</code> keeps <code>Meta.storage</code> aligned with the
-normal UDL/XML-visible storage definition. Use <code>extract_hidden_meta=True</code> to also include
-dictionary-only storage scalars such as SQL row-ID helpers and internal location metadata.</p>
-<table>
-<thead>
-<tr>
-<th>Python <code>StorageDefinition(...)</code></th>
-<th>IRIS metadata target</th>
-<th>Meaning</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>type</code></td>
-<td><code>Type</code></td>
-<td>Storage class type such as <code>%Storage.Persistent</code> or <code>%Storage.Serial</code></td>
-</tr>
-<tr>
-<td><code>data_location</code></td>
-<td><code>DataLocation</code></td>
-<td>Main data global</td>
-</tr>
-<tr>
-<td><code>default_data</code></td>
-<td><code>DefaultData</code></td>
-<td>Default storage node name</td>
-</tr>
-<tr>
-<td><code>extent_location</code></td>
-<td><code>ExtentLocation</code></td>
-<td>Extent global location</td>
-</tr>
-<tr>
-<td><code>extent_size</code></td>
-<td><code>ExtentSize</code></td>
-<td>Recorded row extent size</td>
-</tr>
-<tr>
-<td><code>counter_location</code></td>
-<td><code>CounterLocation</code></td>
-<td>Counter global location</td>
-</tr>
-<tr>
-<td><code>version_location</code></td>
-<td><code>VersionLocation</code></td>
-<td>Version global location</td>
-</tr>
-<tr>
-<td><code>id_location</code></td>
-<td><code>IdLocation</code></td>
-<td>Row ID location</td>
-</tr>
-<tr>
-<td><code>id_expression</code></td>
-<td><code>IdExpression</code></td>
-<td>Row ID expression</td>
-</tr>
-<tr>
-<td><code>id_function</code></td>
-<td><code>IdFunction</code></td>
-<td>Row ID function hook</td>
-</tr>
-<tr>
-<td><code>index_location</code></td>
-<td><code>IndexLocation</code></td>
-<td>Index global location</td>
-</tr>
-<tr>
-<td><code>stream_location</code></td>
-<td><code>StreamLocation</code></td>
-<td>Stream global location</td>
-</tr>
-<tr>
-<td><code>sql_child_sub</code></td>
-<td><code>SqlChildSub</code></td>
-<td>Child-table subscript used by SQL projection</td>
-</tr>
-<tr>
-<td><code>sql_id_expression</code></td>
-<td><code>SqlIdExpression</code></td>
-<td>SQL-facing row ID expression</td>
-</tr>
-<tr>
-<td><code>sql_row_id_name</code></td>
-<td><code>SqlRowIdName</code></td>
-<td>SQL row ID column name</td>
-</tr>
-<tr>
-<td><code>sql_row_id_property</code></td>
-<td><code>SqlRowIdProperty</code></td>
-<td>Property projected as the SQL row ID</td>
-</tr>
-<tr>
-<td><code>sql_table_number</code></td>
-<td><code>SqlTableNumber</code></td>
-<td>Internal SQL table number metadata</td>
-</tr>
-<tr>
-<td><code>sequence_number</code></td>
-<td><code>SequenceNumber</code></td>
-<td>Storage sequence number</td>
-</tr>
-<tr>
-<td><code>data</code></td>
-<td><code>Data</code> child collection</td>
-<td>Storage node definitions</td>
-</tr>
-<tr>
-<td><code>indices</code></td>
-<td><code>Indices</code> child collection</td>
-<td>Storage index definitions</td>
-</tr>
-<tr>
-<td><code>properties</code></td>
-<td><code>Properties</code> child collection</td>
-<td>Field-size/selectivity metadata</td>
-</tr>
-<tr>
-<td><code>sql_maps</code></td>
-<td><code>SQLMaps</code> child collection</td>
-<td>Custom SQL map metadata</td>
-</tr>
-</tbody>
-</table>
-<h2 id="storagedata-mapping">StorageData Mapping</h2>
-<p><code>StorageData(...)</code> maps to <code>%Dictionary.StorageDataDefinition</code>.</p>
-<table>
-<thead>
-<tr>
-<th>Python <code>StorageData(...)</code></th>
-<th>IRIS metadata target</th>
-<th>Meaning</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>name</code></td>
-<td><code>Name</code></td>
-<td>Storage data node name</td>
-</tr>
-<tr>
-<td><code>structure</code></td>
-<td><code>Structure</code></td>
-<td>Node structure such as <code>listnode</code> or <code>node</code></td>
-</tr>
-<tr>
-<td><code>attribute</code></td>
-<td><code>Attribute</code></td>
-<td>Direct attribute mapping for the node</td>
-</tr>
-<tr>
-<td><code>subscript</code></td>
-<td><code>Subscript</code></td>
-<td>Explicit storage subscript expression</td>
-</tr>
-<tr>
-<td><code>values</code></td>
-<td><code>Values</code> child definitions</td>
-<td>Numbered storage value mapping</td>
-</tr>
-</tbody>
-</table>
-<p>Example:</p>
-<pre><code class="language-xml">&lt;Data name=&quot;dickt&quot;&gt;
-&lt;Attribute&gt;dickt&lt;/Attribute&gt;
-&lt;Structure&gt;node&lt;/Structure&gt;
-&lt;Subscript&gt;&quot;dickt&quot;&lt;/Subscript&gt;
-&lt;/Data&gt;
-</code></pre>
-<p>Scaffolds to:</p>
-<pre><code class="language-python">StorageData(
-    name=&quot;dickt&quot;,
-    structure=&quot;node&quot;,
-    attribute=&quot;dickt&quot;,
-    subscript='&quot;dickt&quot;',
-    values={},
-)
-</code></pre>
-<h2 id="storageindex-mapping">StorageIndex Mapping</h2>
-<p><code>StorageIndex(...)</code> maps to <code>%Dictionary.StorageIndexDefinition</code>.</p>
-<p>These are storage-level index nodes, distinct from class-level SQL indexes in
-<code>Meta.indexes</code>.</p>
-<table>
-<thead>
-<tr>
-<th>Python <code>StorageIndex(...)</code></th>
-<th>IRIS metadata target</th>
-<th>Meaning</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>name</code></td>
-<td><code>Name</code></td>
-<td>Storage index name</td>
-</tr>
-<tr>
-<td><code>location</code></td>
-<td><code>Location</code></td>
-<td>Storage index global location</td>
-</tr>
-<tr>
-<td><code>small_chunk_size</code></td>
-<td><code>SmallChunkSize</code></td>
-<td>IRIS small-chunk size metadata</td>
-</tr>
-</tbody>
-</table>
-<h2 id="storageproperty-mapping">StorageProperty Mapping</h2>
-<p><code>StorageProperty(...)</code> maps to <code>%Dictionary.StoragePropertyDefinition</code>.</p>
-<p>By default, scaffolding includes the UDL/XML-visible storage property statistics:
-<code>average_field_size</code>, <code>selectivity</code>, and <code>outlier_selectivity</code>.
-Use <code>extract_hidden_meta=True</code> to also scaffold dictionary-only statistics such as histograms,
-child block/extent metadata, outlier-bias flags, and storage-property stream locations.</p>
-<table>
-<thead>
-<tr>
-<th>Python <code>StorageProperty(...)</code></th>
-<th>IRIS metadata target</th>
-<th>Meaning</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>name</code></td>
-<td><code>Name</code></td>
-<td>Property name</td>
-</tr>
-<tr>
-<td><code>average_field_size</code></td>
-<td><code>AverageFieldSize</code></td>
-<td>IRIS storage sizing metadata</td>
-</tr>
-<tr>
-<td><code>selectivity</code></td>
-<td><code>Selectivity</code></td>
-<td>IRIS selectivity metadata used by SQL/runtime heuristics</td>
-</tr>
-<tr>
-<td><code>outlier_selectivity</code></td>
-<td><code>OutlierSelectivity</code></td>
-<td>Per-value outlier selectivity metadata</td>
-</tr>
-<tr>
-<td><code>histogram</code></td>
-<td><code>Histogram</code></td>
-<td>Histogram/tuning statistics metadata</td>
-</tr>
-<tr>
-<td><code>child_block_count</code></td>
-<td><code>ChildBlockCount</code></td>
-<td>Child block-count statistics</td>
-</tr>
-<tr>
-<td><code>child_extent_size</code></td>
-<td><code>ChildExtentSize</code></td>
-<td>Child extent-size statistics</td>
-</tr>
-<tr>
-<td><code>bias_queries_as_outlier</code></td>
-<td><code>BiasQueriesAsOutlier</code></td>
-<td>Outlier-bias flag used by IRIS heuristics</td>
-</tr>
-<tr>
-<td><code>stream_location</code></td>
-<td><code>StreamLocation</code></td>
-<td>Storage-property stream location metadata</td>
-</tr>
-</tbody>
-</table>
-<h3 id="selectivity-scaffolding">Selectivity Scaffolding</h3>
-<p><code>scaffold_from_iris()</code> normally reads storage property rows from <code>%Dictionary.CompiledStorageProperty</code>.
-Some classes expose incomplete data there. For example, <code>Demo.Demo</code> may only return a partial subset of
-storage-property rows from the compiled view while <code>%Dictionary.StoragePropertyDefinition</code> still contains
-per-property <code>AverageFieldSize</code>, <code>Selectivity</code>, <code>OutlierSelectivity</code>, and related statistics.</p>
-<p>Use:</p>
-<pre><code class="language-python">scaffold_from_iris(
-    &quot;Demo.Demo&quot;,
-    &quot;./generated_models&quot;,
-    extract_meta=True,
-    scaffold_selectivity=True,
-)
-</code></pre>
-<p>When <code>scaffold_selectivity=True</code>:</p>
-<ul>
-<li>scaffold still reads compiled storage properties first</li>
-<li>it then merges <code>%Dictionary.StoragePropertyDefinition</code> rows by property name</li>
-<li>definition-view storage-property statistics fill gaps or replace empty compiled values</li>
-</ul>
-<p>This option only affects scaffold metadata extraction. It is most useful when you want generated
-<code>StorageProperty(...)</code> entries to retain tuning statistics for existing IRIS classes.</p>
-<h3 id="hidden-storage-metadata">Hidden Storage Metadata</h3>
-<p>Some metadata exposed by <code>%Dictionary.CompiledStorage</code> and <code>%Dictionary.StoragePropertyDefinition</code>
-does not normally appear in the UDL/XML storage block.</p>
-<p>Use:</p>
-<pre><code class="language-python">scaffold_from_iris(
-    &quot;Demo.Product&quot;,
-    &quot;./generated_models&quot;,
-    extract_meta=True,
-    extract_hidden_meta=True,
-)
-</code></pre>
-<p>This opt-in adds:</p>
-<ul>
-<li>storage-level hidden scalars such as <code>extent_location</code>, <code>counter_location</code>, <code>version_location</code>,
-  <code>id_expression</code>, <code>id_function</code>, <code>sql_child_sub</code>, <code>sql_id_expression</code>, <code>sql_row_id_name</code>,
-  <code>sql_row_id_property</code>, <code>sql_table_number</code>, and <code>sequence_number</code></li>
-<li>storage-property hidden statistics such as <code>histogram</code>, <code>child_block_count</code>,
-  <code>child_extent_size</code>, <code>bias_queries_as_outlier</code>, and property-level <code>stream_location</code></li>
-</ul>
-<h2 id="storagesqlmap-mapping">StorageSQLMap Mapping</h2>
-<p><code>StorageSQLMap(...)</code> maps to <code>%Dictionary.StorageSQLMapDefinition</code>.</p>
-<table>
-<thead>
-<tr>
-<th>Python <code>StorageSQLMap(...)</code></th>
-<th>IRIS metadata target</th>
-<th>Meaning</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>name</code></td>
-<td><code>Name</code></td>
-<td>SQL map name</td>
-</tr>
-<tr>
-<td><code>block_count</code></td>
-<td><code>BlockCount</code></td>
-<td>IRIS SQL map sizing metadata</td>
-</tr>
-<tr>
-<td><code>condition</code></td>
-<td><code>Condition</code></td>
-<td>SQL map condition</td>
-</tr>
-<tr>
-<td><code>condition_fields</code></td>
-<td><code>ConditionFields</code></td>
-<td>Fields referenced by the condition</td>
-</tr>
-<tr>
-<td><code>conditional_with_host_vars</code></td>
-<td><code>ConditionalWithHostVars</code></td>
-<td>Host-variable condition flag</td>
-</tr>
-<tr>
-<td><code>global_name</code></td>
-<td><code>Global</code></td>
-<td>Global root for the map</td>
-</tr>
-<tr>
-<td><code>population_pct</code></td>
-<td><code>PopulationPct</code></td>
-<td>Population percentage hint</td>
-</tr>
-<tr>
-<td><code>population_type</code></td>
-<td><code>PopulationType</code></td>
-<td>Population strategy hint</td>
-</tr>
-<tr>
-<td><code>row_reference</code></td>
-<td><code>RowReference</code></td>
-<td>Row reference expression</td>
-</tr>
-<tr>
-<td><code>structure</code></td>
-<td><code>Structure</code></td>
-<td>SQL map structure</td>
-</tr>
-<tr>
-<td><code>type</code></td>
-<td><code>Type</code></td>
-<td>SQL map type</td>
-</tr>
-<tr>
-<td><code>data</code></td>
-<td><code>Data</code> child collection</td>
-<td>Node/piece extraction metadata</td>
-</tr>
-<tr>
-<td><code>row_id_specs</code></td>
-<td><code>RowIdSpecs</code> child collection</td>
-<td>Row-ID extraction metadata</td>
-</tr>
-<tr>
-<td><code>subscripts</code></td>
-<td><code>Subscripts</code> child collection</td>
-<td>Subscript traversal metadata</td>
-</tr>
-</tbody>
-</table>
-<h3 id="storagesqlmapdata">StorageSQLMapData</h3>
-<p><code>StorageSQLMapData(...)</code> maps to <code>%Dictionary.StorageSQLMapDataDefinition</code>.</p>
-<table>
-<thead>
-<tr>
-<th>Python field</th>
-<th>IRIS metadata target</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>name</code></td>
-<td><code>Name</code></td>
-</tr>
-<tr>
-<td><code>node</code></td>
-<td><code>Node</code></td>
-</tr>
-<tr>
-<td><code>piece</code></td>
-<td><code>Piece</code></td>
-</tr>
-<tr>
-<td><code>delimiter</code></td>
-<td><code>Delimiter</code></td>
-</tr>
-<tr>
-<td><code>retrieval_code</code></td>
-<td><code>RetrievalCode</code></td>
-</tr>
-</tbody>
-</table>
-<h3 id="storagesqlmaprowidspec">StorageSQLMapRowIdSpec</h3>
-<p><code>StorageSQLMapRowIdSpec(...)</code> maps to <code>%Dictionary.StorageSQLMapRowIdSpecDefinition</code>.</p>
-<table>
-<thead>
-<tr>
-<th>Python field</th>
-<th>IRIS metadata target</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>name</code></td>
-<td><code>Name</code></td>
-</tr>
-<tr>
-<td><code>field</code></td>
-<td><code>Field</code></td>
-</tr>
-<tr>
-<td><code>expression</code></td>
-<td><code>Expression</code></td>
-</tr>
-</tbody>
-</table>
-<h3 id="storagesqlmapsub">StorageSQLMapSub</h3>
-<p><code>StorageSQLMapSub(...)</code> maps to <code>%Dictionary.StorageSQLMapSubDefinition</code>.</p>
-<table>
-<thead>
-<tr>
-<th>Python field</th>
-<th>IRIS metadata target</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>name</code></td>
-<td><code>Name</code></td>
-</tr>
-<tr>
-<td><code>access_type</code></td>
-<td><code>AccessType</code></td>
-</tr>
-<tr>
-<td><code>data_access</code></td>
-<td><code>DataAccess</code></td>
-</tr>
-<tr>
-<td><code>delimiter</code></td>
-<td><code>Delimiter</code></td>
-</tr>
-<tr>
-<td><code>expression</code></td>
-<td><code>Expression</code></td>
-</tr>
-<tr>
-<td><code>loop_init_value</code></td>
-<td><code>LoopInitValue</code></td>
-</tr>
-<tr>
-<td><code>next_code</code></td>
-<td><code>NextCode</code></td>
-</tr>
-<tr>
-<td><code>null_marker</code></td>
-<td><code>NullMarker</code></td>
-</tr>
-<tr>
-<td><code>start_value</code></td>
-<td><code>StartValue</code></td>
-</tr>
-<tr>
-<td><code>stop_expression</code></td>
-<td><code>StopExpression</code></td>
-</tr>
-<tr>
-<td><code>stop_value</code></td>
-<td><code>StopValue</code></td>
-</tr>
-<tr>
-<td><code>access_vars</code></td>
-<td><code>Accessvars</code> child collection</td>
-</tr>
-<tr>
-<td><code>invalid_conditions</code></td>
-<td><code>Invalidconditions</code> child collection</td>
-</tr>
-</tbody>
-</table>
-<h3 id="storagesqlmapsubaccessvar">StorageSQLMapSubAccessVar</h3>
-<p><code>StorageSQLMapSubAccessVar(...)</code> maps to <code>%Dictionary.StorageSQLMapSubAccessvarDefinition</code>.</p>
-<table>
-<thead>
-<tr>
-<th>Python field</th>
-<th>IRIS metadata target</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>name</code></td>
-<td><code>Name</code></td>
-</tr>
-<tr>
-<td><code>variable</code></td>
-<td><code>Variable</code></td>
-</tr>
-<tr>
-<td><code>code</code></td>
-<td><code>Code</code></td>
-</tr>
-</tbody>
-</table>
-<h3 id="storagesqlmapsubinvalidcondition">StorageSQLMapSubInvalidCondition</h3>
-<p><code>StorageSQLMapSubInvalidCondition(...)</code> maps to <code>%Dictionary.StorageSQLMapSubInvalidconditionDefinition</code>.</p>
-<table>
-<thead>
-<tr>
-<th>Python field</th>
-<th>IRIS metadata target</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>name</code></td>
-<td><code>Name</code></td>
-</tr>
-<tr>
-<td><code>expression</code></td>
-<td><code>Expression</code></td>
-</tr>
-</tbody>
-</table>
-<h2 id="sql-projection-notes">SQL Projection Notes</h2>
-<p>Important caveats when reading <code>iris_persistence</code> metadata as SQL schema:</p>
-<ul>
-<li><code>classname</code> is not a raw SQL table name override by itself.
-  IRIS derives SQL projection from the class definition and superclass behavior.</li>
-<li><code>Field.default</code> writes <code>InitialExpression</code>; it should be treated as IRIS object/property default metadata,
-  not as a promise of a raw SQL <code>DEFAULT</code> clause identical to hand-written DDL.</li>
-<li><code>%SerialObject</code> classes are embedded/serial structures, not standalone persistent SQL tables.</li>
-<li><code>%Persistent</code> and <code>Ens.Request</code> classes project persistent storage and SQL tables.</li>
-<li><code>sql_field_name</code> is the explicit Python-side way to control the IRIS projected SQL column name.</li>
-</ul>
-<h2 id="migration-workflow">Migration Workflow</h2>
-<p><code>iris_persistence.migrations</code> adds an explicit <code>plan -&gt; apply -&gt; verify -&gt; rollback-backup</code>
-workflow for production schemas.</p>
-<ul>
-<li><code>create_plan([...])</code> compares live <code>%Dictionary</code> metadata with Python model metadata and returns
-  deterministic structured operations plus the legacy human diff.</li>
-<li><code>plan.save("plan.json")</code> writes the review artifact that should be applied later.</li>
-<li><code>apply_plan(plan, backup_dir=...)</code> rechecks live schema fingerprints before writing and creates
-  a pre-apply backup directory containing <code>plan.json</code>, <code>metadata.json</code>, and <code>schema_states.json</code>.</li>
-<li>managed-mode property, index, and parameter removals/updates are shown as <code>managed-delete</code>
-  or <code>managed-update</code> operations and are allowed by default.</li>
-<li>destructive or manual-review operations outside managed member removals, including storage
-  replacement, are blocked unless <code>allow_destructive=True</code> or CLI <code>--allow-destructive</code> is supplied.</li>
-<li><code>verify_plan(plan)</code> checks whether the live schema converged to the plan target.</li>
-<li><code>rollback_backup(path, allow_destructive=True)</code> restores classes from <code>schema_states.json</code> and
-  deletes classes that did not exist before apply; rollback does not require or use a hand-written
-  downgrade function.</li>
-<li><code>check_drift([...])</code> uses the same schema normalizer as planning, so drift reports and plan
-  output compare the same metadata surface.</li>
-</ul>
-<p>Recommended production flow:</p>
-<pre><code class="language-bash">iris-persistence plan myapp.models:Product --to 001_add_product --out plan.json
-iris-persistence review-plan plan.json
-iris-persistence apply-plan plan.json --backup-dir .iris_persistence/backups
-iris-persistence verify-plan plan.json
-iris-persistence rollback-backup .iris_persistence/backups/&lt;backup-id&gt; --allow-destructive
-</code></pre>
-<p>For migration-managed classes, keep the default <code>mode="managed"</code> and <code>Meta.auto_sync = False</code>
-in production paths. <code>auto_sync</code> is still useful for demos and local development, but it bypasses
-reviewed migration plans and pre-apply backups.</p>
-<h2 id="current-coverage">Current Coverage</h2>
-<p>The current codebase round-trips:</p>
-<ul>
-<li>field type/default/required/max_length/readonly/collection/sql field name</li>
-<li>index unique/type/primary key metadata</li>
-<li>storage globals, row-id helpers, and SQL storage scalars</li>
-<li>storage data nodes</li>
-<li>storage property average size, selectivity, outlier stats, histogram, child stats, and stream location</li>
-<li>SQL map parent metadata</li>
-<li>SQL map data, row-id specs, subscripts, access vars, and invalid conditions</li>
-</ul>
-<p>Anything outside these public dataclasses is still IRIS-only metadata and will not round-trip through <code>iris_persistence</code>
-unless a corresponding Python type is added first.</p></div>
+<p>Declare them with <code>Meta.custom_storage</code>. <code>StorageDefinition.name</code> defaults to <code>CustomStorage</code>.
+The schema writer creates the complete nested dictionary definition before first compilation and
+sets <code>StorageStrategy</code> only for a name other than <code>Default</code>.</p>
+<p>This API is for layouts that cannot be expressed by compiler defaults or class parameters. It is
+not a relocation mechanism.</p>
+<h2 id="immutability-and-migration">Immutability and migration</h2>
+<p>Once a class exists, ordinary sync compares only the declared tuning or custom fields against the
+writable storage definition. Compiler-added fields are ignored. Equal declarations are no-ops;
+any declared mismatch produces <code>blocked_storage_change</code> and raises <code>StorageMigrationRequired</code>
+before mutation.</p>
+<p>No application or rollback flag can bypass a blocked storage operation. Physical relocation
+needs a future workflow that can copy data, switch globals, validate, and roll back safely.</p>
+<h2 id="scaffolding">Scaffolding</h2>
+<p>Storage is ignored by default. <code>storage="custom"</code> reads the active storage directly from
+<code>%Dictionary.ClassDefinition.Storages</code> and emits an advanced-storage snapshot. It requires
+<code>mode="managed"</code> because storage declarations are invalid in observe mode.</p>
+<p>The scaffold does not query compiled storage tables, merge selectivity projections, or infer a
+storage definition from SQL metadata.</p></div>
             </div>
         </div>
 

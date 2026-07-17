@@ -1,0 +1,4 @@
+interface:
+  display_name: "IRIS Persistence Scaffold"
+  short_description: "Scaffold Python models from existing IRIS"
+  default_prompt: "Use $iris-persistence-scaffold to generate safe observe-mode Python models from existing IRIS classes."

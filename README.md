@@ -3,6 +3,24 @@
 Python models, object persistence, queries, and managed schema for InterSystems IRIS.
 Python owns declared class members; the IRIS compiler owns generated storage and runtime methods.
 
+## Install the AI agent skills
+
+Use the portable skills installer to discover and install the model, scaffold, and migration
+skills for Codex, Claude Code, Cursor, or another supported agent—no repository clone required:
+
+```bash
+npx skills add grongierisc/iris-persistence
+```
+
+Install every skill globally for Codex without prompts:
+
+```bash
+npx skills add grongierisc/iris-persistence --skill '*' --agent codex --global --yes
+```
+
+See the [AI agent skills guide](docs/agent_skills.md) for individual skills, Claude Code,
+project-scoped installation, updates, removal, and the native Codex installer.
+
 ## 1. Define a model and configure the runtime
 
 ```python

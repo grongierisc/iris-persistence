@@ -1,0 +1,4 @@
+interface:
+  display_name: "IRIS Persistence Models"
+  short_description: "Build and query IRIS persistence models"
+  default_prompt: "Use $iris-persistence-models to implement a typed persistent model and CRUD flow for InterSystems IRIS."

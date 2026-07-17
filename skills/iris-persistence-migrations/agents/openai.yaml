@@ -1,0 +1,4 @@
+interface:
+  display_name: "IRIS Persistence Migrations"
+  short_description: "Plan and verify reviewed IRIS schema changes"
+  default_prompt: "Use $iris-persistence-migrations to create, review, apply, and verify a safe schema migration plan."
